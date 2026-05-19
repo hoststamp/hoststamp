@@ -83,6 +83,14 @@ and Dependabot run weekly.
 Hoststamp source is licensed under the Functional Source License 1.1,
 ALv2 Future License (`FSL-1.1-ALv2`). See [LICENSE](./LICENSE).
 
+Third-party notices for bundled datasets are in
+[THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md) and are also available
+from the CLI:
+
+```sh
+cargo run -p hoststamp -- --credits
+```
+
 ### Commit messages
 
 Use Conventional Commit-style subjects:

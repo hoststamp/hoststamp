@@ -24,11 +24,16 @@ fn version_prints_cli_name_and_version() {
 }
 
 #[test]
-fn credits_print_license_and_attribution_placeholder() {
+fn credits_print_license_and_eff_attribution() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
     cmd.arg("--credits").assert().success().stdout(
         predicate::str::contains("FSL-1.1-ALv2")
-            .and(predicate::str::contains("EFF wordlists: not bundled")),
+            .and(predicate::str::contains("EFF Long Wordlist"))
+            .and(predicate::str::contains("EFF Short Wordlist #2"))
+            .and(predicate::str::contains(
+                "Creative Commons Attribution 3.0 United States",
+            ))
+            .and(predicate::str::contains("Changes: none")),
     );
 }
