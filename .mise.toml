@@ -1,0 +1,4 @@
+[tools]
+rust = "1.95.0"
+"cargo:cargo-llvm-cov" = "0.8.7"
+actionlint = "1.7.12"
