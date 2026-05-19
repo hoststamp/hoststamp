@@ -1,0 +1,14 @@
+target/
+.git/
+.github/
+.gitignore
+.dockerignore
+Dockerfile
+README.md
+AGENTS.md
+CLAUDE.md
+LICENSE
+.mise.toml
+.idea/
+.vscode/
+*.log
