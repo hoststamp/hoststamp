@@ -43,7 +43,7 @@ jobs:
         run: actionlint
 
       - name: Test + coverage gate
-        run: cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 60
+        run: cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 90
 
       - name: Build (release)
         run: cargo build --release --locked

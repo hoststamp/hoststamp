@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod credits;
+pub mod generator;
 pub mod server;
 pub mod ux;
 pub mod wordlists;

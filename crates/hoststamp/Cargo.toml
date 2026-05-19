@@ -17,10 +17,12 @@ axum.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 assert_cmd = "2"

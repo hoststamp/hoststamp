@@ -287,4 +287,89 @@ mod tests {
 
         assert!(matches!(error, LoadError::MissingConfig { path: p } if p == path));
     }
+
+    #[test]
+    fn invalid_config_toml_is_an_error() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.toml");
+        fs::write(&config_path, "[server").expect("config");
+
+        let error = load_with_env(
+            Overrides {
+                config_path: Some(config_path),
+                ..Overrides::default()
+            },
+            ConfigEnv::default(),
+        )
+        .expect_err("invalid toml");
+
+        assert!(matches!(error, LoadError::ParseToml { .. }));
+    }
+
+    #[test]
+    fn invalid_config_addr_is_an_error() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [server]
+                addr = "not-an-addr"
+            "#,
+        )
+        .expect("config");
+
+        let error = load_with_env(
+            Overrides {
+                config_path: Some(config_path),
+                ..Overrides::default()
+            },
+            ConfigEnv::default(),
+        )
+        .expect_err("invalid addr");
+
+        assert!(
+            matches!(error, LoadError::ParseAddr { source_name, .. } if source_name == "server.addr")
+        );
+    }
+
+    #[test]
+    fn invalid_env_addr_is_an_error() {
+        let error = load_with_env(
+            Overrides::default(),
+            ConfigEnv {
+                addr: Some("not-an-addr".to_owned()),
+                ..ConfigEnv::default()
+            },
+        )
+        .expect_err("invalid addr");
+
+        assert!(
+            matches!(error, LoadError::ParseAddr { source_name, .. } if source_name == ADDR_ENV)
+        );
+    }
+
+    #[test]
+    fn load_error_display_and_source_are_informative() {
+        let missing = LoadError::MissingConfig {
+            path: PathBuf::from("/tmp/missing.toml"),
+        };
+        assert!(missing.to_string().contains("config file does not exist"));
+        assert!(std::error::Error::source(&missing).is_none());
+
+        let parse_error = load_with_env(
+            Overrides::default(),
+            ConfigEnv {
+                addr: Some("not-an-addr".to_owned()),
+                ..ConfigEnv::default()
+            },
+        )
+        .expect_err("invalid addr");
+        assert!(
+            parse_error
+                .to_string()
+                .contains("invalid HOSTSTAMP_ADDR address")
+        );
+        assert!(std::error::Error::source(&parse_error).is_some());
+    }
 }
