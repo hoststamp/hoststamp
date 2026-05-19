@@ -1,4 +1,9 @@
 [tools]
-rust = "1.95.0"
+# `default` rustup profile is NOT used; mise installs minimal. rustfmt + clippy
+# are needed by CI's fmt/clippy steps, llvm-tools-preview by cargo-llvm-cov.
+rust = { version = "1.95.0", components = "rustfmt,clippy,llvm-tools-preview" }
 "cargo:cargo-llvm-cov" = "0.8.7"
 actionlint = "1.7.12"
+# actionlint shells out to shellcheck for `run:` blocks. Pin it so local
+# `actionlint` matches CI (GitHub runners have shellcheck preinstalled).
+shellcheck = "0.11.0"

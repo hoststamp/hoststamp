@@ -128,9 +128,10 @@ docker run --rm -p 8080:8080 hoststamp:dev
 ### Automation
 
 CI validates formatting, clippy, tests with coverage, release builds,
-workflow syntax, and the Docker image. Pushes to `main` publish multi-arch
-nightly images to GHCR tagged as `nightly` and `sha-<short>`. Cargo audit
-and Dependabot run weekly.
+workflow syntax, and the Docker image. Pull requests run a fast amd64 Docker
+smoke build. Pushes to `main` publish multi-arch nightly images to GHCR tagged
+as `nightly`, `sha-<short>`, and `vX.Y.Z-nightly.YYYYMMDD.N`. Cargo audit and
+Dependabot run weekly.
 
 ## License
 

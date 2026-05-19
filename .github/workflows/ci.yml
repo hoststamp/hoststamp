@@ -7,6 +7,8 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
+  # Cancel superseded runs on PRs (rapid pushes). For main, let every run finish
+  # so each merge produces its own nightly image and `:sha-<short>` tag.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -30,6 +32,9 @@ jobs:
           install: true
           cache: true
 
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy llvm-tools-preview
+
       - name: Cargo cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
 
@@ -43,6 +48,10 @@ jobs:
         run: actionlint
 
       - name: Test + coverage gate
+        # cargo-llvm-cov is pinned in .mise.toml. It builds instrumented test
+        # binaries, runs them, and fails the job if line coverage drops below
+        # the threshold. Raise the threshold here when coverage goes up; do not
+        # lower it without recording why.
         run: cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 90
 
       - name: Build (release)
@@ -50,6 +59,12 @@ jobs:
 
   docker:
     name: docker build
+    # PR-only amd64 smoke build: proves the Dockerfile still builds, fast (native,
+    # no QEMU). arm64 is built and pushed at merge by publish-nightly, which runs
+    # the full multi-arch build. Emulating a full Rust release compile for arm64
+    # under QEMU here costs ~15 min/commit and is not worth it per PR push; the
+    # tradeoff is that an arm64-only Dockerfile/base-image break surfaces at merge.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
@@ -57,16 +72,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
-        with:
-          platforms: arm64
-
-      - name: Build image (multi-arch, no push)
+      - name: Build image (amd64, no push)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: false
           tags: hoststamp:ci
           cache-from: type=gha
@@ -74,7 +84,9 @@ jobs:
 
   publish-nightly:
     name: publish nightly image
-    needs: [test, docker]
+    # docker is PR-only and skipped on main, so depend on test only. The full
+    # multi-arch (amd64+arm64) build happens in this job's own build+push step.
+    needs: [test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -82,6 +94,31 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac  # v2.4.4
+        with:
+          install: true
+          cache: true
+
+      - name: Install cargo-edit
+        run: cargo install cargo-edit --locked --version 0.13.10
+
+      - name: Compute and apply nightly version
+        id: nightly
+        run: |
+          # Read the next-pending release version from Cargo.toml and increment
+          # its patch component. The image tag carries the `v` prefix so nightly
+          # tags line up with release tags, while Cargo keeps plain SemVer.
+          CURRENT=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEXT_PATCH="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          DATE=$(date -u +%Y%m%d)
+          NIGHTLY_VERSION="${NEXT_PATCH}-nightly.${DATE}.${GITHUB_RUN_NUMBER}"
+          cargo set-version --workspace "$NIGHTLY_VERSION"
+          echo "version=$NIGHTLY_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NIGHTLY_VERSION"     >> "$GITHUB_OUTPUT"
+          echo "Building nightly: v$NIGHTLY_VERSION"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
@@ -104,6 +141,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
           tags: |
+            type=raw,value=${{ steps.nightly.outputs.tag }}
             type=raw,value=nightly
             type=sha,prefix=sha-,format=short
 

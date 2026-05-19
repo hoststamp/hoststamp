@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
   schedule:
+    # Weekly — catches advisories published against deps that didn't change,
+    # which a push/PR-only trigger would miss until the next code change.
     - cron: '0 6 * * 1'
 
 permissions:
@@ -16,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # rustsec/audit-check opens an issue for new advisories on push/schedule
+      # and annotates the PR check on pull_request.
       issues: write
       checks: write
     steps:
