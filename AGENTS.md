@@ -56,18 +56,23 @@ Don't mutate state outside the working tree without being told to.
 - Default action after producing an artifact is to present it. The user applies it.
 
 ## Project Commands
-- Build: not configured yet.
-- Test: not configured yet.
-- Lint: not configured yet.
-- Type check: not configured yet.
-- Dev server: not configured yet.
+- Build: `cargo build --release --locked`
+- Test: `cargo test --all-targets`
+- Lint: `cargo clippy --all-targets -- -D warnings`
+- Format check: `cargo fmt --all -- --check`
+- Coverage: `cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 60`
+- Docker build: `docker build -t hoststamp:dev .`
+- Dev server: `cargo run -p hoststamp -- serve`
 
-When a toolchain is added, update this section with the exact commands agents should run.
+If the local shell refuses to load `.mise.toml` because it is not trusted, prefix commands with `MISE_TRUSTED_CONFIG_PATHS=$PWD` instead of changing global trust state.
 
 ## Project Conventions
 - Use `Hoststamp` for product and documentation prose.
 - Use `hoststamp` for machine-readable identifiers such as package names, binary names, repositories, domains, Docker images, and config keys.
 - Avoid `HostStamp` unless a specific external integration or legacy artifact requires that spelling.
+- Hoststamp source files use `SPDX-License-Identifier: FSL-1.1-ALv2` unless legal review changes the plan.
+- Config precedence is CLI flags, then environment variables, then config file, then built-in defaults.
+- The default user config path is `$XDG_CONFIG_HOME/hoststamp/config.toml`, falling back to `~/.config/hoststamp/config.toml`.
 
 ## Workspace Hygiene
 - Do not commit scratch notes, transcripts, one-off plans, or temporary agent artifacts.
