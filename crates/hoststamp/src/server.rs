@@ -2,7 +2,7 @@
 
 use crate::{
     SERVICE_NAME,
-    generator::{self, Dictionary, GenerateOptions, GenerateOverrides},
+    generator::{self, GenerateOptions, GenerateOverrides, SuffixHash, SuffixSource},
     ux,
 };
 use axum::{
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::{net::TcpListener, signal};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AppState {
     generate: GenerateOptions,
 }
@@ -29,16 +29,22 @@ pub struct Health {
 
 #[derive(Debug, Serialize)]
 pub struct GenerateResponse {
-    pub hostname: String,
+    pub hostnames: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct GenerateQuery {
-    pub words: Option<usize>,
-    pub word_length: Option<usize>,
-    pub dictionary: Option<Dictionary>,
-    pub suffix_hash: Option<bool>,
-    pub suffix_len: Option<usize>,
+    pub word1_enabled: Option<bool>,
+    pub word1_lengths: Option<String>,
+    pub word1_categories: Option<String>,
+    pub word2_enabled: Option<bool>,
+    pub word2_lengths: Option<String>,
+    pub word2_categories: Option<String>,
+    pub suffix_enabled: Option<bool>,
+    pub suffix_length: Option<usize>,
+    pub suffix_source: Option<SuffixSource>,
+    pub suffix_hash: Option<SuffixHash>,
+    pub count: Option<usize>,
 }
 
 pub fn app(generate_options: GenerateOptions) -> Router {
@@ -68,17 +74,51 @@ async fn generate_one(
     State(state): State<AppState>,
     Query(query): Query<GenerateQuery>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, String)> {
-    let options = state.generate.with_overrides(GenerateOverrides {
-        words: query.words,
-        word_length: query.word_length,
-        dictionary: query.dictionary,
-        suffix_hash: query.suffix_hash,
-        suffix_len: query.suffix_len,
-    });
-    let hostname = generator::generate_hostname(options)
-        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let word1_categories = query
+        .word1_categories
+        .as_deref()
+        .map(generator::parse_categories)
+        .transpose()
+        .map_err(bad_request)?;
+    let word2_categories = query
+        .word2_categories
+        .as_deref()
+        .map(generator::parse_categories)
+        .transpose()
+        .map_err(bad_request)?;
+    let word1_lengths = query
+        .word1_lengths
+        .as_deref()
+        .map(generator::parse_lengths)
+        .transpose()
+        .map_err(bad_request)?;
+    let word2_lengths = query
+        .word2_lengths
+        .as_deref()
+        .map(generator::parse_lengths)
+        .transpose()
+        .map_err(bad_request)?;
 
-    Ok(Json(GenerateResponse { hostname }))
+    let options = state.generate.with_overrides(GenerateOverrides {
+        word1_enabled: query.word1_enabled,
+        word1_lengths,
+        word1_categories,
+        word2_enabled: query.word2_enabled,
+        word2_lengths,
+        word2_categories,
+        suffix_enabled: query.suffix_enabled,
+        suffix_length: query.suffix_length,
+        suffix_source: query.suffix_source,
+        suffix_hash: query.suffix_hash,
+        count: query.count,
+    });
+    let hostnames = generator::generate_many(options).map_err(bad_request)?;
+
+    Ok(Json(GenerateResponse { hostnames }))
+}
+
+fn bad_request(error: impl ToString) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, error.to_string())
 }
 
 async fn not_found() -> impl IntoResponse {

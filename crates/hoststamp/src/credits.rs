@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-use crate::wordlists::{EFF_DICE_PAGE_URL, EFF_LICENSE_NAME, EFF_LICENSE_URL, EFF_WORDLISTS};
+use crate::dictionary;
 use std::fmt::Write as _;
 
 pub fn text() -> String {
@@ -13,30 +13,39 @@ License: Functional Source License 1.1, ALv2 Future License (FSL-1.1-ALv2)
 Future license: Apache License 2.0
 
 External data:
-- EFF wordlists, created by Joseph Bonneau for the Electronic Frontier
-  Foundation (EFF)
-  Project page: {dice_page}
-  License: {license_name}
-  License URL: {license_url}
-  Changes: none; bundled as downloaded text files.
+Generated: {generated_at}
 ",
         version = env!("CARGO_PKG_VERSION"),
-        dice_page = EFF_DICE_PAGE_URL,
-        license_name = EFF_LICENSE_NAME,
-        license_url = EFF_LICENSE_URL,
+        generated_at = dictionary::GENERATED_AT,
     );
 
-    for wordlist in EFF_WORDLISTS {
-        writeln!(
-            credits,
-            "  - {} ({} entries, {} dice): {}",
-            wordlist.title,
-            wordlist.entry_count(),
-            wordlist.dice,
-            wordlist.source_url
-        )
-        .expect("write to string");
+    for source in dictionary::sources() {
+        writeln!(credits, "- {}", source.title).expect("write to string");
+        writeln!(credits, "  Attribution: {}", source.attribution).expect("write to string");
+        writeln!(credits, "  Source: {}", source.url).expect("write to string");
+        writeln!(credits, "  License: {}", source.license).expect("write to string");
+        writeln!(credits, "  License URL: {}", source.license_url).expect("write to string");
+        writeln!(credits, "  Retrieved: {}", source.retrieved).expect("write to string");
+        writeln!(credits, "  SHA-256: {}", source.sha256).expect("write to string");
+        writeln!(credits, "  Changes: {}", source.changes).expect("write to string");
     }
 
     credits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credits_include_generated_source_metadata() {
+        let credits = text();
+
+        assert!(credits.contains("FSL-1.1-ALv2"));
+        assert!(credits.contains("golang-petname"));
+        assert!(credits.contains("EFF large Diceware wordlist"));
+        assert!(credits.contains("CC-BY-3.0-US"));
+        assert!(credits.contains("SHA-256:"));
+        assert!(credits.contains(dictionary::GENERATED_AT));
+    }
 }

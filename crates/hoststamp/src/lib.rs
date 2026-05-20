@@ -2,9 +2,10 @@
 
 pub mod config;
 pub mod credits;
+pub mod dictionary;
 pub mod generator;
+pub mod notices;
 pub mod server;
 pub mod ux;
-pub mod wordlists;
 
 pub const SERVICE_NAME: &str = "hoststamp";

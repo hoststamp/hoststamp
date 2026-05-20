@@ -1,199 +1,343 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-use crate::wordlists::{EFF_LARGE, EFF_SHORT_1, EFF_SHORT_2, Wordlist};
+use crate::dictionary;
 use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
-use std::{collections::HashSet, fmt, str::FromStr, sync::OnceLock};
+use std::{collections::HashSet, fmt, str::FromStr};
 use uuid::Uuid;
 
-pub const DEFAULT_WORDS: usize = 2;
 pub const DEFAULT_WORD_LENGTH: usize = 5;
-pub const DEFAULT_SUFFIX_LEN: usize = 5;
-pub const MAX_SUFFIX_LEN: usize = 40;
+pub const DEFAULT_SUFFIX_LENGTH: usize = 5;
+pub const MIN_SUFFIX_LENGTH: usize = 4;
+pub const MAX_SUFFIX_LENGTH: usize = 40;
 pub const DEFAULT_COUNT: usize = 1;
 pub const MAX_COUNT: usize = 50;
-const BLOCKED_SERVER_WORDS: &str = include_str!("../data/blocked-server-words.txt");
-static BLOCKED_WORDS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+pub const DEFAULT_WORD1_CATEGORY: &str = "adjective";
+pub const DEFAULT_WORD2_CATEGORY: &str = "animal";
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-pub enum Dictionary {
-    #[serde(rename = "eff_short")]
-    Short,
-    #[serde(rename = "eff_short_2")]
-    Short2,
-    #[serde(rename = "eff_large")]
-    Large,
+pub enum SuffixSource {
+    #[serde(rename = "random")]
+    Random,
+    #[serde(rename = "atomic")]
+    Atomic,
 }
 
-impl Dictionary {
-    pub fn wordlist(self) -> Wordlist {
-        match self {
-            Self::Short => EFF_SHORT_1,
-            Self::Short2 => EFF_SHORT_2,
-            Self::Large => EFF_LARGE,
-        }
-    }
-}
-
-impl fmt::Display for Dictionary {
+impl fmt::Display for SuffixSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Short => f.write_str("eff_short"),
-            Self::Short2 => f.write_str("eff_short_2"),
-            Self::Large => f.write_str("eff_large"),
+            Self::Random => f.write_str("random"),
+            Self::Atomic => f.write_str("atomic"),
         }
     }
 }
 
-impl FromStr for Dictionary {
+impl FromStr for SuffixSource {
     type Err = String;
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
-            "eff_short" => Ok(Self::Short),
-            "eff_short_2" => Ok(Self::Short2),
-            "eff_large" => Ok(Self::Large),
+            "random" => Ok(Self::Random),
+            "atomic" => Ok(Self::Atomic),
             _ => Err(format!(
-                "invalid dictionary {value:?}; expected eff_short, eff_short_2, or eff_large"
+                "invalid suffix source {value:?}; expected random or atomic"
             )),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+pub enum SuffixHash {
+    /// SHA-1 stretches random UUID bytes to a 40-character hex ceiling; it is
+    /// not used here as a security boundary.
+    #[serde(rename = "sha1")]
+    Sha1,
+}
+
+impl fmt::Display for SuffixHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sha1 => f.write_str("sha1"),
+        }
+    }
+}
+
+impl FromStr for SuffixHash {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "sha1" => Ok(Self::Sha1),
+            _ => Err(format!("invalid suffix hash {value:?}; expected sha1")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct GenerateOptions {
-    pub words: usize,
-    pub word_length: Option<usize>,
-    pub dictionary: Dictionary,
-    pub suffix_hash: bool,
-    pub suffix_len: usize,
+    pub word1_enabled: bool,
+    pub word1_lengths: Option<Vec<usize>>,
+    pub word1_categories: Vec<String>,
+    pub word2_enabled: bool,
+    pub word2_lengths: Option<Vec<usize>>,
+    pub word2_categories: Vec<String>,
+    pub suffix_enabled: bool,
+    pub suffix_length: usize,
+    pub suffix_source: SuffixSource,
+    pub suffix_hash: SuffixHash,
+    pub count: usize,
 }
 
 impl Default for GenerateOptions {
     fn default() -> Self {
         Self {
-            words: DEFAULT_WORDS,
-            word_length: Some(DEFAULT_WORD_LENGTH),
-            dictionary: Dictionary::Short,
-            suffix_hash: true,
-            suffix_len: DEFAULT_SUFFIX_LEN,
+            word1_enabled: true,
+            word1_lengths: Some(vec![DEFAULT_WORD_LENGTH]),
+            word1_categories: vec![DEFAULT_WORD1_CATEGORY.to_owned()],
+            word2_enabled: true,
+            word2_lengths: Some(vec![DEFAULT_WORD_LENGTH]),
+            word2_categories: vec![DEFAULT_WORD2_CATEGORY.to_owned()],
+            suffix_enabled: true,
+            suffix_length: DEFAULT_SUFFIX_LENGTH,
+            suffix_source: SuffixSource::Random,
+            suffix_hash: SuffixHash::Sha1,
+            count: DEFAULT_COUNT,
         }
     }
 }
 
 impl GenerateOptions {
-    pub fn with_overrides(self, overrides: GenerateOverrides) -> Self {
+    pub fn with_overrides(&self, overrides: GenerateOverrides) -> Self {
         Self {
-            words: overrides.words.unwrap_or(self.words),
-            word_length: overrides.word_length.or(self.word_length),
-            dictionary: overrides.dictionary.unwrap_or(self.dictionary),
+            word1_enabled: overrides.word1_enabled.unwrap_or(self.word1_enabled),
+            word1_lengths: overrides
+                .word1_lengths
+                .unwrap_or_else(|| self.word1_lengths.clone()),
+            word1_categories: overrides
+                .word1_categories
+                .unwrap_or_else(|| self.word1_categories.clone()),
+            word2_enabled: overrides.word2_enabled.unwrap_or(self.word2_enabled),
+            word2_lengths: overrides
+                .word2_lengths
+                .unwrap_or_else(|| self.word2_lengths.clone()),
+            word2_categories: overrides
+                .word2_categories
+                .unwrap_or_else(|| self.word2_categories.clone()),
+            suffix_enabled: overrides.suffix_enabled.unwrap_or(self.suffix_enabled),
+            suffix_length: overrides.suffix_length.unwrap_or(self.suffix_length),
+            suffix_source: overrides.suffix_source.unwrap_or(self.suffix_source),
             suffix_hash: overrides.suffix_hash.unwrap_or(self.suffix_hash),
-            suffix_len: overrides.suffix_len.unwrap_or(self.suffix_len),
+            count: overrides.count.unwrap_or(self.count),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct GenerateOverrides {
-    pub words: Option<usize>,
-    pub word_length: Option<usize>,
-    pub dictionary: Option<Dictionary>,
-    pub suffix_hash: Option<bool>,
-    pub suffix_len: Option<usize>,
+    pub word1_enabled: Option<bool>,
+    pub word1_lengths: Option<Option<Vec<usize>>>,
+    pub word1_categories: Option<Vec<String>>,
+    pub word2_enabled: Option<bool>,
+    pub word2_lengths: Option<Option<Vec<usize>>>,
+    pub word2_categories: Option<Vec<String>>,
+    pub suffix_enabled: Option<bool>,
+    pub suffix_length: Option<usize>,
+    pub suffix_source: Option<SuffixSource>,
+    pub suffix_hash: Option<SuffixHash>,
+    pub count: Option<usize>,
+}
+
+struct SelectionPlan {
+    cells: Vec<SelectionCell>,
+    total: usize,
+}
+
+struct SelectionCell {
+    upper_bound: usize,
+    words: Vec<&'static str>,
 }
 
 pub fn generate_hostname(options: GenerateOptions) -> Result<String> {
-    validate_options(options)?;
+    let plans = build_word_plans(&options)?;
+    generate_hostname_with_plans(&options, &plans)
+}
 
-    let wordlist = options.dictionary.wordlist();
-    let words = filtered_words(wordlist, options.word_length);
+pub fn generate_many(options: GenerateOptions) -> Result<Vec<String>> {
+    validate_count(options.count)?;
+    let plans = build_word_plans(&options)?;
+    (0..options.count)
+        .map(|_| generate_hostname_with_plans(&options, &plans))
+        .collect::<Result<Vec<_>>>()
+}
 
-    if words.len() < options.words {
-        bail!(
-            "dictionary {} does not contain {} unique words matching the requested filters",
-            options.dictionary,
-            options.words
-        );
-    }
+fn generate_hostname_with_plans(
+    options: &GenerateOptions,
+    plans: &[SelectionPlan],
+) -> Result<String> {
+    let mut selected = HashSet::with_capacity(plans.len());
+    let mut parts = Vec::with_capacity(plans.len() + usize::from(options.suffix_enabled));
 
-    let mut selected = HashSet::with_capacity(options.words);
-    let mut parts = Vec::with_capacity(options.words + usize::from(options.suffix_hash));
-
-    while parts.len() < options.words {
-        let index = random_index(words.len());
-        if selected.insert(index) {
-            parts.push(words[index].to_owned());
+    for plan in plans {
+        loop {
+            let word = plan.random_word();
+            if selected.insert(word) {
+                parts.push(word.to_owned());
+                break;
+            }
+            if selected.len() == plan.total {
+                bail!("selected word positions exhaust their pool before producing distinct words");
+            }
         }
     }
 
-    if options.suffix_hash {
-        parts.push(random_suffix(options.suffix_len));
+    if options.suffix_enabled {
+        parts.push(compute_suffix(options)?);
+    }
+
+    if parts.is_empty() {
+        bail!("nothing to generate: all positions are disabled");
     }
 
     Ok(parts.join("-"))
 }
 
-fn filtered_words(wordlist: Wordlist, word_length: Option<usize>) -> Vec<&'static str> {
-    wordlist
-        .words()
-        .into_iter()
-        .filter(|word| word_length.is_none_or(|length| word.chars().count() == length))
-        .filter(|word| is_allowed_server_word(word))
-        .collect()
-}
+fn build_word_plans(options: &GenerateOptions) -> Result<Vec<SelectionPlan>> {
+    validate_options(options)?;
 
-fn is_allowed_server_word(word: &str) -> bool {
-    !blocked_words().contains(word)
-}
-
-fn blocked_words() -> &'static HashSet<&'static str> {
-    BLOCKED_WORDS.get_or_init(|| {
-        BLOCKED_SERVER_WORDS
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect()
-    })
-}
-
-pub fn validate_count(count: usize) -> Result<()> {
-    if !(1..=MAX_COUNT).contains(&count) {
-        bail!("count must be between 1 and {MAX_COUNT}");
+    let mut plans = Vec::new();
+    if options.word1_enabled {
+        plans.push(SelectionPlan::build(
+            &options.word1_categories,
+            options.word1_lengths.as_deref(),
+            "word1",
+        )?);
     }
+    if options.word2_enabled {
+        plans.push(SelectionPlan::build(
+            &options.word2_categories,
+            options.word2_lengths.as_deref(),
+            "word2",
+        )?);
+    }
+
+    if plans.len() > 1 {
+        let distinct = plans
+            .iter()
+            .flat_map(SelectionPlan::all_words)
+            .collect::<HashSet<_>>()
+            .len();
+        if distinct < plans.len() {
+            bail!(
+                "selected categories contain {distinct} unique words across enabled word positions, but {required} were required",
+                required = plans.len()
+            );
+        }
+    }
+
+    Ok(plans)
+}
+
+impl SelectionPlan {
+    fn build(categories: &[String], lengths: Option<&[usize]>, position: &str) -> Result<Self> {
+        if categories.is_empty() {
+            bail!("{position} categories must not be empty");
+        }
+        if let Some(lengths) = lengths
+            && lengths.is_empty()
+        {
+            bail!("{position} lengths must not be empty (omit to allow any length)");
+        }
+
+        let mut seen = HashSet::new();
+        let mut total = 0usize;
+        let mut cells = Vec::new();
+
+        for category in categories {
+            let buckets = dictionary::category_lengths(category)
+                .ok_or_else(|| anyhow!("unknown category {category:?}"))?;
+            for (length, words) in buckets {
+                if lengths.is_some_and(|allowed| !allowed.contains(length)) {
+                    continue;
+                }
+
+                let cell_words = words
+                    .iter()
+                    .copied()
+                    .filter(|word| seen.insert(*word))
+                    .collect::<Vec<_>>();
+                if cell_words.is_empty() {
+                    continue;
+                }
+
+                total += cell_words.len();
+                cells.push(SelectionCell {
+                    upper_bound: total,
+                    words: cell_words,
+                });
+            }
+        }
+
+        if total == 0 {
+            bail!("{position} categories do not contain words matching the requested filters");
+        }
+
+        Ok(Self { cells, total })
+    }
+
+    fn random_word(&self) -> &'static str {
+        let index = random_index(self.total);
+        let cell = self
+            .cells
+            .iter()
+            .find(|cell| index < cell.upper_bound)
+            .expect("index is within total");
+        let lower_bound = cell.upper_bound - cell.words.len();
+        cell.words[index - lower_bound]
+    }
+
+    fn all_words(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.cells
+            .iter()
+            .flat_map(|cell| cell.words.iter().copied())
+    }
+}
+
+fn validate_options(options: &GenerateOptions) -> Result<()> {
+    if !options.word1_enabled && !options.word2_enabled && !options.suffix_enabled {
+        bail!("at least one position must be enabled");
+    }
+
+    if options.suffix_enabled
+        && !(MIN_SUFFIX_LENGTH..=MAX_SUFFIX_LENGTH).contains(&options.suffix_length)
+    {
+        bail!("suffix length must be between {MIN_SUFFIX_LENGTH} and {MAX_SUFFIX_LENGTH}");
+    }
+
+    validate_count(options.count)?;
 
     Ok(())
 }
 
-fn validate_options(options: GenerateOptions) -> Result<()> {
-    if options.words == 0 {
-        bail!("words must be at least 1");
+fn compute_suffix(options: &GenerateOptions) -> Result<String> {
+    match (options.suffix_source, options.suffix_hash) {
+        (SuffixSource::Random, SuffixHash::Sha1) => {
+            let uuid = Uuid::new_v4();
+            let digest = Sha1::digest(uuid.as_bytes());
+            Ok(hex_prefix(&digest, options.suffix_length).expect("sha1 hex prefix"))
+        }
+        (SuffixSource::Atomic, _) => {
+            bail!("suffix source 'atomic' is not yet implemented; requires the profile layer")
+        }
     }
-
-    let word_count = options.dictionary.wordlist().entry_count();
-    if options.words > word_count {
-        bail!(
-            "words must be no greater than {word_count} for {}",
-            options.dictionary
-        );
-    }
-
-    if options.suffix_hash && !(1..=MAX_SUFFIX_LEN).contains(&options.suffix_len) {
-        bail!("suffix length must be between 1 and {MAX_SUFFIX_LEN}");
-    }
-
-    Ok(())
 }
 
 fn random_index(len: usize) -> usize {
+    assert!(len > 0, "random_index requires a non-empty range");
+    // Hoststamp's word buckets are small enough that modulo bias across UUIDv4's
+    // random space is operationally negligible for hostname generation.
     let len = u128::try_from(len).expect("usize fits in u128");
     usize::try_from(Uuid::new_v4().as_u128() % len).expect("bounded by original usize")
-}
-
-fn random_suffix(len: usize) -> String {
-    let uuid = Uuid::new_v4();
-    let digest = Sha1::digest(uuid.as_bytes());
-    hex_prefix(&digest, len).expect("sha1 hex prefix")
 }
 
 fn hex_prefix(bytes: &[u8], len: usize) -> Option<String> {
@@ -226,7 +370,66 @@ fn nibble_to_hex(nibble: u8) -> Option<char> {
     }
 }
 
-pub fn parse_dictionary(value: &str) -> std::result::Result<Dictionary, String> {
+pub fn parse_categories(value: &str) -> std::result::Result<Vec<String>, String> {
+    let categories = value
+        .split(',')
+        .map(str::trim)
+        .filter(|category| !category.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    if categories.is_empty() {
+        Err("category list must not be empty".to_owned())
+    } else {
+        Ok(categories)
+    }
+}
+
+pub fn parse_lengths(value: &str) -> std::result::Result<Option<Vec<usize>>, String> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("any") {
+        return Ok(None);
+    }
+
+    let mut lengths = Vec::new();
+    for part in trimmed.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let length = part
+            .parse::<usize>()
+            .map_err(|source| format!("invalid length {part:?}: {source}"))?;
+        if length == 0 {
+            return Err("length must be at least 1".to_owned());
+        }
+        lengths.push(length);
+    }
+
+    if lengths.is_empty() {
+        return Err("length list must not be empty (use \"any\" for no length filter)".to_owned());
+    }
+
+    Ok(Some(lengths))
+}
+
+pub fn parse_suffix_length(value: &str) -> std::result::Result<usize, String> {
+    let length = value
+        .parse::<usize>()
+        .map_err(|source| format!("invalid suffix length {value:?}: {source}"))?;
+    if !(MIN_SUFFIX_LENGTH..=MAX_SUFFIX_LENGTH).contains(&length) {
+        return Err(format!(
+            "suffix length must be between {MIN_SUFFIX_LENGTH} and {MAX_SUFFIX_LENGTH}"
+        ));
+    }
+    Ok(length)
+}
+
+pub fn parse_suffix_source(value: &str) -> std::result::Result<SuffixSource, String> {
+    value.parse()
+}
+
+pub fn parse_suffix_hash(value: &str) -> std::result::Result<SuffixHash, String> {
     value.parse()
 }
 
@@ -238,51 +441,11 @@ pub fn parse_count(value: &str) -> std::result::Result<usize, String> {
     Ok(count)
 }
 
-pub fn parse_words(value: &str) -> std::result::Result<usize, String> {
-    value
-        .parse::<usize>()
-        .map_err(|source| format!("invalid words {value:?}: {source}"))
-        .and_then(|words| {
-            if words == 0 {
-                Err("words must be at least 1".to_owned())
-            } else {
-                Ok(words)
-            }
-        })
-}
-
-pub fn parse_word_length(value: &str) -> std::result::Result<usize, String> {
-    value
-        .parse::<usize>()
-        .map_err(|source| format!("invalid word length {value:?}: {source}"))
-        .and_then(|length| {
-            if length == 0 {
-                Err("word length must be at least 1".to_owned())
-            } else {
-                Ok(length)
-            }
-        })
-}
-
-pub fn parse_suffix_len(value: &str) -> std::result::Result<usize, String> {
-    let len = value
-        .parse::<usize>()
-        .map_err(|source| format!("invalid suffix length {value:?}: {source}"))?;
-
-    if !(1..=MAX_SUFFIX_LEN).contains(&len) {
-        return Err(format!(
-            "suffix length must be between 1 and {MAX_SUFFIX_LEN}"
-        ));
+pub fn validate_count(count: usize) -> Result<()> {
+    if !(1..=MAX_COUNT).contains(&count) {
+        bail!("count must be between 1 and {MAX_COUNT}");
     }
-
-    Ok(len)
-}
-
-pub fn generate_many(options: GenerateOptions, count: usize) -> Result<Vec<String>> {
-    validate_count(count)?;
-    (0..count)
-        .map(|_| generate_hostname(options))
-        .collect::<Result<Vec<_>>>()
+    Ok(())
 }
 
 pub fn parse_hostname_parts(hostname: &str) -> Vec<&str> {
@@ -309,107 +472,262 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generates_name_name_hash_by_default() {
+    fn generates_word_word_hash_by_default() {
         let hostname = generate_hostname(GenerateOptions::default()).expect("hostname");
         let parts = parse_hostname_parts(&hostname);
 
         assert_eq!(parts.len(), 3);
-        assert_eq!(parts[2].len(), DEFAULT_SUFFIX_LEN);
+        assert_eq!(parts[0].chars().count(), DEFAULT_WORD_LENGTH);
+        assert_eq!(parts[1].chars().count(), DEFAULT_WORD_LENGTH);
+        assert_eq!(parts[2].len(), DEFAULT_SUFFIX_LENGTH);
         assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
-        ensure_no_repeated_words(&hostname, DEFAULT_WORDS).expect("unique words");
+        ensure_no_repeated_words(&hostname, 2).expect("unique words");
     }
 
     #[test]
-    fn can_generate_without_suffix_hash() {
+    fn suffix_can_be_disabled() {
         let hostname = generate_hostname(GenerateOptions {
-            suffix_hash: false,
+            suffix_enabled: false,
             ..GenerateOptions::default()
         })
         .expect("hostname");
 
-        assert_eq!(parse_hostname_parts(&hostname).len(), DEFAULT_WORDS);
+        assert_eq!(parse_hostname_parts(&hostname).len(), 2);
     }
 
     #[test]
-    fn filters_words_by_exact_length() {
+    fn word2_can_be_disabled() {
         let hostname = generate_hostname(GenerateOptions {
-            word_length: Some(4),
-            suffix_hash: false,
+            word2_enabled: false,
+            suffix_enabled: false,
             ..GenerateOptions::default()
         })
         .expect("hostname");
 
         let parts = parse_hostname_parts(&hostname);
-        assert_eq!(parts.len(), DEFAULT_WORDS);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].chars().count(), DEFAULT_WORD_LENGTH);
+    }
+
+    #[test]
+    fn word1_can_be_disabled() {
+        let hostname = generate_hostname(GenerateOptions {
+            word1_enabled: false,
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        })
+        .expect("hostname");
+
+        let parts = parse_hostname_parts(&hostname);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].chars().count(), DEFAULT_WORD_LENGTH);
+    }
+
+    #[test]
+    fn suffix_only_when_both_words_disabled() {
+        let hostname = generate_hostname(GenerateOptions {
+            word1_enabled: false,
+            word2_enabled: false,
+            ..GenerateOptions::default()
+        })
+        .expect("hostname");
+
+        assert_eq!(hostname.len(), DEFAULT_SUFFIX_LENGTH);
+        assert!(hostname.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn all_positions_disabled_is_an_error() {
+        let error = generate_hostname(GenerateOptions {
+            word1_enabled: false,
+            word2_enabled: false,
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        })
+        .expect_err("error");
+
+        assert!(error.to_string().contains("at least one position"));
+    }
+
+    #[test]
+    fn filters_words_by_single_length() {
+        let hostname = generate_hostname(GenerateOptions {
+            word1_lengths: Some(vec![4]),
+            word2_lengths: Some(vec![4]),
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        })
+        .expect("hostname");
+
+        let parts = parse_hostname_parts(&hostname);
+        assert_eq!(parts.len(), 2);
         assert!(parts.iter().all(|part| part.chars().count() == 4));
+    }
+
+    #[test]
+    fn filters_words_by_length_set() {
+        let hostname = generate_hostname(GenerateOptions {
+            word1_lengths: Some(vec![4, 5, 6]),
+            word2_lengths: Some(vec![4, 5, 6]),
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        })
+        .expect("hostname");
+
+        let parts = parse_hostname_parts(&hostname);
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().all(|part| {
+            let n = part.chars().count();
+            (4..=6).contains(&n)
+        }));
+    }
+
+    #[test]
+    fn any_length_is_allowed_when_lengths_is_none() {
+        let hostname = generate_hostname(GenerateOptions {
+            word1_lengths: None,
+            word2_lengths: None,
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        })
+        .expect("hostname");
+
+        assert_eq!(parse_hostname_parts(&hostname).len(), 2);
+    }
+
+    #[test]
+    fn empty_lengths_is_an_error() {
+        let error = generate_hostname(GenerateOptions {
+            word1_lengths: Some(Vec::new()),
+            ..GenerateOptions::default()
+        })
+        .expect_err("error");
+
+        assert!(error.to_string().contains("lengths must not be empty"));
     }
 
     #[test]
     fn errors_when_word_filter_has_no_matches() {
         let error = generate_hostname(GenerateOptions {
-            word_length: Some(100),
+            word1_lengths: Some(vec![100]),
             ..GenerateOptions::default()
         })
         .expect_err("error");
 
-        assert!(error.to_string().contains("does not contain"));
+        assert!(error.to_string().contains("do not contain"));
     }
 
     #[test]
-    fn validates_word_count_against_dictionary_size() {
+    fn errors_when_unknown_category_is_selected() {
         let error = generate_hostname(GenerateOptions {
-            words: EFF_SHORT_1.entry_count() + 1,
+            word1_categories: vec!["missing".to_owned()],
             ..GenerateOptions::default()
         })
         .expect_err("error");
 
-        assert!(error.to_string().contains("words must be no greater than"));
+        assert!(error.to_string().contains("unknown category"));
     }
 
     #[test]
-    fn suffix_len_is_ignored_when_suffix_hash_is_disabled() {
-        let hostname = generate_hostname(GenerateOptions {
-            suffix_hash: false,
-            suffix_len: MAX_SUFFIX_LEN + 1,
+    fn errors_when_category_selection_is_empty() {
+        let error = generate_hostname(GenerateOptions {
+            word1_categories: Vec::new(),
             ..GenerateOptions::default()
         })
-        .expect("hostname");
+        .expect_err("error");
 
-        assert_eq!(parse_hostname_parts(&hostname).len(), DEFAULT_WORDS);
+        assert!(error.to_string().contains("categories must not be empty"));
     }
 
     #[test]
-    fn filters_blocked_server_words() {
-        let words = filtered_words(EFF_SHORT_1, Some(5));
+    fn validates_distinct_words_across_word_positions() {
+        let error = generate_hostname(GenerateOptions {
+            word1_categories: vec!["planet".to_owned()],
+            word2_categories: vec!["planet".to_owned()],
+            word1_lengths: Some(vec![8]),
+            word2_lengths: Some(vec![8]),
+            ..GenerateOptions::default()
+        })
+        .expect_err("error");
 
-        assert!(!words.contains(&"chump"));
-        assert!(!words.contains(&"moist"));
-        assert!(!words.contains(&"stank"));
-        assert!(!words.contains(&"theft"));
-        assert!(!words.contains(&"trump"));
-        assert!(!words.contains(&"xerox"));
+        // planet has exactly one word of length 8 ('makemake'); can't fill both positions.
+        assert!(error.to_string().contains("unique words"));
     }
 
     #[test]
-    fn parses_and_displays_all_dictionaries() {
-        assert_eq!(parse_dictionary("eff_short"), Ok(Dictionary::Short));
-        assert_eq!(parse_dictionary("eff_short_2"), Ok(Dictionary::Short2));
-        assert_eq!(parse_dictionary("eff_large"), Ok(Dictionary::Large));
-        assert_eq!(Dictionary::Short.to_string(), "eff_short");
-        assert_eq!(Dictionary::Short2.to_string(), "eff_short_2");
-        assert_eq!(Dictionary::Large.to_string(), "eff_large");
-        assert!(parse_dictionary("short").is_err());
-        assert_eq!(Dictionary::Large.wordlist().entry_count(), 7776);
+    fn rejects_suffix_length_below_floor() {
+        let error = generate_hostname(GenerateOptions {
+            suffix_length: MIN_SUFFIX_LENGTH - 1,
+            ..GenerateOptions::default()
+        })
+        .expect_err("error");
+
+        assert!(error.to_string().contains("suffix length must be between"));
+    }
+
+    #[test]
+    fn rejects_suffix_length_above_ceiling() {
+        let error = generate_hostname(GenerateOptions {
+            suffix_length: MAX_SUFFIX_LENGTH + 1,
+            ..GenerateOptions::default()
+        })
+        .expect_err("error");
+
+        assert!(error.to_string().contains("suffix length must be between"));
+    }
+
+    #[test]
+    fn rejects_atomic_source_until_profile_layer_lands() {
+        let error = generate_hostname(GenerateOptions {
+            suffix_source: SuffixSource::Atomic,
+            ..GenerateOptions::default()
+        })
+        .expect_err("error");
+
+        assert!(error.to_string().contains("not yet implemented"));
+    }
+
+    #[test]
+    fn parses_suffix_source_and_hash() {
+        assert_eq!(parse_suffix_source("random"), Ok(SuffixSource::Random));
+        assert_eq!(parse_suffix_source("atomic"), Ok(SuffixSource::Atomic));
+        assert!(parse_suffix_source("nope").is_err());
+        assert_eq!(parse_suffix_hash("sha1"), Ok(SuffixHash::Sha1));
+        assert!(parse_suffix_hash("sha256").is_err());
+        assert_eq!(SuffixSource::Random.to_string(), "random");
+        assert_eq!(SuffixHash::Sha1.to_string(), "sha1");
+    }
+
+    #[test]
+    fn parses_category_lists() {
+        assert_eq!(
+            parse_categories("adjective, animal").expect("categories"),
+            vec!["adjective", "animal"]
+        );
+        assert!(parse_categories(" , ").is_err());
+    }
+
+    #[test]
+    fn parses_length_lists() {
+        assert_eq!(parse_lengths("5").expect("lengths"), Some(vec![5]));
+        assert_eq!(
+            parse_lengths("4, 5, 6").expect("lengths"),
+            Some(vec![4, 5, 6])
+        );
+        assert_eq!(parse_lengths("any").expect("lengths"), None);
+        assert_eq!(parse_lengths("ANY").expect("lengths"), None);
+        assert!(parse_lengths("0").is_err());
+        assert!(parse_lengths("nope").is_err());
+        assert!(parse_lengths(" , ").is_err());
     }
 
     #[test]
     fn parse_helpers_reject_invalid_values() {
         assert!(parse_count("nope").is_err());
-        assert!(parse_words("nope").is_err());
-        assert!(parse_words("0").is_err());
-        assert!(parse_word_length("nope").is_err());
-        assert!(parse_word_length("0").is_err());
-        assert!(parse_suffix_len("nope").is_err());
+        assert!(parse_count("0").is_err());
+        assert!(parse_suffix_length("nope").is_err());
+        assert!(parse_suffix_length("3").is_err());
+        assert!(parse_suffix_length("41").is_err());
     }
 
     #[test]
@@ -425,8 +743,44 @@ mod tests {
     }
 
     #[test]
-    fn suffix_len_is_capped_at_sha1_hex_length() {
-        assert!(parse_suffix_len("40").is_ok());
-        assert!(parse_suffix_len("41").is_err());
+    fn suffix_length_floor_and_ceiling_at_parser() {
+        assert!(parse_suffix_length("4").is_ok());
+        assert!(parse_suffix_length("40").is_ok());
+        assert!(parse_suffix_length("3").is_err());
+        assert!(parse_suffix_length("41").is_err());
+        assert_eq!(hex_prefix(&[0xab, 0xcd], 3), Some("abc".to_owned()));
+        assert_eq!(hex_prefix(&[0xab], 3), None);
+        assert_eq!(nibble_to_hex(16), None);
+    }
+
+    #[test]
+    fn generate_many_returns_count_hostnames() {
+        let hostnames = generate_many(GenerateOptions {
+            count: 3,
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        })
+        .expect("hostnames");
+
+        assert_eq!(hostnames.len(), 3);
+        assert!(hostnames.iter().all(|hostname| {
+            let parts = parse_hostname_parts(hostname);
+            parts.len() == 2 && parts[0] != parts[1]
+        }));
+    }
+
+    #[test]
+    fn overrides_apply_per_field() {
+        let options = GenerateOptions::default().with_overrides(GenerateOverrides {
+            word1_categories: Some(vec!["star".to_owned()]),
+            word1_lengths: Some(Some(vec![6])),
+            suffix_enabled: Some(false),
+            ..GenerateOverrides::default()
+        });
+
+        assert_eq!(options.word1_categories, vec!["star"]);
+        assert_eq!(options.word1_lengths.as_deref(), Some(&[6][..]));
+        assert!(!options.suffix_enabled);
+        assert_eq!(options.word2_categories, vec!["animal"]);
     }
 }

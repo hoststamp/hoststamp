@@ -1,3 +1,7 @@
+# Local agent scratch workspace. Plans, drafts, transcripts, working notes.
+# Never referenced from committed source, docs, or skill files.
+.anvilkit/
+
 # Rust build artifacts
 /target/
 **/*.rs.bk

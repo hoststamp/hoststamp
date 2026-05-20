@@ -24,35 +24,57 @@ fn version_prints_cli_name_and_version() {
 }
 
 #[test]
-fn help_prints_generation_defaults() {
+fn help_prints_generation_flags() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
     cmd.arg("--help").assert().success().stdout(
-        predicate::str::contains("--word-length <WORD_LENGTH>")
-            .and(predicate::str::contains("[default: 5]"))
-            .and(predicate::str::contains("--suffix-len <SUFFIX_LEN>"))
-            .and(predicate::str::contains("[default: eff_short]")),
+        predicate::str::contains("--word1-lengths")
+            .and(predicate::str::contains("--word1-categories"))
+            .and(predicate::str::contains("--word2-lengths"))
+            .and(predicate::str::contains("--word2-categories"))
+            .and(predicate::str::contains("--no-suffix"))
+            .and(predicate::str::contains("--suffix-length"))
+            .and(predicate::str::contains("--suffix-source"))
+            .and(predicate::str::contains("--suffix-hash")),
     );
 }
 
 #[test]
-fn credits_print_license_and_eff_attribution() {
+fn credits_print_license_and_source_attribution() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
     cmd.arg("--credits").assert().success().stdout(
         predicate::str::contains("FSL-1.1-ALv2")
-            .and(predicate::str::contains("EFF Long Wordlist"))
-            .and(predicate::str::contains("EFF Short Wordlist #1"))
-            .and(predicate::str::contains("EFF Short Wordlist #2"))
-            .and(predicate::str::contains(
-                "Creative Commons Attribution 3.0 United States",
-            ))
-            .and(predicate::str::contains("Changes: none")),
+            .and(predicate::str::contains("EFF large Diceware wordlist"))
+            .and(predicate::str::contains("golang-petname"))
+            .and(predicate::str::contains("CC-BY-3.0-US"))
+            .and(predicate::str::contains("SHA-256:")),
     );
 }
 
 #[test]
-fn generate_prints_name_name_hash_by_default() {
+fn hidden_notices_command_prints_generated_notices() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.arg("notices").assert().success().stdout(
+        predicate::str::starts_with("# Third-Party Notices")
+            .and(predicate::str::contains("EFF large Diceware wordlist")),
+    );
+}
+
+#[test]
+fn list_categories_prints_category_counts() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.arg("--list-categories").assert().success().stdout(
+        predicate::str::contains("adjective\t")
+            .and(predicate::str::contains("animal\t"))
+            .and(predicate::str::contains("diceware\t")),
+    );
+}
+
+#[test]
+fn generate_prints_word_word_hash_by_default() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
     let assert = cmd.arg("generate").assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
@@ -85,7 +107,15 @@ fn generate_is_the_default_command() {
 fn default_generate_accepts_top_level_flags() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
     let assert = cmd
-        .args(["--count", "2", "--word-length", "4", "--no-suffix-hash"])
+        .args([
+            "--count",
+            "2",
+            "--word1-lengths",
+            "4",
+            "--word2-lengths",
+            "4",
+            "--no-suffix",
+        ])
         .assert()
         .success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
@@ -99,13 +129,13 @@ fn default_generate_accepts_top_level_flags() {
 }
 
 #[test]
-fn serve_accepts_generation_defaults_after_subcommand() {
+fn serve_rejects_invalid_suffix_length() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
-    cmd.args(["serve", "--addr", "127.0.0.1:0", "--word-length", "0"])
+    cmd.args(["serve", "--addr", "127.0.0.1:0", "--suffix-length", "3"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("word length must be at least 1"));
+        .stderr(predicate::str::contains("suffix length must be between"));
 }
 
 #[test]
@@ -116,9 +146,11 @@ fn generate_supports_multiple_hostnames() {
             "generate",
             "--count",
             "3",
-            "--dictionary",
-            "eff_short_2",
-            "--no-suffix-hash",
+            "--word1-categories",
+            "diceware",
+            "--word2-categories",
+            "diceware",
+            "--no-suffix",
         ])
         .assert()
         .success();
@@ -133,10 +165,17 @@ fn generate_supports_multiple_hostnames() {
 }
 
 #[test]
-fn generate_filters_words_by_exact_length() {
+fn generate_filters_words_by_single_length() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
     let assert = cmd
-        .args(["generate", "--word-length", "4", "--no-suffix-hash"])
+        .args([
+            "generate",
+            "--word1-lengths",
+            "4",
+            "--word2-lengths",
+            "4",
+            "--no-suffix",
+        ])
         .assert()
         .success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
@@ -147,13 +186,57 @@ fn generate_filters_words_by_exact_length() {
 }
 
 #[test]
+fn generate_accepts_length_set() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+    let assert = cmd
+        .args([
+            "generate",
+            "--word1-lengths",
+            "4,5,6",
+            "--word2-lengths",
+            "4,5,6",
+            "--no-suffix",
+        ])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let parts = output.trim().split('-').collect::<Vec<_>>();
+
+    assert_eq!(parts.len(), 2);
+    assert!(parts.iter().all(|part| {
+        let n = part.chars().count();
+        (4..=6).contains(&n)
+    }));
+}
+
+#[test]
+fn generate_accepts_any_length() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+    let assert = cmd
+        .args([
+            "generate",
+            "--word1-lengths",
+            "any",
+            "--word2-lengths",
+            "any",
+            "--no-suffix",
+        ])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let parts = output.trim().split('-').collect::<Vec<_>>();
+
+    assert_eq!(parts.len(), 2);
+}
+
+#[test]
 fn generate_errors_when_word_filter_has_no_matches() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
-    cmd.args(["generate", "--word-length", "100"])
+    cmd.args(["generate", "--word1-lengths", "100"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("does not contain"));
+        .stderr(predicate::str::contains("do not contain"));
 }
 
 #[test]
@@ -164,4 +247,68 @@ fn generate_rejects_count_above_cap() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("count must be between 1 and 50"));
+}
+
+#[test]
+fn generate_rejects_empty_category_list() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.args(["generate", "--word1-categories", ","])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("category list must not be empty"));
+}
+
+#[test]
+fn generate_rejects_unknown_category() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.args(["generate", "--word1-categories", "missing"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown category"));
+}
+
+#[test]
+fn generate_rejects_atomic_suffix_source() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.args(["generate", "--suffix-source", "atomic"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not yet implemented"));
+}
+
+#[test]
+fn generate_rejects_suffix_length_below_floor() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.args(["generate", "--suffix-length", "3"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("suffix length must be between"));
+}
+
+#[test]
+fn generate_can_disable_word2() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+    let assert = cmd
+        .args(["generate", "--no-word2", "--no-suffix"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let parts = output.trim().split('-').collect::<Vec<_>>();
+
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].chars().count(), 5);
+}
+
+#[test]
+fn generate_rejects_all_positions_disabled() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.args(["generate", "--no-word1", "--no-word2", "--no-suffix"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at least one position"));
 }

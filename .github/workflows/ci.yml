@@ -47,6 +47,9 @@ jobs:
       - name: Lint workflows
         run: actionlint
 
+      - name: Third-party notices drift
+        run: cargo test -p hoststamp notices::tests::third_party_notices_are_current --lib
+
       - name: Test + coverage gate
         # cargo-llvm-cov is pinned in .mise.toml. It builds instrumented test
         # binaries, runs them, and fails the job if line coverage drops below
