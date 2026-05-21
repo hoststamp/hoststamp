@@ -2,7 +2,7 @@
 
 use crate::dictionary;
 use anyhow::{Result, anyhow, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{collections::HashSet, fmt, str::FromStr};
 use uuid::Uuid;
@@ -13,10 +13,28 @@ pub const MIN_SUFFIX_LENGTH: usize = 4;
 pub const MAX_SUFFIX_LENGTH: usize = 40;
 pub const DEFAULT_COUNT: usize = 1;
 pub const MAX_COUNT: usize = 50;
-pub const DEFAULT_WORD1_CATEGORY: &str = "adjective";
-pub const DEFAULT_WORD2_CATEGORY: &str = "animal";
+pub const DEFAULT_WORD1_CATEGORIES: &[&str] = &["adjective", "adverb"];
+pub const DEFAULT_WORD2_CATEGORIES: &[&str] = &[
+    "animal",
+    "deity",
+    "element",
+    "gemstone",
+    "metal",
+    "monster",
+    "name",
+    "noun",
+    "ocean",
+    "phonetic",
+    "planet",
+    "river",
+    "scientist",
+    "star",
+    "stone",
+    "tolkien",
+    "wind",
+];
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 pub enum SuffixSource {
     #[serde(rename = "random")]
     Random,
@@ -47,7 +65,7 @@ impl FromStr for SuffixSource {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 pub enum SuffixHash {
     /// SHA-1 stretches random UUID bytes to a 40-character hex ceiling; it is
     /// not used here as a security boundary.
@@ -94,10 +112,16 @@ impl Default for GenerateOptions {
         Self {
             word1_enabled: true,
             word1_lengths: Some(vec![DEFAULT_WORD_LENGTH]),
-            word1_categories: vec![DEFAULT_WORD1_CATEGORY.to_owned()],
+            word1_categories: DEFAULT_WORD1_CATEGORIES
+                .iter()
+                .map(|category| (*category).to_owned())
+                .collect(),
             word2_enabled: true,
             word2_lengths: Some(vec![DEFAULT_WORD_LENGTH]),
-            word2_categories: vec![DEFAULT_WORD2_CATEGORY.to_owned()],
+            word2_categories: DEFAULT_WORD2_CATEGORIES
+                .iter()
+                .map(|category| (*category).to_owned())
+                .collect(),
             suffix_enabled: true,
             suffix_length: DEFAULT_SUFFIX_LENGTH,
             suffix_source: SuffixSource::Random,
@@ -148,6 +172,19 @@ pub struct GenerateOverrides {
     pub count: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapacityReport {
+    pub word1_count: Option<usize>,
+    pub word2_count: Option<usize>,
+    pub overlapping_words: usize,
+    pub unique_word_combinations: u128,
+    pub suffix_enabled: bool,
+    pub suffix_length: Option<usize>,
+    pub suffix_variants: Option<String>,
+    pub suffix_bits: Option<usize>,
+    pub total_variants: String,
+}
+
 struct SelectionPlan {
     cells: Vec<SelectionCell>,
     total: usize,
@@ -171,10 +208,94 @@ pub fn generate_many(options: GenerateOptions) -> Result<Vec<String>> {
         .collect::<Result<Vec<_>>>()
 }
 
+pub fn generate_many_with_atomic_suffix<F>(
+    options: GenerateOptions,
+    mut next_atomic_suffix: F,
+) -> Result<Vec<String>>
+where
+    F: FnMut() -> Result<String>,
+{
+    validate_count(options.count)?;
+    let plans = build_word_plans(&options)?;
+    (0..options.count)
+        .map(|_| generate_hostname_with_plans_and_atomic(&options, &plans, &mut next_atomic_suffix))
+        .collect::<Result<Vec<_>>>()
+}
+
+pub fn capacity_report(options: &GenerateOptions) -> Result<CapacityReport> {
+    let plans = build_word_plans_with_distinct_check(options, false)?;
+    let word1_count = options.word1_enabled.then(|| plans[0].total);
+    let word2_count = if options.word1_enabled && options.word2_enabled {
+        Some(plans[1].total)
+    } else if options.word2_enabled {
+        Some(plans[0].total)
+    } else {
+        None
+    };
+
+    let overlapping_words = if options.word1_enabled && options.word2_enabled {
+        let word1_words = plans[0].all_words().collect::<HashSet<_>>();
+        plans[1]
+            .all_words()
+            .filter(|word| word1_words.contains(word))
+            .count()
+    } else {
+        0
+    };
+    let unique_word_combinations = match (word1_count, word2_count) {
+        (Some(word1), Some(word2)) => {
+            let total = (word1 as u128) * (word2 as u128);
+            total - (overlapping_words as u128)
+        }
+        (Some(word1), None) => word1 as u128,
+        (None, Some(word2)) => word2 as u128,
+        (None, None) => 1,
+    };
+
+    let (suffix_length, suffix_variants, suffix_bits) = if options.suffix_enabled {
+        let variants = decimal_power(16, options.suffix_length);
+        (
+            Some(options.suffix_length),
+            Some(variants),
+            Some(options.suffix_length * 4),
+        )
+    } else {
+        (None, None, None)
+    };
+    let total_variants = if let Some(suffix_variants) = suffix_variants.as_deref() {
+        decimal_multiply(suffix_variants, unique_word_combinations)
+    } else {
+        unique_word_combinations.to_string()
+    };
+
+    Ok(CapacityReport {
+        word1_count,
+        word2_count,
+        overlapping_words,
+        unique_word_combinations,
+        suffix_enabled: options.suffix_enabled,
+        suffix_length,
+        suffix_variants,
+        suffix_bits,
+        total_variants,
+    })
+}
+
 fn generate_hostname_with_plans(
     options: &GenerateOptions,
     plans: &[SelectionPlan],
 ) -> Result<String> {
+    generate_hostname_with_plans_and_atomic(options, plans, &mut atomic_suffix_without_profile)
+}
+
+fn generate_hostname_with_plans_and_atomic<F>(
+    options: &GenerateOptions,
+    plans: &[SelectionPlan],
+    next_atomic_suffix: &mut F,
+) -> Result<String>
+where
+    F: FnMut() -> Result<String>,
+{
     let mut selected = HashSet::with_capacity(plans.len());
     let mut parts = Vec::with_capacity(plans.len() + usize::from(options.suffix_enabled));
 
@@ -192,7 +313,11 @@ fn generate_hostname_with_plans(
     }
 
     if options.suffix_enabled {
-        parts.push(compute_suffix(options)?);
+        if options.suffix_source == SuffixSource::Atomic {
+            parts.push(next_atomic_suffix()?);
+        } else {
+            parts.push(compute_suffix(options)?);
+        }
     }
 
     if parts.is_empty() {
@@ -202,7 +327,18 @@ fn generate_hostname_with_plans(
     Ok(parts.join("-"))
 }
 
+fn atomic_suffix_without_profile() -> Result<String> {
+    bail!("suffix source 'atomic' requires a profile database")
+}
+
 fn build_word_plans(options: &GenerateOptions) -> Result<Vec<SelectionPlan>> {
+    build_word_plans_with_distinct_check(options, true)
+}
+
+fn build_word_plans_with_distinct_check(
+    options: &GenerateOptions,
+    require_enough_distinct_words: bool,
+) -> Result<Vec<SelectionPlan>> {
     validate_options(options)?;
 
     let mut plans = Vec::new();
@@ -221,7 +357,7 @@ fn build_word_plans(options: &GenerateOptions) -> Result<Vec<SelectionPlan>> {
         )?);
     }
 
-    if plans.len() > 1 {
+    if require_enough_distinct_words && plans.len() > 1 {
         let distinct = plans
             .iter()
             .flat_map(SelectionPlan::all_words)
@@ -327,7 +463,31 @@ fn compute_suffix(options: &GenerateOptions) -> Result<String> {
             Ok(hex_prefix(&digest, options.suffix_length).expect("sha1 hex prefix"))
         }
         (SuffixSource::Atomic, _) => {
-            bail!("suffix source 'atomic' is not yet implemented; requires the profile layer")
+            bail!("suffix source 'atomic' requires a profile database")
+        }
+    }
+}
+
+pub fn compute_atomic_suffix(
+    profile_id: Uuid,
+    atomic_value: i64,
+    suffix_hash: SuffixHash,
+    suffix_length: usize,
+) -> Result<String> {
+    if atomic_value < 1 {
+        bail!("atomic value must be at least 1");
+    }
+    if !(MIN_SUFFIX_LENGTH..=MAX_SUFFIX_LENGTH).contains(&suffix_length) {
+        bail!("suffix length must be between {MIN_SUFFIX_LENGTH} and {MAX_SUFFIX_LENGTH}");
+    }
+
+    match suffix_hash {
+        SuffixHash::Sha1 => {
+            let mut hasher = Sha1::new();
+            hasher.update(profile_id.as_bytes());
+            hasher.update(atomic_value.to_be_bytes());
+            let digest = hasher.finalize();
+            Ok(hex_prefix(&digest, suffix_length).expect("sha1 hex prefix"))
         }
     }
 }
@@ -368,6 +528,36 @@ fn nibble_to_hex(nibble: u8) -> Option<char> {
         10..=15 => Some(char::from(b'a' + (nibble - 10))),
         _ => None,
     }
+}
+
+fn decimal_power(base: u32, exponent: usize) -> String {
+    let mut value = "1".to_owned();
+    for _ in 0..exponent {
+        value = decimal_multiply(&value, u128::from(base));
+    }
+    value
+}
+
+fn decimal_multiply(value: &str, multiplier: u128) -> String {
+    if multiplier == 0 || value == "0" {
+        return "0".to_owned();
+    }
+
+    let mut carry = 0u128;
+    let mut digits = Vec::with_capacity(value.len() + 40);
+    for digit in value.bytes().rev() {
+        let product = u128::from(digit - b'0') * multiplier + carry;
+        digits.push(char::from(
+            b'0' + u8::try_from(product % 10).expect("digit"),
+        ));
+        carry = product / 10;
+    }
+    while carry > 0 {
+        digits.push(char::from(b'0' + u8::try_from(carry % 10).expect("digit")));
+        carry /= 10;
+    }
+
+    digits.iter().rev().collect()
 }
 
 pub fn parse_categories(value: &str) -> std::result::Result<Vec<String>, String> {
@@ -677,14 +867,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_atomic_source_until_profile_layer_lands() {
+    fn rejects_atomic_source_without_profile_database() {
         let error = generate_hostname(GenerateOptions {
             suffix_source: SuffixSource::Atomic,
             ..GenerateOptions::default()
         })
         .expect_err("error");
 
-        assert!(error.to_string().contains("not yet implemented"));
+        assert!(error.to_string().contains("requires a profile database"));
     }
 
     #[test]
@@ -770,6 +960,45 @@ mod tests {
     }
 
     #[test]
+    fn generate_many_with_atomic_suffix_calls_provider_per_hostname() {
+        let mut value = 0;
+        let hostnames = generate_many_with_atomic_suffix(
+            GenerateOptions {
+                count: 3,
+                suffix_source: SuffixSource::Atomic,
+                suffix_length: 4,
+                ..GenerateOptions::default()
+            },
+            || {
+                value += 1;
+                Ok(format!("{value:04x}"))
+            },
+        )
+        .expect("hostnames");
+
+        assert_eq!(hostnames.len(), 3);
+        assert_eq!(value, 3);
+        assert!(hostnames[0].ends_with("-0001"));
+        assert!(hostnames[1].ends_with("-0002"));
+        assert!(hostnames[2].ends_with("-0003"));
+    }
+
+    #[test]
+    fn atomic_suffix_is_stable_per_profile_and_value() {
+        let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+
+        let first = compute_atomic_suffix(profile_id, 1, SuffixHash::Sha1, 8).expect("suffix");
+        let first_again =
+            compute_atomic_suffix(profile_id, 1, SuffixHash::Sha1, 8).expect("suffix");
+        let second = compute_atomic_suffix(profile_id, 2, SuffixHash::Sha1, 8).expect("suffix");
+
+        assert_eq!(first, first_again);
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 8);
+        assert!(compute_atomic_suffix(profile_id, 0, SuffixHash::Sha1, 8).is_err());
+    }
+
+    #[test]
     fn overrides_apply_per_field() {
         let options = GenerateOptions::default().with_overrides(GenerateOverrides {
             word1_categories: Some(vec!["star".to_owned()]),
@@ -781,6 +1010,88 @@ mod tests {
         assert_eq!(options.word1_categories, vec!["star"]);
         assert_eq!(options.word1_lengths.as_deref(), Some(&[6][..]));
         assert!(!options.suffix_enabled);
-        assert_eq!(options.word2_categories, vec!["animal"]);
+        assert_eq!(
+            options.word2_categories,
+            DEFAULT_WORD2_CATEGORIES
+                .iter()
+                .map(|category| (*category).to_owned())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn default_categories_match_profile_policy() {
+        let options = GenerateOptions::default();
+
+        assert_eq!(options.word1_categories, vec!["adjective", "adverb"]);
+        assert!(options.word2_categories.contains(&"animal".to_owned()));
+        assert!(!options.word2_categories.contains(&"adjective".to_owned()));
+        assert!(!options.word2_categories.contains(&"adverb".to_owned()));
+        assert!(!options.word2_categories.contains(&"diceware".to_owned()));
+    }
+
+    #[test]
+    fn capacity_report_counts_unique_pairs_and_suffix_space() {
+        let diceware_count = dictionary::words("diceware", 5).expect("diceware").len();
+        let report = capacity_report(&GenerateOptions {
+            word1_categories: vec!["diceware".to_owned()],
+            word2_categories: vec!["diceware".to_owned()],
+            word1_lengths: Some(vec![5]),
+            word2_lengths: Some(vec![5]),
+            suffix_length: 5,
+            ..GenerateOptions::default()
+        })
+        .expect("report");
+
+        assert_eq!(report.word1_count, Some(diceware_count));
+        assert_eq!(report.word2_count, Some(diceware_count));
+        assert_eq!(report.overlapping_words, diceware_count);
+        assert_eq!(
+            report.unique_word_combinations,
+            (diceware_count as u128) * (diceware_count as u128) - diceware_count as u128
+        );
+        assert_eq!(report.suffix_variants.as_deref(), Some("1048576"));
+        assert_eq!(report.suffix_bits, Some(20));
+    }
+
+    #[test]
+    fn capacity_report_handles_suffix_only_large_hash_space() {
+        let report = capacity_report(&GenerateOptions {
+            word1_enabled: false,
+            word2_enabled: false,
+            suffix_length: MAX_SUFFIX_LENGTH,
+            ..GenerateOptions::default()
+        })
+        .expect("report");
+
+        assert_eq!(report.unique_word_combinations, 1);
+        assert_eq!(report.suffix_bits, Some(160));
+        assert_eq!(
+            report.suffix_variants.as_deref(),
+            Some("1461501637330902918203684832716283019655932542976")
+        );
+        assert_eq!(
+            report.total_variants,
+            "1461501637330902918203684832716283019655932542976"
+        );
+    }
+
+    #[test]
+    fn capacity_report_can_return_zero_unique_word_pairs() {
+        let report = capacity_report(&GenerateOptions {
+            word1_categories: vec!["planet".to_owned()],
+            word2_categories: vec!["planet".to_owned()],
+            word1_lengths: Some(vec![8]),
+            word2_lengths: Some(vec![8]),
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        })
+        .expect("report");
+
+        assert_eq!(report.word1_count, Some(1));
+        assert_eq!(report.word2_count, Some(1));
+        assert_eq!(report.overlapping_words, 1);
+        assert_eq!(report.unique_word_combinations, 0);
+        assert_eq!(report.total_variants, "0");
     }
 }

@@ -1,28 +1,11 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 #
-# Hoststamp configuration. Every section is optional; missing keys fall through
-# to the next precedence level: CLI flags > environment variables > this file >
-# built-in defaults.
+# Hoststamp bootstrap configuration. Generator profile defaults live in the
+# profile database; CLI/API request options can override them at generation time.
 
 [server]
 addr = "127.0.0.1:8080"
 
-# Generator defaults. Omitted keys keep their built-in default.
-[generate]
-count = 1
-
-[generate.word1]
-enabled    = true
-lengths    = [5]                  # omit the key (or set "any") to allow any length
-categories = ["adjective"]
-
-[generate.word2]
-enabled    = true
-lengths    = [5]
-categories = ["animal"]
-
-[generate.suffix]
-enabled = true
-length  = 5                       # bounded to [4, 40]
-source  = "random"                # "atomic" is reserved for the future profile layer
-hash    = "sha1"
+[storage]
+# Defaults to hoststamp.db next to this config file.
+# url = "sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db"

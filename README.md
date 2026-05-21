@@ -21,6 +21,8 @@ cargo run -p hoststamp -- --version
 cargo run -p hoststamp -- --credits
 cargo run -p hoststamp -- --list-categories
 cargo run -p hoststamp -- generate
+cargo run -p hoststamp -- config show
+cargo run -p hoststamp -- --profile staging generate
 ```
 
 Generate hostnames:
@@ -35,11 +37,15 @@ cargo run -p hoststamp -- generate --word1-lengths any --word2-lengths any
 cargo run -p hoststamp -- generate --suffix-length 10
 cargo run -p hoststamp -- generate --no-suffix
 cargo run -p hoststamp -- generate --no-word2 --no-suffix
+cargo run -p hoststamp -- --profile team-a generate
+cargo run -p hoststamp -- --capacity --word1-lengths 5 --word2-lengths 5
 ```
 
 Hostnames are assembled from three positions: `word1`, `word2`, and `suffix`.
-The default shape is `word1-word2-suffix` (e.g. `5/5/5`) with `adjective` for
-`word1` and `animal` for `word2`. Each word position has independent
+The selected profile supplies the default generator settings. The built-in
+profile seed is `word1-word2-suffix` (e.g. `5/5/5`) with `adjective,adverb`
+for `word1` and all non-`adjective`, non-`adverb`, non-`diceware` categories
+for `word2`. Each word position has independent
 disable, lengths, and categories controls (`--no-word1`, `--word1-lengths`,
 `--word1-categories`, and the matching `word2` flags). The suffix has
 `--no-suffix`, `--suffix-length`, `--suffix-source`, and `--suffix-hash`.
@@ -52,11 +58,19 @@ weighted by available word count so every candidate word has an even chance.
 If the selected categories do not contain enough matching words, generation
 fails loudly.
 
+Use `--capacity` with any generator option set to report the available name
+space without generating or modifying a profile. The report includes the
+candidate count for each word position, overlap removed by the no-repeat rule,
+unique word combinations, suffix variants, suffix bits, and total variants.
+For a truncated hex suffix, variants are `16^suffix_length` and bits are
+`4 * suffix_length`; this is the available suffix space, not a guarantee that
+hash collisions cannot happen.
+
 The suffix is a hex truncation of a hash. `--suffix-length` is bounded to
 `[4, 40]` (SHA-1 hex length). `--suffix-source random` (default) hashes a
-random UUID; `--suffix-source atomic` is reserved for the future deterministic
-mode and is rejected today. `--suffix-hash sha1` is the only supported hash
-for now.
+random UUID. `--suffix-source atomic` hashes the selected profile UUID with a
+database-backed counter. `--suffix-hash sha1` is the only supported hash for
+now.
 
 Category stats from the generated artifact:
 
@@ -94,13 +108,13 @@ Local endpoints:
 - Container health: `http://127.0.0.1:8080/healthz`
 
 `/api/generate` returns JSON with a `hostnames` array. Query parameters mirror
-the generator config names, including `count`, `word1_lengths`,
+the generator option names, including `count`, `word1_lengths`,
 `word1_categories`, `word2_lengths`, `word2_categories`, `suffix_enabled`,
 `suffix_length`, `suffix_source`, and `suffix_hash`.
 
 ### Configuration
 
-Hoststamp reads configuration from the first available source:
+Hoststamp reads bootstrap configuration from the first available source:
 
 1. `--config <path>`
 2. `HOSTSTAMP_CONFIG=<path>`
@@ -108,32 +122,17 @@ Hoststamp reads configuration from the first available source:
 4. `~/.config/hoststamp/config.toml`
 5. Built-in defaults
 
-CLI flags override environment variables, environment variables override
-the config file, and the config file overrides built-in defaults. Every
-generator field is settable through all three layers.
+The bootstrap config handles server and storage settings. Generator profile
+defaults are stored in the profile database. The default database path is
+`$XDG_CONFIG_HOME/hoststamp/hoststamp.db`, falling back to
+`~/.config/hoststamp/hoststamp.db`; it sits next to the default config file.
 
 ```toml
 [server]
 addr = "127.0.0.1:8080"
 
-[generate]
-count = 1
-
-[generate.word1]
-enabled    = true
-lengths    = [5]                  # omit (or set "any") to allow any length
-categories = ["adjective"]
-
-[generate.word2]
-enabled    = true
-lengths    = [5]
-categories = ["animal"]
-
-[generate.suffix]
-enabled = true
-length  = 5                       # bounded to [4, 40]
-source  = "random"                # "atomic" reserved for the future profile layer
-hash    = "sha1"
+[storage]
+# url = "sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db"
 ```
 
 Environment variables (all `HOSTSTAMP_*`):
@@ -142,21 +141,39 @@ Environment variables (all `HOSTSTAMP_*`):
 | --- | --- |
 | `HOSTSTAMP_CONFIG` | path to the config file |
 | `HOSTSTAMP_ADDR` | `server.addr` |
-| `HOSTSTAMP_COUNT` | `generate.count` |
-| `HOSTSTAMP_WORD1_ENABLED` | `generate.word1.enabled` (`true`/`false`) |
-| `HOSTSTAMP_WORD1_LENGTHS` | `generate.word1.lengths` (csv ints or `any`) |
-| `HOSTSTAMP_WORD1_CATEGORIES` | `generate.word1.categories` (csv) |
-| `HOSTSTAMP_WORD2_ENABLED` / `_LENGTHS` / `_CATEGORIES` | mirror of word1 |
-| `HOSTSTAMP_SUFFIX_ENABLED` | `generate.suffix.enabled` |
-| `HOSTSTAMP_SUFFIX_LENGTH` | `generate.suffix.length` |
-| `HOSTSTAMP_SUFFIX_SOURCE` | `generate.suffix.source` |
-| `HOSTSTAMP_SUFFIX_HASH` | `generate.suffix.hash` |
+| `HOSTSTAMP_DATABASE_URL` | `storage.url` |
+
+Profiles are selected with `--profile <slug>`. The default profile slug is `_`,
+which is reserved and cannot be used as a normal user slug. User slugs use
+lowercase ASCII letters, digits, and hyphens, and must start and end with a
+letter or digit. Missing profiles are seeded from the built-in `5/5/5`
+generator defaults on first use.
+
+Use `hoststamp config show` to print the resolved bootstrap settings, selected
+profile metadata, stored profile config, and effective generator config after
+CLI request options are applied. Database URLs that could contain secrets are
+redacted.
+
+Atomic suffix generation treats the selected profile config as part of the
+identity used for deterministic suffixes. If `--suffix-source atomic` is active
+and CLI options differ from the stored profile config, Hoststamp asks for two
+confirmations before replacing the active profile row. Replacement creates a
+new profile UUID and resets that profile's atomic counter. `--count` is a
+request option only and does not trigger profile replacement. API requests
+cannot provide interactive confirmation, so atomic requests with profile config
+overrides are rejected; use the CLI to confirm a profile replacement first.
+
+SQLite storage is implemented for local profiles. `postgres://` and
+`postgresql://` URLs are recognized as planned remote storage backends, but
+Postgres execution is not implemented yet.
 
 For containers, mount a config file and set `HOSTSTAMP_CONFIG`:
 
 ```sh
 docker run --rm -p 8080:8080 \
   -e HOSTSTAMP_CONFIG=/etc/hoststamp/config.toml \
+  -e HOSTSTAMP_DATABASE_URL=sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db \
+  -v hoststamp-data:/home/hoststamp/.config/hoststamp \
   -v "$PWD/config.example.toml:/etc/hoststamp/config.toml:ro" \
   hoststamp:dev
 ```

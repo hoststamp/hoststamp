@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use axum::{body::Body, http};
-use hoststamp::{generator::GenerateOptions, server};
+use hoststamp::{
+    generator::{GenerateOptions, SuffixSource},
+    profile::{ProfileConfig, ProfileSlug},
+    server,
+    storage::{ProfileStore, StorageUrl},
+};
 use http_body_util::BodyExt;
+use rusqlite::Connection;
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::ServiceExt;
 
@@ -206,6 +212,209 @@ async fn generate_endpoint_honors_count_query() {
     let hostnames = payload["hostnames"].as_array().expect("hostnames");
 
     assert_eq!(hostnames.len(), 3);
+}
+
+#[tokio::test]
+async fn generate_endpoint_supports_atomic_suffix_with_profile_context() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let atomic_config = ProfileConfig::from(&GenerateOptions {
+        suffix_source: SuffixSource::Atomic,
+        ..GenerateOptions::default()
+    });
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &atomic_config)
+        .expect("profile");
+
+    let response = server::app_with_atomic(
+        GenerateOptions {
+            suffix_source: SuffixSource::Atomic,
+            ..GenerateOptions::default()
+        },
+        Some(server::AtomicContext::new(store, slug.clone())),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/generate?count=2")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+
+    assert_eq!(hostnames.len(), 2);
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    assert_eq!(
+        store
+            .load_or_seed_profile(&slug, &ProfileConfig::default())
+            .expect("profile")
+            .last_atomic_value,
+        2
+    );
+}
+
+#[tokio::test]
+async fn generate_endpoint_reloads_active_atomic_profile() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let atomic_options = GenerateOptions {
+        suffix_source: SuffixSource::Atomic,
+        ..GenerateOptions::default()
+    };
+    let replacement_options = GenerateOptions {
+        word1_lengths: Some(vec![4]),
+        suffix_source: SuffixSource::Atomic,
+        ..GenerateOptions::default()
+    };
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::from(&atomic_options))
+        .expect("profile");
+
+    let app = server::app_with_atomic(
+        atomic_options,
+        Some(server::AtomicContext::new(store, slug.clone())),
+    );
+
+    let mut replacement_store = ProfileStore::open(&database_url).expect("replacement store");
+    let replacement = replacement_store
+        .replace_profile_config(&slug, &ProfileConfig::from(&replacement_options))
+        .expect("replacement");
+
+    let response = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/generate")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    let hostname = hostnames[0].as_str().expect("hostname");
+    let parts = hostname.split('-').collect::<Vec<_>>();
+
+    assert_eq!(parts[0].chars().count(), 4);
+    assert_eq!(
+        replacement_store
+            .load_or_seed_profile(&slug, &ProfileConfig::default())
+            .expect("profile")
+            .id,
+        replacement.id
+    );
+    assert_eq!(
+        replacement_store
+            .load_or_seed_profile(&slug, &ProfileConfig::default())
+            .expect("profile")
+            .last_atomic_value,
+        1
+    );
+}
+
+#[tokio::test]
+async fn generate_endpoint_rejects_atomic_profile_config_overrides() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let atomic_config = ProfileConfig::from(&GenerateOptions {
+        suffix_source: SuffixSource::Atomic,
+        ..GenerateOptions::default()
+    });
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &atomic_config)
+        .expect("profile");
+
+    let response = server::app_with_atomic(
+        GenerateOptions {
+            suffix_source: SuffixSource::Atomic,
+            ..GenerateOptions::default()
+        },
+        Some(server::AtomicContext::new(store, slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/generate?word1_lengths=4")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn generate_endpoint_returns_internal_error_for_atomic_increment_failures() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let path = tempdir.path().join("hoststamp.db");
+    let database_url = StorageUrl::Sqlite(path.clone());
+    let slug = ProfileSlug::default_profile();
+    let atomic_config = ProfileConfig::from(&GenerateOptions {
+        suffix_source: SuffixSource::Atomic,
+        ..GenerateOptions::default()
+    });
+    let mut setup_store = ProfileStore::open(&database_url).expect("store");
+    setup_store
+        .load_or_seed_profile(&slug, &atomic_config)
+        .expect("profile");
+    drop(setup_store);
+
+    Connection::open(&path)
+        .expect("connection")
+        .execute_batch(
+            "
+            CREATE TRIGGER fail_atomic_increment
+            BEFORE UPDATE OF last_atomic_value ON hoststamp_profiles
+            BEGIN
+                SELECT RAISE(FAIL, 'forced atomic increment failure');
+            END;
+            ",
+        )
+        .expect("trigger");
+
+    let store = ProfileStore::open(&database_url).expect("store");
+    let response = server::app_with_atomic(
+        GenerateOptions {
+            suffix_source: SuffixSource::Atomic,
+            ..GenerateOptions::default()
+        },
+        Some(server::AtomicContext::new(store, slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/generate")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
