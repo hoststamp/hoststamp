@@ -60,11 +60,14 @@ Don't mutate state outside the working tree without being told to.
 - Test: `cargo test --all-targets`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format check: `cargo fmt --all -- --check`
-- Coverage: `cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 60`
+- Coverage: `cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 90`
+- Audit dependencies: `mise run audit`
+- Secret scan: `mise run secret-scan`
+- Security scan: `mise run security-scan`
 - Docker build: `docker build -t hoststamp:dev .`
 - Dev server: `cargo run -p hoststamp -- serve`
 
-If the local shell refuses to load `.mise.toml` because it is not trusted, prefix commands with `MISE_TRUSTED_CONFIG_PATHS=$PWD` instead of changing global trust state.
+If the local shell refuses to load `mise.toml` because it is not trusted, prefix commands with `MISE_TRUSTED_CONFIG_PATHS=$PWD` instead of changing global trust state.
 
 ## Project Conventions
 - Use `Hoststamp` for product and documentation prose.

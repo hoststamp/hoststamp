@@ -184,9 +184,20 @@ docker run --rm -p 8080:8080 \
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
+cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 90
 cargo build --release --locked
 docker build -t hoststamp:dev .
 ```
+
+The same local checks are available through `mise`:
+
+```sh
+mise install --locked
+mise run ci
+```
+
+Run individual `mise` tasks when you only need one check. Tool versions are
+pinned in `mise.toml` and locked in `mise.lock`.
 
 ### Docker
 
@@ -198,10 +209,11 @@ docker run --rm -p 8080:8080 hoststamp:dev
 ### Automation
 
 CI validates formatting, clippy, tests with coverage, release builds,
-third-party notice drift, workflow syntax, and the Docker image. Pull requests
-run a fast amd64 Docker smoke build. Pushes to `main` publish multi-arch
-nightly images to GHCR tagged as `nightly`, `sha-<short>`, and
-`vX.Y.Z-nightly.YYYYMMDD.N`. Cargo audit and Dependabot run weekly.
+third-party notice drift, workflow syntax, dependency advisories, secret
+leaks, filesystem vulnerability/misconfiguration scans, and the Docker image.
+Pull requests run a fast amd64 Docker smoke build. Pushes to `main` publish
+multi-arch nightly images to GHCR tagged as `nightly`, `sha-<short>`, and
+`vX.Y.Z-nightly.YYYYMMDD.N`. Cargo audit and Dependabot also run weekly.
 
 ## License
 
