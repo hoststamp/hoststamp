@@ -105,6 +105,100 @@ impl ProfileStore {
         Ok(profile)
     }
 
+    pub fn load_profile(&self, slug: &ProfileSlug) -> Result<StoredProfile> {
+        select_profile(&self.connection, slug)
+    }
+
+    pub fn list_profiles(&self) -> Result<Vec<StoredProfile>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, slug, config_json, config_hash, last_atomic_value
+             FROM hoststamp_profiles
+             WHERE replaced_at_ms IS NULL
+             ORDER BY slug ASC",
+        )?;
+        let profiles = statement
+            .query_map([], profile_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(profiles)
+    }
+
+    pub fn create_profile(
+        &mut self,
+        slug: &ProfileSlug,
+        config: &ProfileConfig,
+    ) -> Result<StoredProfile> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        if active_profile_exists(&tx, slug)? {
+            bail!("profile {:?} already exists", slug.as_str());
+        }
+
+        let now = unix_epoch_millis()?;
+        let config_json = serde_json::to_string(config)?;
+        let config_hash = config_hash(config)?;
+        tx.execute(
+            "INSERT INTO hoststamp_profiles (
+                id, slug, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+            params![
+                Uuid::now_v7().as_bytes().as_slice(),
+                slug.as_str(),
+                config_json,
+                config_hash.as_slice(),
+                now,
+            ],
+        )?;
+
+        let profile = select_profile(&tx, slug)?;
+        tx.commit()?;
+        Ok(profile)
+    }
+
+    pub fn delete_profile(&mut self, slug: &ProfileSlug) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = unix_epoch_millis()?;
+        let changed = tx.execute(
+            "UPDATE hoststamp_profiles
+             SET replaced_at_ms = ?1,
+                 updated_at_ms = ?1
+             WHERE slug = ?2 AND replaced_at_ms IS NULL",
+            params![now, slug.as_str()],
+        )?;
+        if changed == 0 {
+            bail!("profile {:?} does not exist", slug.as_str());
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn reset_atomic_value(
+        &mut self,
+        slug: &ProfileSlug,
+        atomic_value: i64,
+    ) -> Result<StoredProfile> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = unix_epoch_millis()?;
+        let changed = tx.execute(
+            "UPDATE hoststamp_profiles
+             SET last_atomic_value = ?1,
+                 updated_at_ms = ?2
+             WHERE slug = ?3 AND replaced_at_ms IS NULL",
+            params![atomic_value, now, slug.as_str()],
+        )?;
+        if changed == 0 {
+            bail!("profile {:?} does not exist", slug.as_str());
+        }
+        let profile = select_profile(&tx, slug)?;
+        tx.commit()?;
+        Ok(profile)
+    }
+
     pub fn increment_atomic_value(&mut self, slug: &ProfileSlug) -> Result<i64> {
         let tx = self
             .connection
@@ -296,42 +390,52 @@ fn select_profile(connection: &Connection, slug: &ProfileSlug) -> Result<StoredP
              FROM hoststamp_profiles
              WHERE slug = ?1 AND replaced_at_ms IS NULL",
             params![slug.as_str()],
-            |row| {
-                let id_blob: Vec<u8> = row.get(0)?;
-                let slug_value: String = row.get(1)?;
-                let config_json: String = row.get(2)?;
-                let config_hash_blob: Vec<u8> = row.get(3)?;
-                let last_atomic_value: i64 = row.get(4)?;
-                Ok((
-                    id_blob,
-                    slug_value,
-                    config_json,
-                    config_hash_blob,
-                    last_atomic_value,
-                ))
-            },
+            profile_from_row,
         )
         .optional()?
-        .context("profile was not found after seeding")
-        .and_then(
-            |(id_blob, slug_value, config_json, config_hash_blob, last_atomic_value)| {
-                let id = Uuid::from_slice(&id_blob).context("stored profile id is not a UUID")?;
-                let slug = slug_value
-                    .parse::<ProfileSlug>()
-                    .map_err(anyhow::Error::msg)
-                    .context("stored profile slug is invalid")?;
-                let config = serde_json::from_str::<ProfileConfig>(&config_json)
-                    .context("stored profile config is invalid")?;
-                let config_hash = fixed_hash(config_hash_blob)?;
-                Ok(StoredProfile {
-                    id,
-                    slug,
-                    config,
-                    config_hash,
-                    last_atomic_value,
-                })
-            },
-        )
+        .with_context(|| format!("profile {:?} does not exist", slug.as_str()))
+}
+
+fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProfile> {
+    let id_blob: Vec<u8> = row.get(0)?;
+    let slug_value: String = row.get(1)?;
+    let config_json: String = row.get(2)?;
+    let config_hash_blob: Vec<u8> = row.get(3)?;
+    let last_atomic_value: i64 = row.get(4)?;
+    stored_profile_from_parts(
+        id_blob,
+        slug_value,
+        config_json,
+        config_hash_blob,
+        last_atomic_value,
+    )
+    .map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into())
+    })
+}
+
+fn stored_profile_from_parts(
+    id_blob: Vec<u8>,
+    slug_value: String,
+    config_json: String,
+    config_hash_blob: Vec<u8>,
+    last_atomic_value: i64,
+) -> Result<StoredProfile> {
+    let id = Uuid::from_slice(&id_blob).context("stored profile id is not a UUID")?;
+    let slug = slug_value
+        .parse::<ProfileSlug>()
+        .map_err(anyhow::Error::msg)
+        .context("stored profile slug is invalid")?;
+    let config = serde_json::from_str::<ProfileConfig>(&config_json)
+        .context("stored profile config is invalid")?;
+    let config_hash = fixed_hash(config_hash_blob)?;
+    Ok(StoredProfile {
+        id,
+        slug,
+        config,
+        config_hash,
+        last_atomic_value,
+    })
 }
 
 fn fixed_hash(value: Vec<u8>) -> Result<[u8; 32]> {
@@ -526,6 +630,33 @@ mod tests {
             )
             .expect("retired value");
         assert_eq!(retired_atomic_value, 1);
+    }
+
+    #[test]
+    fn profile_admin_methods_manage_active_profiles() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let seed = ProfileConfig::default();
+
+        let created = store.create_profile(&slug, &seed).expect("created");
+        assert_eq!(created.slug, slug);
+        assert_eq!(store.list_profiles().expect("profiles").len(), 1);
+
+        let reset = store
+            .reset_atomic_value(&slug, 10)
+            .expect("reset atomic value");
+        assert_eq!(reset.last_atomic_value, 10);
+        assert_eq!(store.increment_atomic_value(&slug).expect("value"), 11);
+
+        store.delete_profile(&slug).expect("delete");
+        assert!(store.load_profile(&slug).is_err());
+        assert!(store.list_profiles().expect("profiles").is_empty());
+
+        let recreated = store.create_profile(&slug, &seed).expect("recreated");
+        assert_ne!(recreated.id, created.id);
+        assert_eq!(recreated.last_atomic_value, 0);
     }
 
     #[test]

@@ -23,6 +23,8 @@ cargo run -p hoststamp -- --list-categories
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- regenerate --atomic-value 42
 cargo run -p hoststamp -- config show
+cargo run -p hoststamp -- profile list
+cargo run -p hoststamp -- --profile staging profile show
 cargo run -p hoststamp -- --profile staging generate
 ```
 
@@ -42,6 +44,8 @@ cargo run -p hoststamp -- generate --no-word2 --no-suffix
 cargo run -p hoststamp -- --profile team-a generate
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --json
+cargo run -p hoststamp -- --profile team-a profile new
+cargo run -p hoststamp -- --profile team-a profile reset-atomic-value --atomic-value 999
 cargo run -p hoststamp -- --capacity --word1-lengths 5 --word2-lengths 5
 ```
 
@@ -218,6 +222,23 @@ which is reserved and cannot be used as a normal user slug. User slugs use
 lowercase ASCII letters, digits, and hyphens, and must start and end with a
 letter or digit. Missing profiles are seeded from the built-in `5/5/5`
 generator defaults on first use.
+
+Profile management commands operate on active profile rows:
+
+```sh
+hoststamp profile list
+hoststamp --profile team-a profile show
+hoststamp --profile team-a profile new
+hoststamp --profile team-a profile delete
+hoststamp --profile team-a profile reset-atomic-value --atomic-value 999
+```
+
+`profile delete` and `profile reset-atomic-value` require two interactive
+confirmations. `reset-atomic-value` sets the stored `last_atomic_value`; the
+next profile-backed generation increments first and uses the following value.
+For example, resetting to `999` makes the next generated hostname use atomic
+value `1000`. Lowering the stored value can duplicate previously issued names,
+and raising it skips part of the deterministic sequence.
 
 Use `hoststamp config show` to print the resolved bootstrap settings, selected
 profile metadata, stored profile config, and effective generator config after

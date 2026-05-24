@@ -62,6 +62,7 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("--profile"))
             .and(predicate::str::contains("--database-url"))
             .and(predicate::str::contains("regenerate"))
+            .and(predicate::str::contains("profile"))
             .and(predicate::str::contains("config")),
     );
 }
@@ -354,6 +355,83 @@ fn config_show_prints_bootstrap_profile_and_effective_generate_config() {
                 .and(predicate::str::contains("[effective.generate.request]"))
                 .and(predicate::str::contains("count = 2")),
         );
+}
+
+#[test]
+fn profile_commands_create_show_list_and_delete_profiles() {
+    let (mut create, tempdir) = command_with_database();
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("[profile]")
+                .and(predicate::str::contains(r#"slug = "team-a""#))
+                .and(predicate::str::contains("last_atomic_value = 0")),
+        );
+
+    let database = tempdir.path().join("hoststamp.db");
+    let mut list = command_for_database(&database);
+    list.arg("profile").arg("list").assert().success().stdout(
+        predicate::str::contains("slug\tid\tlast_atomic_value")
+            .and(predicate::str::contains("team-a\t"))
+            .and(predicate::str::contains("\t0")),
+    );
+
+    let mut show = command_for_database(&database);
+    show.args(["--profile", "team-a", "profile", "show"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r#"slug = "team-a""#)
+                .and(predicate::str::contains("[profile.config.word1]")),
+        );
+
+    let mut delete = command_for_database(&database);
+    delete
+        .args(["--profile", "team-a", "profile", "delete"])
+        .write_stdin("team-a\ndelete\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"deleted profile "team-a""#))
+        .stderr(predicate::str::contains("confirm profile deletion"));
+
+    let mut deleted_show = command_for_database(&database);
+    deleted_show
+        .args(["--profile", "team-a", "profile", "show"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "profile \"team-a\" does not exist",
+        ));
+}
+
+#[test]
+fn profile_reset_atomic_value_sets_the_stored_counter() {
+    let (mut generate, tempdir) = command_with_database();
+    generate.arg("generate").assert().success();
+
+    let database = tempdir.path().join("hoststamp.db");
+    let mut reset = command_for_database(&database);
+    reset
+        .args(["profile", "reset-atomic-value", "--atomic-value", "10"])
+        .write_stdin("_\nreset\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("last_atomic_value = 10"))
+        .stderr(
+            predicate::str::contains("changes its stored atomic value from 1 to 10").and(
+                predicate::str::contains(
+                    "The next profile-backed generation will use atomic value 11",
+                ),
+            ),
+        );
+
+    let mut next = command_for_database(&database);
+    let assert = next.args(["generate", "--json"]).assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    assert_eq!(payload["hostnames"][0]["atomic_value"], 11);
 }
 
 #[test]

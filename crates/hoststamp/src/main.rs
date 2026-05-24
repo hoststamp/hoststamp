@@ -173,6 +173,11 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Inspect or manage Hoststamp profiles.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
     /// Run the API server and local UX.
     Serve {
         /// Address the server should bind to.
@@ -190,6 +195,24 @@ enum Command {
 enum ConfigCommand {
     /// Print the resolved bootstrap and profile configuration.
     Show,
+}
+
+#[derive(Subcommand, Debug)]
+enum ProfileCommand {
+    /// List active profiles.
+    List,
+    /// Show the selected active profile.
+    Show,
+    /// Create the selected profile with default generator settings.
+    New,
+    /// Delete the selected active profile.
+    Delete,
+    /// Reset the selected profile's stored atomic value.
+    ResetAtomicValue {
+        /// Stored atomic value to reset to.
+        #[arg(long, value_parser = parse_stored_atomic_value)]
+        atomic_value: i64,
+    },
 }
 
 #[tokio::main]
@@ -240,6 +263,44 @@ async fn main() -> anyhow::Result<()> {
             let options = cli.generate.options(base)?;
             print_config_show(&settings, &profile, &options);
             Ok(())
+        }
+        Command::Profile { command } => {
+            let settings = config::load(Overrides {
+                config_path: cli.config.clone(),
+                addr: None,
+                database_url: cli.database_url.clone(),
+            })?;
+            let mut store = ProfileStore::open(&settings.database_url)?;
+            match command {
+                ProfileCommand::List => {
+                    print_profile_list(&store.list_profiles()?);
+                    Ok(())
+                }
+                ProfileCommand::Show => {
+                    let profile = store.load_profile(&cli.profile)?;
+                    print_profile_show(&profile);
+                    Ok(())
+                }
+                ProfileCommand::New => {
+                    let profile = store.create_profile(&cli.profile, &ProfileConfig::default())?;
+                    print_profile_show(&profile);
+                    Ok(())
+                }
+                ProfileCommand::Delete => {
+                    let profile = store.load_profile(&cli.profile)?;
+                    confirm_profile_delete(&profile)?;
+                    store.delete_profile(&cli.profile)?;
+                    println!("deleted profile {:?}", cli.profile.as_str());
+                    Ok(())
+                }
+                ProfileCommand::ResetAtomicValue { atomic_value } => {
+                    let profile = store.load_profile(&cli.profile)?;
+                    confirm_atomic_value_reset(&profile, atomic_value)?;
+                    let profile = store.reset_atomic_value(&cli.profile, atomic_value)?;
+                    print_profile_show(&profile);
+                    Ok(())
+                }
+            }
         }
         Command::Generate => {
             let settings = config::load(Overrides {
@@ -486,16 +547,31 @@ fn print_config_show(
     );
     println!();
 
+    print_profile_show(profile);
+    println!();
+    print_generate_options("effective.generate", options);
+}
+
+fn print_profile_list(profiles: &[StoredProfile]) {
+    println!("slug\tid\tlast_atomic_value");
+    for profile in profiles {
+        println!(
+            "{}\t{}\t{}",
+            profile.slug.as_str(),
+            profile.id,
+            profile.last_atomic_value
+        );
+    }
+}
+
+fn print_profile_show(profile: &StoredProfile) {
     println!("[profile]");
     println!("slug = {:?}", profile.slug.as_str());
     println!("id = {:?}", profile.id.to_string());
     println!("last_atomic_value = {}", profile.last_atomic_value);
     println!("config_hash = {:?}", hex_string(&profile.config_hash));
     println!();
-
     print_profile_config("profile.config", &profile.config);
-    println!();
-    print_generate_options("effective.generate", options);
 }
 
 fn print_profile_config(prefix: &str, config: &ProfileConfig) {
@@ -625,6 +701,110 @@ fn parse_atomic_value(value: &str) -> Result<i64, String> {
         ));
     }
     Ok(atomic_value)
+}
+
+fn parse_stored_atomic_value(value: &str) -> Result<i64, String> {
+    let atomic_value = value
+        .parse::<i64>()
+        .map_err(|source| format!("invalid atomic value {value:?}: {source}"))?;
+    if atomic_value < 0 {
+        return Err("atomic value must be at least 0".to_owned());
+    }
+    Ok(atomic_value)
+}
+
+fn confirm_profile_delete(profile: &StoredProfile) -> anyhow::Result<()> {
+    let mut stderr = io::stderr();
+    writeln!(
+        stderr,
+        "Deleting profile {:?} removes it from active profile selection.",
+        profile.slug.as_str()
+    )?;
+    writeln!(
+        stderr,
+        "Previously generated names can no longer be regenerated through the active profile slug."
+    )?;
+    write!(
+        stderr,
+        "Type the profile slug ({}) to continue: ",
+        profile.slug.as_str()
+    )?;
+    stderr.flush()?;
+
+    let mut first = String::new();
+    if io::stdin().read_line(&mut first)? == 0 {
+        anyhow::bail!("profile deletion requires interactive confirmation");
+    }
+    if first.trim() != profile.slug.as_str() {
+        anyhow::bail!("profile deletion cancelled");
+    }
+
+    write!(stderr, "Type delete to confirm profile deletion: ")?;
+    stderr.flush()?;
+
+    let mut second = String::new();
+    if io::stdin().read_line(&mut second)? == 0 {
+        anyhow::bail!("profile deletion requires interactive confirmation");
+    }
+    if !second.trim().eq_ignore_ascii_case("delete") {
+        anyhow::bail!("profile deletion cancelled");
+    }
+
+    Ok(())
+}
+
+fn confirm_atomic_value_reset(profile: &StoredProfile, atomic_value: i64) -> anyhow::Result<()> {
+    let mut stderr = io::stderr();
+    writeln!(
+        stderr,
+        "Resetting profile {:?} changes its stored atomic value from {} to {}.",
+        profile.slug.as_str(),
+        profile.last_atomic_value,
+        atomic_value
+    )?;
+    writeln!(
+        stderr,
+        "Lower values can duplicate previously issued names; higher values skip part of the sequence."
+    )?;
+    if atomic_value == i64::MAX {
+        writeln!(
+            stderr,
+            "The next profile-backed generation will fail because the atomic counter is exhausted."
+        )?;
+    } else {
+        writeln!(
+            stderr,
+            "The next profile-backed generation will use atomic value {}.",
+            atomic_value + 1
+        )?;
+    }
+    write!(
+        stderr,
+        "Type the profile slug ({}) to continue: ",
+        profile.slug.as_str()
+    )?;
+    stderr.flush()?;
+
+    let mut first = String::new();
+    if io::stdin().read_line(&mut first)? == 0 {
+        anyhow::bail!("atomic value reset requires interactive confirmation");
+    }
+    if first.trim() != profile.slug.as_str() {
+        anyhow::bail!("atomic value reset cancelled");
+    }
+
+    write!(stderr, "Type reset to confirm atomic value reset: ")?;
+    stderr.flush()?;
+
+    let mut second = String::new();
+    if io::stdin().read_line(&mut second)? == 0 {
+        anyhow::bail!("atomic value reset requires interactive confirmation");
+    }
+    if !second.trim().eq_ignore_ascii_case("reset") {
+        anyhow::bail!("atomic value reset cancelled");
+    }
+
+    Ok(())
 }
 
 fn confirm_atomic_profile_replacement(profile: &StoredProfile) -> anyhow::Result<()> {
