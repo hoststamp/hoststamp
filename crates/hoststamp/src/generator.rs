@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use crate::dictionary;
-use anyhow::{Result, anyhow, bail};
-use serde::{Deserialize, Serialize};
-use sha1::{Digest, Sha1};
-use std::{collections::HashSet, fmt, str::FromStr};
+use anyhow::{Context, Result, anyhow, bail};
+use sha2::{Digest, Sha256};
+use sqids::Sqids;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 pub const DEFAULT_WORD_LENGTH: usize = 5;
-pub const DEFAULT_SUFFIX_LENGTH: usize = 5;
-pub const MIN_SUFFIX_LENGTH: usize = 4;
-pub const MAX_SUFFIX_LENGTH: usize = 40;
+pub const DEFAULT_SUFFIX_MIN_LENGTH: usize = 5;
+pub const MIN_SUFFIX_MIN_LENGTH: usize = 4;
+pub const MAX_SUFFIX_MIN_LENGTH: usize = 13;
+pub const SUFFIX_ALPHABET_SIZE: u32 = 36;
 pub const DEFAULT_COUNT: usize = 1;
 pub const MAX_COUNT: usize = 50;
+pub const SUFFIX_ALPHABET: &str = "0123456789abcdefghijklmnopqrstuvwxyz";
+pub const ATOMIC_MIN_VALUE: i64 = 1;
+pub const ATOMIC_STORAGE_MAX_VALUE: i64 = i64::MAX;
 pub const DEFAULT_WORD1_CATEGORIES: &[&str] = &["adjective", "adverb"];
 pub const DEFAULT_WORD2_CATEGORIES: &[&str] = &[
     "animal",
@@ -34,64 +38,6 @@ pub const DEFAULT_WORD2_CATEGORIES: &[&str] = &[
     "wind",
 ];
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-pub enum SuffixSource {
-    #[serde(rename = "random")]
-    Random,
-    #[serde(rename = "atomic")]
-    Atomic,
-}
-
-impl fmt::Display for SuffixSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Random => f.write_str("random"),
-            Self::Atomic => f.write_str("atomic"),
-        }
-    }
-}
-
-impl FromStr for SuffixSource {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "random" => Ok(Self::Random),
-            "atomic" => Ok(Self::Atomic),
-            _ => Err(format!(
-                "invalid suffix source {value:?}; expected random or atomic"
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-pub enum SuffixHash {
-    /// SHA-1 stretches random UUID bytes to a 40-character hex ceiling; it is
-    /// not used here as a security boundary.
-    #[serde(rename = "sha1")]
-    Sha1,
-}
-
-impl fmt::Display for SuffixHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sha1 => f.write_str("sha1"),
-        }
-    }
-}
-
-impl FromStr for SuffixHash {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "sha1" => Ok(Self::Sha1),
-            _ => Err(format!("invalid suffix hash {value:?}; expected sha1")),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct GenerateOptions {
     pub word1_enabled: bool,
@@ -101,9 +47,7 @@ pub struct GenerateOptions {
     pub word2_lengths: Option<Vec<usize>>,
     pub word2_categories: Vec<String>,
     pub suffix_enabled: bool,
-    pub suffix_length: usize,
-    pub suffix_source: SuffixSource,
-    pub suffix_hash: SuffixHash,
+    pub suffix_min_length: usize,
     pub count: usize,
 }
 
@@ -123,9 +67,7 @@ impl Default for GenerateOptions {
                 .map(|category| (*category).to_owned())
                 .collect(),
             suffix_enabled: true,
-            suffix_length: DEFAULT_SUFFIX_LENGTH,
-            suffix_source: SuffixSource::Random,
-            suffix_hash: SuffixHash::Sha1,
+            suffix_min_length: DEFAULT_SUFFIX_MIN_LENGTH,
             count: DEFAULT_COUNT,
         }
     }
@@ -149,9 +91,9 @@ impl GenerateOptions {
                 .word2_categories
                 .unwrap_or_else(|| self.word2_categories.clone()),
             suffix_enabled: overrides.suffix_enabled.unwrap_or(self.suffix_enabled),
-            suffix_length: overrides.suffix_length.unwrap_or(self.suffix_length),
-            suffix_source: overrides.suffix_source.unwrap_or(self.suffix_source),
-            suffix_hash: overrides.suffix_hash.unwrap_or(self.suffix_hash),
+            suffix_min_length: overrides
+                .suffix_min_length
+                .unwrap_or(self.suffix_min_length),
             count: overrides.count.unwrap_or(self.count),
         }
     }
@@ -166,9 +108,7 @@ pub struct GenerateOverrides {
     pub word2_lengths: Option<Option<Vec<usize>>>,
     pub word2_categories: Option<Vec<String>>,
     pub suffix_enabled: Option<bool>,
-    pub suffix_length: Option<usize>,
-    pub suffix_source: Option<SuffixSource>,
-    pub suffix_hash: Option<SuffixHash>,
+    pub suffix_min_length: Option<usize>,
     pub count: Option<usize>,
 }
 
@@ -179,9 +119,11 @@ pub struct CapacityReport {
     pub overlapping_words: usize,
     pub unique_word_combinations: u128,
     pub suffix_enabled: bool,
-    pub suffix_length: Option<usize>,
+    pub suffix_min_length: Option<usize>,
     pub suffix_variants: Option<String>,
     pub suffix_bits: Option<usize>,
+    pub random_fallback_max_value: Option<u64>,
+    pub atomic_storage_max_value: Option<i64>,
     pub total_variants: String,
 }
 
@@ -208,9 +150,9 @@ pub fn generate_many(options: GenerateOptions) -> Result<Vec<String>> {
         .collect::<Result<Vec<_>>>()
 }
 
-pub fn generate_many_with_atomic_suffix<F>(
+pub fn generate_many_with_suffix<F>(
     options: GenerateOptions,
-    mut next_atomic_suffix: F,
+    mut next_suffix: F,
 ) -> Result<Vec<String>>
 where
     F: FnMut() -> Result<String>,
@@ -218,7 +160,7 @@ where
     validate_count(options.count)?;
     let plans = build_word_plans(&options)?;
     (0..options.count)
-        .map(|_| generate_hostname_with_plans_and_atomic(&options, &plans, &mut next_atomic_suffix))
+        .map(|_| generate_hostname_with_plans_and_suffix(&options, &plans, &mut next_suffix))
         .collect::<Result<Vec<_>>>()
 }
 
@@ -252,16 +194,18 @@ pub fn capacity_report(options: &GenerateOptions) -> Result<CapacityReport> {
         (None, None) => 1,
     };
 
-    let (suffix_length, suffix_variants, suffix_bits) = if options.suffix_enabled {
-        let variants = decimal_power(16, options.suffix_length);
-        (
-            Some(options.suffix_length),
-            Some(variants),
-            Some(options.suffix_length * 4),
-        )
-    } else {
-        (None, None, None)
-    };
+    let (suffix_min_length, suffix_variants, suffix_bits, random_fallback_max_value) =
+        if options.suffix_enabled {
+            let variants = decimal_power(SUFFIX_ALPHABET_SIZE, options.suffix_min_length);
+            (
+                Some(options.suffix_min_length),
+                Some(variants),
+                Some(suffix_entropy_bits(options.suffix_min_length)),
+                Some(random_fallback_max_value(options.suffix_min_length)?),
+            )
+        } else {
+            (None, None, None, None)
+        };
     let total_variants = if let Some(suffix_variants) = suffix_variants.as_deref() {
         decimal_multiply(suffix_variants, unique_word_combinations)
     } else {
@@ -274,24 +218,32 @@ pub fn capacity_report(options: &GenerateOptions) -> Result<CapacityReport> {
         overlapping_words,
         unique_word_combinations,
         suffix_enabled: options.suffix_enabled,
-        suffix_length,
+        suffix_min_length,
         suffix_variants,
         suffix_bits,
+        random_fallback_max_value,
+        atomic_storage_max_value: options.suffix_enabled.then_some(ATOMIC_STORAGE_MAX_VALUE),
         total_variants,
     })
+}
+
+pub fn validate_generate_options(options: &GenerateOptions) -> Result<()> {
+    build_word_plans(options).map(|_| ())
 }
 
 fn generate_hostname_with_plans(
     options: &GenerateOptions,
     plans: &[SelectionPlan],
 ) -> Result<String> {
-    generate_hostname_with_plans_and_atomic(options, plans, &mut atomic_suffix_without_profile)
+    generate_hostname_with_plans_and_suffix(options, plans, &mut || {
+        random_sqids_suffix(options.suffix_min_length)
+    })
 }
 
-fn generate_hostname_with_plans_and_atomic<F>(
+fn generate_hostname_with_plans_and_suffix<F>(
     options: &GenerateOptions,
     plans: &[SelectionPlan],
-    next_atomic_suffix: &mut F,
+    next_suffix: &mut F,
 ) -> Result<String>
 where
     F: FnMut() -> Result<String>,
@@ -313,11 +265,7 @@ where
     }
 
     if options.suffix_enabled {
-        if options.suffix_source == SuffixSource::Atomic {
-            parts.push(next_atomic_suffix()?);
-        } else {
-            parts.push(compute_suffix(options)?);
-        }
+        parts.push(next_suffix()?);
     }
 
     if parts.is_empty() {
@@ -325,10 +273,6 @@ where
     }
 
     Ok(parts.join("-"))
-}
-
-fn atomic_suffix_without_profile() -> Result<String> {
-    bail!("suffix source 'atomic' requires a profile database")
 }
 
 fn build_word_plans(options: &GenerateOptions) -> Result<Vec<SelectionPlan>> {
@@ -445,9 +389,11 @@ fn validate_options(options: &GenerateOptions) -> Result<()> {
     }
 
     if options.suffix_enabled
-        && !(MIN_SUFFIX_LENGTH..=MAX_SUFFIX_LENGTH).contains(&options.suffix_length)
+        && !(MIN_SUFFIX_MIN_LENGTH..=MAX_SUFFIX_MIN_LENGTH).contains(&options.suffix_min_length)
     {
-        bail!("suffix length must be between {MIN_SUFFIX_LENGTH} and {MAX_SUFFIX_LENGTH}");
+        bail!(
+            "suffix minimum length must be between {MIN_SUFFIX_MIN_LENGTH} and {MAX_SUFFIX_MIN_LENGTH}"
+        );
     }
 
     validate_count(options.count)?;
@@ -455,41 +401,26 @@ fn validate_options(options: &GenerateOptions) -> Result<()> {
     Ok(())
 }
 
-fn compute_suffix(options: &GenerateOptions) -> Result<String> {
-    match (options.suffix_source, options.suffix_hash) {
-        (SuffixSource::Random, SuffixHash::Sha1) => {
-            let uuid = Uuid::new_v4();
-            let digest = Sha1::digest(uuid.as_bytes());
-            Ok(hex_prefix(&digest, options.suffix_length).expect("sha1 hex prefix"))
-        }
-        (SuffixSource::Atomic, _) => {
-            bail!("suffix source 'atomic' requires a profile database")
-        }
-    }
-}
-
-pub fn compute_atomic_suffix(
+pub fn compute_profile_suffix(
     profile_id: Uuid,
     atomic_value: i64,
-    suffix_hash: SuffixHash,
-    suffix_length: usize,
+    suffix_min_length: usize,
 ) -> Result<String> {
     if atomic_value < 1 {
         bail!("atomic value must be at least 1");
     }
-    if !(MIN_SUFFIX_LENGTH..=MAX_SUFFIX_LENGTH).contains(&suffix_length) {
-        bail!("suffix length must be between {MIN_SUFFIX_LENGTH} and {MAX_SUFFIX_LENGTH}");
-    }
+    let value = u64::try_from(atomic_value).expect("positive i64 fits in u64");
+    sqids_for_profile(Some(profile_id), suffix_min_length)?
+        .encode(&[value])
+        .map_err(Into::into)
+}
 
-    match suffix_hash {
-        SuffixHash::Sha1 => {
-            let mut hasher = Sha1::new();
-            hasher.update(profile_id.as_bytes());
-            hasher.update(atomic_value.to_be_bytes());
-            let digest = hasher.finalize();
-            Ok(hex_prefix(&digest, suffix_length).expect("sha1 hex prefix"))
-        }
-    }
+pub fn random_sqids_suffix(suffix_min_length: usize) -> Result<String> {
+    let max = random_fallback_max_value(suffix_min_length)?;
+    let value = random_u64(1, max);
+    sqids_for_profile(None, suffix_min_length)?
+        .encode(&[value])
+        .map_err(Into::into)
 }
 
 fn random_index(len: usize) -> usize {
@@ -500,34 +431,69 @@ fn random_index(len: usize) -> usize {
     usize::try_from(Uuid::new_v4().as_u128() % len).expect("bounded by original usize")
 }
 
-fn hex_prefix(bytes: &[u8], len: usize) -> Option<String> {
-    if len > bytes.len() * 2 {
-        return None;
+fn checked_base36_capacity(suffix_min_length: usize) -> Option<u128> {
+    let mut value = 1u128;
+    for _ in 0..suffix_min_length {
+        value = value.checked_mul(u128::from(SUFFIX_ALPHABET_SIZE))?;
     }
-
-    let mut hex = String::with_capacity(len);
-    for byte in bytes {
-        if hex.len() == len {
-            break;
-        }
-
-        let remaining = len - hex.len();
-        if remaining >= 2 {
-            hex.push_str(&format!("{byte:02x}"));
-        } else {
-            hex.push(nibble_to_hex(byte >> 4)?);
-        }
-    }
-
-    Some(hex)
+    Some(value)
 }
 
-fn nibble_to_hex(nibble: u8) -> Option<char> {
-    match nibble {
-        0..=9 => Some(char::from(b'0' + nibble)),
-        10..=15 => Some(char::from(b'a' + (nibble - 10))),
-        _ => None,
+pub fn fixed_suffix_variants(suffix_min_length: usize) -> Result<u128> {
+    if !(MIN_SUFFIX_MIN_LENGTH..=MAX_SUFFIX_MIN_LENGTH).contains(&suffix_min_length) {
+        bail!(
+            "suffix minimum length must be between {MIN_SUFFIX_MIN_LENGTH} and {MAX_SUFFIX_MIN_LENGTH}"
+        );
     }
+    checked_base36_capacity(suffix_min_length).context("suffix capacity exceeds u128")
+}
+
+pub fn random_fallback_max_value(suffix_min_length: usize) -> Result<u64> {
+    let variants = fixed_suffix_variants(suffix_min_length)?;
+    let variants = variants.min(ATOMIC_STORAGE_MAX_VALUE as u128);
+    u64::try_from(variants / 2).context("suffix random fallback capacity exceeds u64")
+}
+
+fn random_u64(min: u64, max: u64) -> u64 {
+    assert!(min <= max, "random_u64 requires a valid range");
+    let span = u128::from(max - min) + 1;
+    let value = u64::try_from(Uuid::new_v4().as_u128() % span).expect("bounded by u64 span");
+    min + value
+}
+
+fn sqids_for_profile(profile_id: Option<Uuid>, suffix_min_length: usize) -> Result<Sqids> {
+    let min_length = u8::try_from(suffix_min_length).context("suffix minimum length exceeds u8")?;
+    Sqids::builder()
+        .alphabet(profile_alphabet(profile_id).chars().collect())
+        .min_length(min_length)
+        .blocklist(sqids::default_blocklist())
+        .build()
+        .map_err(Into::into)
+}
+
+fn profile_alphabet(profile_id: Option<Uuid>) -> String {
+    let Some(profile_id) = profile_id else {
+        return SUFFIX_ALPHABET.to_owned();
+    };
+
+    let mut chars = SUFFIX_ALPHABET.chars().collect::<Vec<_>>();
+    for index in (1..chars.len()).rev() {
+        let mut hasher = Sha256::new();
+        hasher.update(profile_id.as_bytes());
+        hasher.update(index.to_be_bytes());
+        let digest = hasher.finalize();
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&digest[..8]);
+        let swap_with = usize::try_from(u64::from_be_bytes(bytes) % ((index + 1) as u64))
+            .expect("swap index fits usize");
+        chars.swap(index, swap_with);
+    }
+
+    chars.into_iter().collect()
+}
+
+fn suffix_entropy_bits(suffix_min_length: usize) -> usize {
+    ((suffix_min_length as f64) * f64::from(SUFFIX_ALPHABET_SIZE).log2()).floor() as usize
 }
 
 fn decimal_power(base: u32, exponent: usize) -> String {
@@ -603,24 +569,16 @@ pub fn parse_lengths(value: &str) -> std::result::Result<Option<Vec<usize>>, Str
     Ok(Some(lengths))
 }
 
-pub fn parse_suffix_length(value: &str) -> std::result::Result<usize, String> {
+pub fn parse_suffix_min_length(value: &str) -> std::result::Result<usize, String> {
     let length = value
         .parse::<usize>()
-        .map_err(|source| format!("invalid suffix length {value:?}: {source}"))?;
-    if !(MIN_SUFFIX_LENGTH..=MAX_SUFFIX_LENGTH).contains(&length) {
+        .map_err(|source| format!("invalid suffix minimum length {value:?}: {source}"))?;
+    if !(MIN_SUFFIX_MIN_LENGTH..=MAX_SUFFIX_MIN_LENGTH).contains(&length) {
         return Err(format!(
-            "suffix length must be between {MIN_SUFFIX_LENGTH} and {MAX_SUFFIX_LENGTH}"
+            "suffix minimum length must be between {MIN_SUFFIX_MIN_LENGTH} and {MAX_SUFFIX_MIN_LENGTH}"
         ));
     }
     Ok(length)
-}
-
-pub fn parse_suffix_source(value: &str) -> std::result::Result<SuffixSource, String> {
-    value.parse()
-}
-
-pub fn parse_suffix_hash(value: &str) -> std::result::Result<SuffixHash, String> {
-    value.parse()
 }
 
 pub fn parse_count(value: &str) -> std::result::Result<usize, String> {
@@ -657,6 +615,12 @@ pub fn ensure_no_repeated_words(hostname: &str, word_count: usize) -> Result<()>
     Ok(())
 }
 
+pub fn is_base36_suffix(value: &str) -> bool {
+    value
+        .chars()
+        .all(|character| character.is_ascii_digit() || character.is_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,8 +633,8 @@ mod tests {
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[0].chars().count(), DEFAULT_WORD_LENGTH);
         assert_eq!(parts[1].chars().count(), DEFAULT_WORD_LENGTH);
-        assert_eq!(parts[2].len(), DEFAULT_SUFFIX_LENGTH);
-        assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(parts[2].len() >= DEFAULT_SUFFIX_MIN_LENGTH);
+        assert!(is_base36_suffix(parts[2]));
         ensure_no_repeated_words(&hostname, 2).expect("unique words");
     }
 
@@ -722,8 +686,8 @@ mod tests {
         })
         .expect("hostname");
 
-        assert_eq!(hostname.len(), DEFAULT_SUFFIX_LENGTH);
-        assert!(hostname.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(hostname.len() >= DEFAULT_SUFFIX_MIN_LENGTH);
+        assert!(is_base36_suffix(&hostname));
     }
 
     #[test]
@@ -845,47 +809,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_suffix_length_below_floor() {
+    fn rejects_suffix_min_length_below_floor() {
         let error = generate_hostname(GenerateOptions {
-            suffix_length: MIN_SUFFIX_LENGTH - 1,
+            suffix_min_length: MIN_SUFFIX_MIN_LENGTH - 1,
             ..GenerateOptions::default()
         })
         .expect_err("error");
 
-        assert!(error.to_string().contains("suffix length must be between"));
+        assert!(
+            error
+                .to_string()
+                .contains("suffix minimum length must be between")
+        );
     }
 
     #[test]
-    fn rejects_suffix_length_above_ceiling() {
+    fn rejects_suffix_min_length_above_ceiling() {
         let error = generate_hostname(GenerateOptions {
-            suffix_length: MAX_SUFFIX_LENGTH + 1,
+            suffix_min_length: MAX_SUFFIX_MIN_LENGTH + 1,
             ..GenerateOptions::default()
         })
         .expect_err("error");
 
-        assert!(error.to_string().contains("suffix length must be between"));
-    }
-
-    #[test]
-    fn rejects_atomic_source_without_profile_database() {
-        let error = generate_hostname(GenerateOptions {
-            suffix_source: SuffixSource::Atomic,
-            ..GenerateOptions::default()
-        })
-        .expect_err("error");
-
-        assert!(error.to_string().contains("requires a profile database"));
-    }
-
-    #[test]
-    fn parses_suffix_source_and_hash() {
-        assert_eq!(parse_suffix_source("random"), Ok(SuffixSource::Random));
-        assert_eq!(parse_suffix_source("atomic"), Ok(SuffixSource::Atomic));
-        assert!(parse_suffix_source("nope").is_err());
-        assert_eq!(parse_suffix_hash("sha1"), Ok(SuffixHash::Sha1));
-        assert!(parse_suffix_hash("sha256").is_err());
-        assert_eq!(SuffixSource::Random.to_string(), "random");
-        assert_eq!(SuffixHash::Sha1.to_string(), "sha1");
+        assert!(
+            error
+                .to_string()
+                .contains("suffix minimum length must be between")
+        );
     }
 
     #[test]
@@ -915,9 +865,9 @@ mod tests {
     fn parse_helpers_reject_invalid_values() {
         assert!(parse_count("nope").is_err());
         assert!(parse_count("0").is_err());
-        assert!(parse_suffix_length("nope").is_err());
-        assert!(parse_suffix_length("3").is_err());
-        assert!(parse_suffix_length("41").is_err());
+        assert!(parse_suffix_min_length("nope").is_err());
+        assert!(parse_suffix_min_length("3").is_err());
+        assert!(parse_suffix_min_length("14").is_err());
     }
 
     #[test]
@@ -933,14 +883,12 @@ mod tests {
     }
 
     #[test]
-    fn suffix_length_floor_and_ceiling_at_parser() {
-        assert!(parse_suffix_length("4").is_ok());
-        assert!(parse_suffix_length("40").is_ok());
-        assert!(parse_suffix_length("3").is_err());
-        assert!(parse_suffix_length("41").is_err());
-        assert_eq!(hex_prefix(&[0xab, 0xcd], 3), Some("abc".to_owned()));
-        assert_eq!(hex_prefix(&[0xab], 3), None);
-        assert_eq!(nibble_to_hex(16), None);
+    fn suffix_min_length_floor_and_ceiling_at_parser() {
+        assert!(parse_suffix_min_length("4").is_ok());
+        assert!(parse_suffix_min_length("13").is_ok());
+        assert!(parse_suffix_min_length("3").is_err());
+        assert!(parse_suffix_min_length("14").is_err());
+        assert_eq!(random_fallback_max_value(5).expect("max"), 30_233_088);
     }
 
     #[test]
@@ -960,13 +908,12 @@ mod tests {
     }
 
     #[test]
-    fn generate_many_with_atomic_suffix_calls_provider_per_hostname() {
+    fn generate_many_with_suffix_calls_provider_per_hostname() {
         let mut value = 0;
-        let hostnames = generate_many_with_atomic_suffix(
+        let hostnames = generate_many_with_suffix(
             GenerateOptions {
                 count: 3,
-                suffix_source: SuffixSource::Atomic,
-                suffix_length: 4,
+                suffix_min_length: 4,
                 ..GenerateOptions::default()
             },
             || {
@@ -984,18 +931,31 @@ mod tests {
     }
 
     #[test]
-    fn atomic_suffix_is_stable_per_profile_and_value() {
+    fn profile_suffix_is_stable_per_profile_and_value() {
         let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
 
-        let first = compute_atomic_suffix(profile_id, 1, SuffixHash::Sha1, 8).expect("suffix");
-        let first_again =
-            compute_atomic_suffix(profile_id, 1, SuffixHash::Sha1, 8).expect("suffix");
-        let second = compute_atomic_suffix(profile_id, 2, SuffixHash::Sha1, 8).expect("suffix");
+        let first = compute_profile_suffix(profile_id, 1, 8).expect("suffix");
+        let first_again = compute_profile_suffix(profile_id, 1, 8).expect("suffix");
+        let second = compute_profile_suffix(profile_id, 2, 8).expect("suffix");
 
         assert_eq!(first, first_again);
         assert_ne!(first, second);
-        assert_eq!(first.len(), 8);
-        assert!(compute_atomic_suffix(profile_id, 0, SuffixHash::Sha1, 8).is_err());
+        assert!(first.len() >= 8);
+        assert!(is_base36_suffix(&first));
+        assert!(compute_profile_suffix(profile_id, 0, 8).is_err());
+    }
+
+    #[test]
+    fn profile_suffix_is_unique_for_initial_counter_values() {
+        let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+
+        let mut seen = HashSet::new();
+        for atomic_value in 1..=100 {
+            let suffix = compute_profile_suffix(profile_id, atomic_value, 5).expect("suffix");
+            assert!(suffix.len() >= 5);
+            assert!(is_base36_suffix(&suffix));
+            assert!(seen.insert(suffix));
+        }
     }
 
     #[test]
@@ -1038,7 +998,7 @@ mod tests {
             word2_categories: vec!["diceware".to_owned()],
             word1_lengths: Some(vec![5]),
             word2_lengths: Some(vec![5]),
-            suffix_length: 5,
+            suffix_min_length: 5,
             ..GenerateOptions::default()
         })
         .expect("report");
@@ -1050,8 +1010,24 @@ mod tests {
             report.unique_word_combinations,
             (diceware_count as u128) * (diceware_count as u128) - diceware_count as u128
         );
-        assert_eq!(report.suffix_variants.as_deref(), Some("1048576"));
-        assert_eq!(report.suffix_bits, Some(20));
+        assert_eq!(report.suffix_variants.as_deref(), Some("60466176"));
+        assert_eq!(report.suffix_bits, Some(25));
+        assert_eq!(report.random_fallback_max_value, Some(30_233_088));
+        assert_eq!(report.atomic_storage_max_value, Some(i64::MAX));
+    }
+
+    #[test]
+    fn capacity_report_includes_suffix_number_bounds() {
+        let report = capacity_report(&GenerateOptions {
+            suffix_min_length: 5,
+            ..GenerateOptions::default()
+        })
+        .expect("report");
+
+        assert_eq!(report.suffix_variants.as_deref(), Some("60466176"));
+        assert_eq!(report.suffix_bits, Some(25));
+        assert_eq!(report.random_fallback_max_value, Some(30_233_088));
+        assert_eq!(report.atomic_storage_max_value, Some(i64::MAX));
     }
 
     #[test]
@@ -1059,20 +1035,21 @@ mod tests {
         let report = capacity_report(&GenerateOptions {
             word1_enabled: false,
             word2_enabled: false,
-            suffix_length: MAX_SUFFIX_LENGTH,
+            suffix_min_length: MAX_SUFFIX_MIN_LENGTH,
             ..GenerateOptions::default()
         })
         .expect("report");
 
         assert_eq!(report.unique_word_combinations, 1);
-        assert_eq!(report.suffix_bits, Some(160));
+        assert_eq!(report.suffix_bits, Some(67));
         assert_eq!(
             report.suffix_variants.as_deref(),
-            Some("1461501637330902918203684832716283019655932542976")
+            Some("170581728179578208256")
         );
+        assert_eq!(report.total_variants, "170581728179578208256");
         assert_eq!(
-            report.total_variants,
-            "1461501637330902918203684832716283019655932542976"
+            report.random_fallback_max_value,
+            Some(4_611_686_018_427_387_903)
         );
     }
 

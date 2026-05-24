@@ -349,3 +349,14 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
 - SHA-256: `22b45c52e0bd0bbf03aa522240b111eb4c7c0c1d86c4e518e1be2a7eb2a625e4`
 - Notice required: true
 - Changes: extracted Diceware word column; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## Sqids default blocklist
+
+- Source ID: `sqids-default-blocklist`
+- Attribution: Sqids maintainers
+- Source: <https://github.com/sqids/sqids-rust/blob/v0.4.2/src/blocklist.json>
+- License: MIT
+- License URL: <https://opensource.org/license/mit>
+- Retrieved: via pinned `sqids` crate 0.4.2
+- Notice required: true
+- Changes: used through the pinned sqids crate; filtered by lowercase base36 alphabet at runtime

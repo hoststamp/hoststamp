@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use assert_cmd::Command;
+use hoststamp::generator::is_base36_suffix;
 use predicates::prelude::*;
 use std::path::Path;
 use tempfile::TempDir;
@@ -51,9 +52,7 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("--word2-lengths"))
             .and(predicate::str::contains("--word2-categories"))
             .and(predicate::str::contains("--no-suffix"))
-            .and(predicate::str::contains("--suffix-length"))
-            .and(predicate::str::contains("--suffix-source"))
-            .and(predicate::str::contains("--suffix-hash"))
+            .and(predicate::str::contains("--suffix-min-length"))
             .and(predicate::str::contains("--capacity"))
             .and(predicate::str::contains("--profile"))
             .and(predicate::str::contains("--database-url"))
@@ -69,6 +68,7 @@ fn credits_print_license_and_source_attribution() {
         predicate::str::contains("FSL-1.1-ALv2")
             .and(predicate::str::contains("EFF large Diceware wordlist"))
             .and(predicate::str::contains("golang-petname"))
+            .and(predicate::str::contains("Sqids default blocklist"))
             .and(predicate::str::contains("CC-BY-3.0-US"))
             .and(predicate::str::contains("SHA-256:")),
     );
@@ -106,8 +106,8 @@ fn generate_prints_word_word_hash_by_default() {
     assert_eq!(parts.len(), 3);
     assert_ne!(parts[0], parts[1]);
     assert!(parts[..2].iter().all(|part| part.chars().count() == 5));
-    assert_eq!(parts[2].len(), 5);
-    assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(parts[2].len() >= 5);
+    assert!(is_base36_suffix(parts[2]));
 }
 
 #[test]
@@ -121,8 +121,8 @@ fn generate_is_the_default_command() {
     assert_eq!(parts.len(), 3);
     assert_ne!(parts[0], parts[1]);
     assert!(parts[..2].iter().all(|part| part.chars().count() == 5));
-    assert_eq!(parts[2].len(), 5);
-    assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(parts[2].len() >= 5);
+    assert!(is_base36_suffix(parts[2]));
 }
 
 #[test]
@@ -151,13 +151,15 @@ fn default_generate_accepts_top_level_flags() {
 }
 
 #[test]
-fn serve_rejects_invalid_suffix_length() {
+fn serve_rejects_invalid_suffix_min_length() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
-    cmd.args(["serve", "--addr", "127.0.0.1:0", "--suffix-length", "3"])
+    cmd.args(["serve", "--addr", "127.0.0.1:0", "--suffix-min-length", "3"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("suffix length must be between"));
+        .stderr(predicate::str::contains(
+            "suffix minimum length must be between",
+        ));
 }
 
 #[test]
@@ -285,7 +287,7 @@ fn capacity_reports_word_and_suffix_space() {
         "5",
         "--word2-lengths",
         "5",
-        "--suffix-length",
+        "--suffix-min-length",
         "5",
     ])
     .assert()
@@ -295,10 +297,39 @@ fn capacity_reports_word_and_suffix_space() {
             .and(predicate::str::contains("word2_words\t"))
             .and(predicate::str::contains("overlapping_words\t"))
             .and(predicate::str::contains("unique_word_combinations\t"))
-            .and(predicate::str::contains("suffix_variants\t1,048,576"))
-            .and(predicate::str::contains("suffix_bits\t20"))
+            .and(predicate::str::contains(
+                "fixed_suffix_variants\t60,466,176",
+            ))
+            .and(predicate::str::contains("suffix_bits\t25"))
+            .and(predicate::str::contains(
+                "random_fallback_max_value\t30,233,088",
+            ))
+            .and(predicate::str::contains(
+                "atomic_storage_max_value\t9,223,372,036,854,775,807",
+            ))
             .and(predicate::str::contains("total_variants\t")),
     );
+}
+
+#[test]
+fn capacity_reports_suffix_number_bounds() {
+    let (mut cmd, _tempdir) = command_with_database();
+
+    cmd.args(["--capacity", "--suffix-min-length", "5"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("fixed_suffix_variants\t60,466,176")
+                .and(predicate::str::contains("suffix_bits\t25"))
+                .and(predicate::str::contains("random_fallback_min_value\t1"))
+                .and(predicate::str::contains(
+                    "random_fallback_max_value\t30,233,088",
+                ))
+                .and(predicate::str::contains("atomic_min_value\t1"))
+                .and(predicate::str::contains(
+                    "atomic_storage_max_value\t9,223,372,036,854,775,807",
+                )),
+        );
 }
 
 #[test]
@@ -340,21 +371,17 @@ fn generate_rejects_unknown_category() {
 }
 
 #[test]
-fn generate_supports_atomic_suffix_source() {
+fn generate_uses_profile_backed_suffix_by_default() {
     let (mut cmd, _tempdir) = command_with_database();
 
-    let assert = cmd
-        .args(["generate", "--suffix-source", "atomic", "--count", "2"])
-        .write_stdin("_\nreplace\n")
-        .assert()
-        .success();
+    let assert = cmd.args(["generate", "--count", "2"]).assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let hostnames = output.lines().collect::<Vec<_>>();
 
     assert_eq!(hostnames.len(), 2);
     assert!(hostnames.iter().all(|hostname| {
         let parts = hostname.split('-').collect::<Vec<_>>();
-        parts.len() == 3 && parts[2].len() == 5 && parts[2].chars().all(|c| c.is_ascii_hexdigit())
+        parts.len() == 3 && parts[2].len() >= 5 && is_base36_suffix(parts[2])
     }));
 }
 
@@ -365,13 +392,7 @@ fn atomic_profile_config_replacement_requires_confirmation() {
     let mut cancelled = command_for_database(&database);
 
     cancelled
-        .args([
-            "generate",
-            "--suffix-source",
-            "atomic",
-            "--word1-lengths",
-            "4",
-        ])
+        .args(["generate", "--word1-lengths", "4"])
         .write_stdin("_\nno\n")
         .assert()
         .failure()
@@ -379,13 +400,7 @@ fn atomic_profile_config_replacement_requires_confirmation() {
 
     let mut confirmed = command_for_database(&database);
     confirmed
-        .args([
-            "generate",
-            "--suffix-source",
-            "atomic",
-            "--word1-lengths",
-            "4",
-        ])
+        .args(["generate", "--word1-lengths", "4"])
         .write_stdin("_\nreplace\n")
         .assert()
         .success()
@@ -393,13 +408,7 @@ fn atomic_profile_config_replacement_requires_confirmation() {
 
     let mut reused = command_for_database(&database);
     let assert = reused
-        .args([
-            "generate",
-            "--suffix-source",
-            "atomic",
-            "--word1-lengths",
-            "4",
-        ])
+        .args(["generate", "--word1-lengths", "4"])
         .assert()
         .success()
         .stderr(predicate::str::is_empty());
@@ -408,17 +417,19 @@ fn atomic_profile_config_replacement_requires_confirmation() {
 
     assert_eq!(parts.len(), 3);
     assert_eq!(parts[0].chars().count(), 4);
-    assert_eq!(parts[2].len(), 5);
+    assert!(parts[2].len() >= 5);
 }
 
 #[test]
-fn generate_rejects_suffix_length_below_floor() {
+fn generate_rejects_suffix_min_length_below_floor() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
-    cmd.args(["generate", "--suffix-length", "3"])
+    cmd.args(["generate", "--suffix-min-length", "3"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("suffix length must be between"));
+        .stderr(predicate::str::contains(
+            "suffix minimum length must be between",
+        ));
 }
 
 #[test]

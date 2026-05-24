@@ -2,7 +2,7 @@
 
 use axum::{body::Body, http};
 use hoststamp::{
-    generator::{GenerateOptions, SuffixSource},
+    generator::{GenerateOptions, is_base36_suffix},
     profile::{ProfileConfig, ProfileSlug},
     server,
     storage::{ProfileStore, StorageUrl},
@@ -105,13 +105,13 @@ async fn generate_endpoint_allows_query_overrides() {
         word1_lengths: Some(vec![4]),
         word2_lengths: Some(vec![4]),
         suffix_enabled: false,
-        suffix_length: 7,
+        suffix_min_length: 7,
         ..GenerateOptions::default()
     })
     .oneshot(
         http::Request::builder()
             .uri(
-                "/api/generate?word1_lengths=5&word2_lengths=5&suffix_enabled=true&suffix_length=10",
+                "/api/generate?word1_lengths=5&word2_lengths=5&suffix_enabled=true&suffix_min_length=10",
             )
             .body(Body::empty())
             .expect("request"),
@@ -136,8 +136,8 @@ async fn generate_endpoint_allows_query_overrides() {
     assert_eq!(parts.len(), 3);
     assert_eq!(parts[0].chars().count(), 5);
     assert_eq!(parts[1].chars().count(), 5);
-    assert_eq!(parts[2].len(), 10);
-    assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(parts[2].len() >= 10);
+    assert!(is_base36_suffix(parts[2]));
 }
 
 #[tokio::test]
@@ -215,24 +215,18 @@ async fn generate_endpoint_honors_count_query() {
 }
 
 #[tokio::test]
-async fn generate_endpoint_supports_atomic_suffix_with_profile_context() {
+async fn generate_endpoint_supports_profile_backed_suffix_context() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
     let slug = ProfileSlug::default_profile();
-    let atomic_config = ProfileConfig::from(&GenerateOptions {
-        suffix_source: SuffixSource::Atomic,
-        ..GenerateOptions::default()
-    });
+    let atomic_config = ProfileConfig::from(&GenerateOptions::default());
     let mut store = ProfileStore::open(&database_url).expect("store");
     store
         .load_or_seed_profile(&slug, &atomic_config)
         .expect("profile");
 
     let response = server::app_with_atomic(
-        GenerateOptions {
-            suffix_source: SuffixSource::Atomic,
-            ..GenerateOptions::default()
-        },
+        GenerateOptions::default(),
         Some(server::AtomicContext::new(store, slug.clone())),
     )
     .oneshot(
@@ -271,13 +265,9 @@ async fn generate_endpoint_reloads_active_atomic_profile() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
     let slug = ProfileSlug::default_profile();
-    let atomic_options = GenerateOptions {
-        suffix_source: SuffixSource::Atomic,
-        ..GenerateOptions::default()
-    };
+    let atomic_options = GenerateOptions::default();
     let replacement_options = GenerateOptions {
         word1_lengths: Some(vec![4]),
-        suffix_source: SuffixSource::Atomic,
         ..GenerateOptions::default()
     };
     let mut store = ProfileStore::open(&database_url).expect("store");
@@ -340,20 +330,14 @@ async fn generate_endpoint_rejects_atomic_profile_config_overrides() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
     let slug = ProfileSlug::default_profile();
-    let atomic_config = ProfileConfig::from(&GenerateOptions {
-        suffix_source: SuffixSource::Atomic,
-        ..GenerateOptions::default()
-    });
+    let atomic_config = ProfileConfig::from(&GenerateOptions::default());
     let mut store = ProfileStore::open(&database_url).expect("store");
     store
         .load_or_seed_profile(&slug, &atomic_config)
         .expect("profile");
 
     let response = server::app_with_atomic(
-        GenerateOptions {
-            suffix_source: SuffixSource::Atomic,
-            ..GenerateOptions::default()
-        },
+        GenerateOptions::default(),
         Some(server::AtomicContext::new(store, slug)),
     )
     .oneshot(
@@ -374,10 +358,7 @@ async fn generate_endpoint_returns_internal_error_for_atomic_increment_failures(
     let path = tempdir.path().join("hoststamp.db");
     let database_url = StorageUrl::Sqlite(path.clone());
     let slug = ProfileSlug::default_profile();
-    let atomic_config = ProfileConfig::from(&GenerateOptions {
-        suffix_source: SuffixSource::Atomic,
-        ..GenerateOptions::default()
-    });
+    let atomic_config = ProfileConfig::from(&GenerateOptions::default());
     let mut setup_store = ProfileStore::open(&database_url).expect("store");
     setup_store
         .load_or_seed_profile(&slug, &atomic_config)
@@ -399,10 +380,7 @@ async fn generate_endpoint_returns_internal_error_for_atomic_increment_failures(
 
     let store = ProfileStore::open(&database_url).expect("store");
     let response = server::app_with_atomic(
-        GenerateOptions {
-            suffix_source: SuffixSource::Atomic,
-            ..GenerateOptions::default()
-        },
+        GenerateOptions::default(),
         Some(server::AtomicContext::new(store, slug)),
     )
     .oneshot(
@@ -440,21 +418,6 @@ async fn generate_endpoint_returns_bad_request_for_invalid_filter() {
     let message = std::str::from_utf8(&body).expect("utf8");
 
     assert!(message.contains("do not contain"));
-}
-
-#[tokio::test]
-async fn generate_endpoint_rejects_atomic_source() {
-    let response = server::app(GenerateOptions::default())
-        .oneshot(
-            http::Request::builder()
-                .uri("/api/generate?suffix_source=atomic")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-
-    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

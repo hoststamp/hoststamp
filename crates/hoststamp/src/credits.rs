@@ -30,6 +30,16 @@ Generated: {generated_at}
         writeln!(credits, "  Changes: {}", source.changes).expect("write to string");
     }
 
+    credits.push_str(
+        "\nExternal suffix blocklist:\n\
+- Sqids default blocklist\n\
+  Attribution: Sqids maintainers\n\
+  Source: https://github.com/sqids/sqids-rust/blob/v0.4.2/src/blocklist.json\n\
+  License: MIT\n\
+  Version: sqids 0.4.2\n\
+  Changes: used through the pinned sqids crate; filtered by lowercase base36 alphabet at runtime\n",
+    );
+
     credits
 }
 
@@ -44,6 +54,7 @@ mod tests {
         assert!(credits.contains("FSL-1.1-ALv2"));
         assert!(credits.contains("golang-petname"));
         assert!(credits.contains("EFF large Diceware wordlist"));
+        assert!(credits.contains("Sqids default blocklist"));
         assert!(credits.contains("CC-BY-3.0-US"));
         assert!(credits.contains("SHA-256:"));
         assert!(credits.contains(dictionary::GENERATED_AT));

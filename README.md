@@ -34,7 +34,7 @@ cargo run -p hoststamp -- generate --word1-categories adjective --word2-categori
 cargo run -p hoststamp -- generate --word1-categories adjective,noun --word2-categories animal,name
 cargo run -p hoststamp -- generate --word1-lengths 4,5,6 --word2-lengths 4,5,6
 cargo run -p hoststamp -- generate --word1-lengths any --word2-lengths any
-cargo run -p hoststamp -- generate --suffix-length 10
+cargo run -p hoststamp -- generate --suffix-min-length 10
 cargo run -p hoststamp -- generate --no-suffix
 cargo run -p hoststamp -- generate --no-word2 --no-suffix
 cargo run -p hoststamp -- --profile team-a generate
@@ -48,8 +48,8 @@ for `word1` and all non-`adjective`, non-`adverb`, non-`diceware` categories
 for `word2`. Each word position has independent
 disable, lengths, and categories controls (`--no-word1`, `--word1-lengths`,
 `--word1-categories`, and the matching `word2` flags). The suffix has
-`--no-suffix`, `--suffix-length`, `--suffix-source`, and `--suffix-hash`.
-Words never repeat within a single hostname. `--count` is capped at 50.
+`--no-suffix` and `--suffix-min-length`. Words never repeat within a single
+hostname. `--count` is capped at 50.
 
 `--wordN-categories` accepts a comma-separated category list. `--wordN-lengths`
 accepts a comma-separated list of exact lengths or the literal `any` for no
@@ -62,15 +62,45 @@ Use `--capacity` with any generator option set to report the available name
 space without generating or modifying a profile. The report includes the
 candidate count for each word position, overlap removed by the no-repeat rule,
 unique word combinations, suffix variants, suffix bits, and total variants.
-For a truncated hex suffix, variants are `16^suffix_length` and bits are
-`4 * suffix_length`; this is the available suffix space, not a guarantee that
-hash collisions cannot happen.
+Suffixes are Sqids-encoded lowercase base36 (`0-9a-z`) values with a pinned
+Sqids blocklist. `--suffix-min-length` is bounded to `[4, 13]` and is a minimum:
+suffixes can grow longer as the encoded number passes the fixed-length space
+for that minimum. The fixed-length suffix space is `36^suffix_min_length`; with
+the default minimum length of `5`, that space is `60,466,176`.
 
-The suffix is a hex truncation of a hash. `--suffix-length` is bounded to
-`[4, 40]` (SHA-1 hex length). `--suffix-source random` (default) hashes a
-random UUID. `--suffix-source atomic` hashes the selected profile UUID with a
-database-backed counter. `--suffix-hash sha1` is the only supported hash for
-now.
+With profile storage, Hoststamp increments the selected profile's database
+counter and encodes that atomic value with Sqids. The profile UUID is used to
+derive a deterministic profile-specific alphabet, so each profile gets a
+different-looking sequence while keeping the uniqueness guarantee scoped to the
+active profile row. Without profile storage, Hoststamp encodes a random number
+from `1..=(36^suffix_min_length / 2)`. That fallback keeps the suffix inside
+the requested minimum length range, but it is not uniqueness-tracked or
+reproducible.
+
+Sqids can expand past the configured minimum length. For example,
+`--suffix-min-length 5` keeps profile-backed atomic values `1..=60,466,176`
+within at least five suffix characters; larger atomic values may require six or
+more suffix characters. Length `13` covers the full signed SQLite counter range
+used by Hoststamp profile storage (`1..=9,223,372,036,854,775,807`).
+
+| Suffix min length | Approx fixed-length atomic values* | Approx random fallback range* |
+| ---: | ---: | ---: |
+| 3 | ~1-46,656 | ~1-23,328 |
+| 4 | ~1-1,679,616 | ~1-839,808 |
+| 5 | ~1-60,466,176 | ~1-30,233,088 |
+| 6 | ~1-2,176,782,336 | ~1-1,088,391,168 |
+| 7 | ~1-78,364,164,096 | ~1-39,182,082,048 |
+| 8 | ~1-2,821,109,907,456 | ~1-1,410,554,953,728 |
+| 9 | ~1-101,559,956,668,416 | ~1-50,779,978,334,208 |
+| 10 | ~1-3,656,158,440,062,976 | ~1-1,828,079,220,031,488 |
+| 11 | ~1-131,621,703,842,267,136 | ~1-65,810,851,921,133,568 |
+| 12 | ~1-4,738,381,338,321,616,896 | ~1-2,369,190,669,160,808,448 |
+| 13 | ~1-9,223,372,036,854,775,807 | ~1-4,611,686,018,427,387,903 |
+
+*Approximate base36 space before Sqids blocklist filtering. The pinned Sqids
+blocklist can skip some encoded values, so expansion may happen a few values
+earlier for a given profile alphabet. Length `3` is shown for planning math;
+the CLI accepts suffix minimum lengths `4..=13`.
 
 Category stats from the generated artifact:
 
@@ -110,7 +140,7 @@ Local endpoints:
 `/api/generate` returns JSON with a `hostnames` array. Query parameters mirror
 the generator option names, including `count`, `word1_lengths`,
 `word1_categories`, `word2_lengths`, `word2_categories`, `suffix_enabled`,
-`suffix_length`, `suffix_source`, and `suffix_hash`.
+and `suffix_min_length`.
 
 ### Configuration
 
@@ -154,14 +184,14 @@ profile metadata, stored profile config, and effective generator config after
 CLI request options are applied. Database URLs that could contain secrets are
 redacted.
 
-Atomic suffix generation treats the selected profile config as part of the
-identity used for deterministic suffixes. If `--suffix-source atomic` is active
-and CLI options differ from the stored profile config, Hoststamp asks for two
+Profile-backed suffix generation treats the selected profile config as part of
+the identity used for deterministic suffixes. If suffixes are enabled and CLI
+options differ from the stored profile config, Hoststamp asks for two
 confirmations before replacing the active profile row. Replacement creates a
 new profile UUID and resets that profile's atomic counter. `--count` is a
 request option only and does not trigger profile replacement. API requests
-cannot provide interactive confirmation, so atomic requests with profile config
-overrides are rejected; use the CLI to confirm a profile replacement first.
+cannot provide interactive confirmation, so profile config overrides are
+rejected; use the CLI to confirm a profile replacement first.
 
 SQLite storage is implemented for local profiles. `postgres://` and
 `postgresql://` URLs are recognized as planned remote storage backends, but

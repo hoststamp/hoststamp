@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-use crate::generator::{GenerateOptions, SuffixHash, SuffixSource};
+use crate::generator::GenerateOptions;
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
@@ -100,9 +100,7 @@ impl From<&GenerateOptions> for ProfileConfig {
             },
             suffix: SuffixProfileConfig {
                 enabled: options.suffix_enabled,
-                length: options.suffix_length,
-                source: options.suffix_source,
-                hash: options.suffix_hash,
+                min_length: options.suffix_min_length,
             },
         }
     }
@@ -118,9 +116,7 @@ impl ProfileConfig {
             word2_lengths: self.word2.lengths.clone(),
             word2_categories: self.word2.categories.clone(),
             suffix_enabled: self.suffix.enabled,
-            suffix_length: self.suffix.length,
-            suffix_source: self.suffix.source,
-            suffix_hash: self.suffix.hash,
+            suffix_min_length: self.suffix.min_length,
             count,
         }
     }
@@ -138,9 +134,7 @@ pub struct WordProfileConfig {
 #[serde(deny_unknown_fields)]
 pub struct SuffixProfileConfig {
     pub enabled: bool,
-    pub length: usize,
-    pub source: SuffixSource,
-    pub hash: SuffixHash,
+    pub min_length: usize,
 }
 
 #[cfg(test)]

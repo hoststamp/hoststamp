@@ -2,7 +2,7 @@
 
 use crate::{
     SERVICE_NAME,
-    generator::{self, GenerateOptions, GenerateOverrides, SuffixHash, SuffixSource},
+    generator::{self, GenerateOptions, GenerateOverrides},
     profile::{ProfileConfig, ProfileSlug},
     storage::ProfileStore,
     ux,
@@ -60,9 +60,7 @@ pub struct GenerateQuery {
     pub word2_lengths: Option<String>,
     pub word2_categories: Option<String>,
     pub suffix_enabled: Option<bool>,
-    pub suffix_length: Option<usize>,
-    pub suffix_source: Option<SuffixSource>,
-    pub suffix_hash: Option<SuffixHash>,
+    pub suffix_min_length: Option<usize>,
     pub count: Option<usize>,
 }
 
@@ -131,9 +129,7 @@ async fn generate_one(
         word2_lengths,
         word2_categories,
         suffix_enabled: query.suffix_enabled,
-        suffix_length: query.suffix_length,
-        suffix_source: query.suffix_source,
-        suffix_hash: query.suffix_hash,
+        suffix_min_length: query.suffix_min_length,
         count: query.count,
     };
     let hostnames = generate_with_state(overrides, &state)
@@ -156,7 +152,9 @@ async fn generate_with_state(
             let base = profile.config.to_generate_options(state.generate.count);
             let options = base.with_overrides(overrides);
 
-            if options.suffix_enabled && options.suffix_source == SuffixSource::Atomic {
+            if options.suffix_enabled {
+                generator::validate_generate_options(&options)
+                    .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
                 if ProfileConfig::from(&options) != profile.config {
                     return Err(GenerateError::BadRequest(
                         "atomic profile config overrides require interactive CLI confirmation"
@@ -166,18 +164,12 @@ async fn generate_with_state(
 
                 let profile_id = profile.id;
                 let profile_slug = profile.slug;
-                let suffix_hash = options.suffix_hash;
-                let suffix_length = options.suffix_length;
-                return generator::generate_many_with_atomic_suffix(options, || {
+                let suffix_min_length = options.suffix_min_length;
+                return generator::generate_many_with_suffix(options, || {
                     let atomic_value = store
                         .increment_atomic_value(&profile_slug)
                         .map_err(AtomicStorageError)?;
-                    generator::compute_atomic_suffix(
-                        profile_id,
-                        atomic_value,
-                        suffix_hash,
-                        suffix_length,
-                    )
+                    generator::compute_profile_suffix(profile_id, atomic_value, suffix_min_length)
                 })
                 .map_err(|error| {
                     if error.downcast_ref::<AtomicStorageError>().is_some() {
@@ -192,12 +184,6 @@ async fn generate_with_state(
         }
         None => state.generate.with_overrides(overrides),
     };
-
-    if options.suffix_enabled && options.suffix_source == SuffixSource::Atomic {
-        return Err(GenerateError::BadRequest(
-            "suffix source 'atomic' requires a profile database".to_owned(),
-        ));
-    }
 
     generator::generate_many(options).map_err(|error| GenerateError::BadRequest(error.to_string()))
 }

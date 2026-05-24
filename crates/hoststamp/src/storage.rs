@@ -118,12 +118,36 @@ impl ProfileStore {
                      updated_at_ms = ?1
                  WHERE slug = ?2
                    AND replaced_at_ms IS NULL
+                   AND last_atomic_value < 9223372036854775807
                  RETURNING last_atomic_value",
                 params![now, slug.as_str()],
                 |row| row.get(0),
             )
-            .optional()?
-            .with_context(|| format!("profile {:?} does not exist", slug.as_str()))?;
+            .optional()?;
+
+        let Some(value) = value else {
+            let current = tx
+                .query_row(
+                    "SELECT last_atomic_value
+                     FROM hoststamp_profiles
+                     WHERE slug = ?1 AND replaced_at_ms IS NULL",
+                    params![slug.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .with_context(|| format!("profile {:?} does not exist", slug.as_str()))?;
+            if current == i64::MAX {
+                bail!(
+                    "atomic counter exhausted for profile {:?}: maximum atomic value is {}",
+                    slug.as_str(),
+                    i64::MAX
+                );
+            }
+            bail!(
+                "failed to increment atomic value for profile {:?}",
+                slug.as_str()
+            );
+        };
 
         tx.commit()?;
         Ok(value)
@@ -238,8 +262,6 @@ fn migrate(connection: &Connection) -> Result<()> {
         );
         ",
     )?;
-    ensure_column(connection, "hoststamp_profiles", "replaced_by_id", "BLOB")?;
-    rebuild_profiles_table_if_slug_is_globally_unique(connection)?;
     connection.execute_batch(
         "
         CREATE INDEX IF NOT EXISTS idx_hoststamp_profiles_created_at_ms
@@ -254,94 +276,6 @@ fn migrate(connection: &Connection) -> Result<()> {
         ",
     )?;
     Ok(())
-}
-
-fn rebuild_profiles_table_if_slug_is_globally_unique(connection: &Connection) -> Result<()> {
-    let indexes = connection
-        .prepare("PRAGMA index_list(hoststamp_profiles)")?
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-
-    let mut has_global_slug_unique = false;
-    for (name, unique, origin, partial) in indexes {
-        if unique == 0 || origin != "u" || partial != 0 {
-            continue;
-        }
-
-        if index_columns(connection, &name)? == ["slug"] {
-            has_global_slug_unique = true;
-            break;
-        }
-    }
-
-    if !has_global_slug_unique {
-        return Ok(());
-    }
-
-    connection.execute_batch(
-        "
-        CREATE TABLE hoststamp_profiles_new (
-            id BLOB PRIMARY KEY NOT NULL CHECK(length(id) = 16),
-            slug TEXT NOT NULL,
-            config_json TEXT NOT NULL,
-            config_hash BLOB NOT NULL CHECK(length(config_hash) = 32),
-            last_atomic_value INTEGER NOT NULL DEFAULT 0,
-            created_at_ms INTEGER NOT NULL,
-            updated_at_ms INTEGER NOT NULL,
-            replaced_at_ms INTEGER,
-            replaced_by_id BLOB CHECK(replaced_by_id IS NULL OR length(replaced_by_id) = 16)
-        );
-
-        INSERT INTO hoststamp_profiles_new (
-            id, slug, config_json, config_hash, last_atomic_value,
-            created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
-        )
-        SELECT
-            old.id,
-            CASE
-                WHEN old.slug LIKE '~%' AND old.replaced_at_ms IS NOT NULL
-                    THEN COALESCE(replacement.slug, old.slug)
-                ELSE old.slug
-            END,
-            old.config_json,
-            old.config_hash,
-            old.last_atomic_value,
-            old.created_at_ms,
-            old.updated_at_ms,
-            old.replaced_at_ms,
-            old.replaced_by_id
-        FROM hoststamp_profiles AS old
-        LEFT JOIN hoststamp_profiles AS replacement
-            ON old.replaced_by_id = replacement.id;
-
-        DROP TABLE hoststamp_profiles;
-        ALTER TABLE hoststamp_profiles_new RENAME TO hoststamp_profiles;
-        ",
-    )?;
-
-    Ok(())
-}
-
-fn index_columns(connection: &Connection, index_name: &str) -> Result<Vec<String>> {
-    connection
-        .prepare(&format!(
-            "PRAGMA index_info({})",
-            quote_identifier(index_name)
-        ))?
-        .query_map([], |row| row.get::<_, String>(2))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
-}
-
-fn quote_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn active_profile_exists(connection: &Connection, slug: &ProfileSlug) -> Result<bool> {
@@ -400,28 +334,6 @@ fn select_profile(connection: &Connection, slug: &ProfileSlug) -> Result<StoredP
         )
 }
 
-fn ensure_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> Result<()> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
-    let exists = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|name| name == column);
-
-    if !exists {
-        connection.execute_batch(&format!(
-            "ALTER TABLE {table} ADD COLUMN {column} {definition};"
-        ))?;
-    }
-
-    Ok(())
-}
-
 fn fixed_hash(value: Vec<u8>) -> Result<[u8; 32]> {
     value
         .try_into()
@@ -477,7 +389,7 @@ mod tests {
                 &ProfileSlug::default_profile(),
                 &ProfileConfig {
                     suffix: crate::profile::SuffixProfileConfig {
-                        length: 9,
+                        min_length: 9,
                         ..seed.suffix.clone()
                     },
                     ..seed.clone()
@@ -500,7 +412,7 @@ mod tests {
         let slug = "team-a".parse::<ProfileSlug>().expect("slug");
         let seed = ProfileConfig::from(&GenerateOptions {
             word1_lengths: Some(vec![4, 5]),
-            suffix_length: 8,
+            suffix_min_length: 8,
             ..GenerateOptions::default()
         });
 
@@ -510,7 +422,7 @@ mod tests {
         assert_eq!(profile.slug, slug);
         assert_eq!(options.count, 11);
         assert_eq!(options.word1_lengths, Some(vec![4, 5]));
-        assert_eq!(options.suffix_length, 8);
+        assert_eq!(options.suffix_min_length, 8);
     }
 
     #[test]
@@ -535,6 +447,37 @@ mod tests {
     }
 
     #[test]
+    fn increment_atomic_value_stops_at_i64_max() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = ProfileSlug::default_profile();
+        store
+            .load_or_seed_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+        store
+            .connection
+            .execute(
+                "UPDATE hoststamp_profiles SET last_atomic_value = ?1 WHERE slug = ?2",
+                params![i64::MAX, slug.as_str()],
+            )
+            .expect("set counter");
+
+        let error = store
+            .increment_atomic_value(&slug)
+            .expect_err("counter should be exhausted");
+
+        assert!(error.to_string().contains("atomic counter exhausted"));
+        assert_eq!(
+            store
+                .load_or_seed_profile(&slug, &ProfileConfig::default())
+                .expect("profile")
+                .last_atomic_value,
+            i64::MAX
+        );
+    }
+
+    #[test]
     fn replacing_profile_config_creates_new_active_profile() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
@@ -546,7 +489,6 @@ mod tests {
 
         let replacement_config = ProfileConfig::from(&GenerateOptions {
             word1_lengths: Some(vec![4]),
-            suffix_source: crate::generator::SuffixSource::Atomic,
             ..GenerateOptions::default()
         });
         let replacement = store
@@ -584,79 +526,6 @@ mod tests {
             )
             .expect("retired value");
         assert_eq!(retired_atomic_value, 1);
-    }
-
-    #[test]
-    fn migration_rewrites_old_retired_id_slug_to_original_slug() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let path = tempdir.path().join(DEFAULT_DATABASE_FILE);
-        let connection = Connection::open(&path).expect("connection");
-        connection
-            .execute_batch(
-                "
-                CREATE TABLE hoststamp_profiles (
-                    id BLOB PRIMARY KEY NOT NULL CHECK(length(id) = 16),
-                    slug TEXT NOT NULL UNIQUE,
-                    config_json TEXT NOT NULL,
-                    config_hash BLOB NOT NULL CHECK(length(config_hash) = 32),
-                    last_atomic_value INTEGER NOT NULL DEFAULT 0,
-                    created_at_ms INTEGER NOT NULL,
-                    updated_at_ms INTEGER NOT NULL,
-                    replaced_at_ms INTEGER,
-                    replaced_by_id BLOB CHECK(replaced_by_id IS NULL OR length(replaced_by_id) = 16)
-                );
-                ",
-            )
-            .expect("schema");
-        let retired_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
-        let active_id = Uuid::parse_str("018f3f7a-5f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
-        let config = ProfileConfig::default();
-        let config_json = serde_json::to_string(&config).expect("json");
-        let hash = config_hash(&config).expect("hash");
-        connection
-            .execute(
-                "INSERT INTO hoststamp_profiles (
-                    id, slug, config_json, config_hash, last_atomic_value,
-                    created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
-                ) VALUES (?1, ?2, ?3, ?4, 0, 1, 2, 2, ?5)",
-                params![
-                    retired_id.as_bytes().as_slice(),
-                    format!("~{}", retired_id.simple()),
-                    config_json,
-                    hash.as_slice(),
-                    active_id.as_bytes().as_slice(),
-                ],
-            )
-            .expect("retired");
-        connection
-            .execute(
-                "INSERT INTO hoststamp_profiles (
-                    id, slug, config_json, config_hash, last_atomic_value,
-                    created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
-                ) VALUES (?1, '_', ?2, ?3, 0, 2, 2, NULL, NULL)",
-                params![
-                    active_id.as_bytes().as_slice(),
-                    config_json,
-                    hash.as_slice()
-                ],
-            )
-            .expect("active");
-        drop(connection);
-
-        let mut store = ProfileStore::open(&StorageUrl::Sqlite(path)).expect("store");
-        store
-            .load_or_seed_profile(&ProfileSlug::default_profile(), &config)
-            .expect("profile");
-        let slugs = store
-            .connection
-            .prepare("SELECT slug FROM hoststamp_profiles ORDER BY replaced_at_ms IS NULL, id")
-            .expect("statement")
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("rows")
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .expect("slugs");
-
-        assert_eq!(slugs, vec!["_", "_"]);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use hoststamp::{
     SERVICE_NAME,
     config::{self, Overrides},
     credits, dictionary,
-    generator::{self, GenerateOptions, SuffixHash, SuffixSource},
+    generator::{self, GenerateOptions},
     notices,
     profile::{self, ProfileConfig, ProfileSlug},
     server,
@@ -87,17 +87,9 @@ struct GenerateArgs {
     #[arg(long = "no-suffix", global = true, action = clap::ArgAction::SetTrue)]
     no_suffix: bool,
 
-    /// Number of hex characters in the suffix.
-    #[arg(long, global = true, value_parser = generator::parse_suffix_length)]
-    suffix_length: Option<usize>,
-
-    /// Source for the suffix (random or atomic).
-    #[arg(long, global = true, value_parser = generator::parse_suffix_source)]
-    suffix_source: Option<SuffixSource>,
-
-    /// Hash algorithm for the suffix.
-    #[arg(long, global = true, value_parser = generator::parse_suffix_hash)]
-    suffix_hash: Option<SuffixHash>,
+    /// Minimum number of lowercase alphanumeric characters in the suffix.
+    #[arg(long, global = true, value_parser = generator::parse_suffix_min_length)]
+    suffix_min_length: Option<usize>,
 
     /// Number of hostnames to generate.
     #[arg(long, global = true, value_parser = generator::parse_count)]
@@ -143,9 +135,7 @@ impl GenerateArgs {
             } else {
                 base.suffix_enabled
             },
-            suffix_length: self.suffix_length.unwrap_or(base.suffix_length),
-            suffix_source: self.suffix_source.unwrap_or(base.suffix_source),
-            suffix_hash: self.suffix_hash.unwrap_or(base.suffix_hash),
+            suffix_min_length: self.suffix_min_length.unwrap_or(base.suffix_min_length),
             count: self.count.unwrap_or(base.count),
         })
     }
@@ -242,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
                 print_capacity_report(&options)?;
                 return Ok(());
             }
+            generator::validate_generate_options(&options)?;
             let profile = reconcile_atomic_profile(&mut store, profile, &options)?;
             for hostname in generate_with_profile(options, &mut store, &profile)? {
                 println!("{hostname}");
@@ -267,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
                 print_capacity_report(&options)?;
                 return Ok(());
             }
+            generator::validate_generate_options(&options)?;
             let profile = reconcile_atomic_profile(&mut store, profile, &options)?;
             let atomic = server::AtomicContext::new(store, profile.slug);
             server::serve_with_atomic(settings.addr, options, atomic)
@@ -281,14 +273,13 @@ fn generate_with_profile(
     store: &mut ProfileStore,
     profile: &StoredProfile,
 ) -> anyhow::Result<Vec<String>> {
-    if options.suffix_enabled && options.suffix_source == SuffixSource::Atomic {
+    if options.suffix_enabled {
         let profile_id = profile.id;
         let profile_slug = profile.slug.clone();
-        let suffix_hash = options.suffix_hash;
-        let suffix_length = options.suffix_length;
-        return generator::generate_many_with_atomic_suffix(options, || {
+        let suffix_min_length = options.suffix_min_length;
+        return generator::generate_many_with_suffix(options, || {
             let atomic_value = store.increment_atomic_value(&profile_slug)?;
-            generator::compute_atomic_suffix(profile_id, atomic_value, suffix_hash, suffix_length)
+            generator::compute_profile_suffix(profile_id, atomic_value, suffix_min_length)
         });
     }
 
@@ -322,13 +313,37 @@ fn print_capacity_report(options: &GenerateOptions) -> anyhow::Result<()> {
     );
     if report.suffix_enabled {
         println!(
-            "suffix_variants\t{}",
+            "fixed_suffix_variants\t{}",
             format_decimal(report.suffix_variants.as_deref().unwrap_or("0"))
         );
         println!("suffix_bits\t{}", report.suffix_bits.unwrap_or(0));
+        if let Some(max_value) = report.random_fallback_max_value {
+            println!("random_fallback_min_value\t1");
+            println!(
+                "random_fallback_max_value\t{}",
+                format_decimal(&max_value.to_string())
+            );
+        } else {
+            println!("random_fallback_min_value\tn/a");
+            println!("random_fallback_max_value\tn/a");
+        }
+        if let Some(max_value) = report.atomic_storage_max_value {
+            println!("atomic_min_value\t1");
+            println!(
+                "atomic_storage_max_value\t{}",
+                format_decimal(&max_value.to_string())
+            );
+        } else {
+            println!("atomic_min_value\tn/a");
+            println!("atomic_storage_max_value\tn/a");
+        }
     } else {
-        println!("suffix_variants\tdisabled");
+        println!("fixed_suffix_variants\tdisabled");
         println!("suffix_bits\t0");
+        println!("random_fallback_min_value\tdisabled");
+        println!("random_fallback_max_value\tdisabled");
+        println!("atomic_min_value\tdisabled");
+        println!("atomic_storage_max_value\tdisabled");
     }
     println!("total_variants\t{}", format_decimal(&report.total_variants));
 
@@ -402,9 +417,7 @@ fn print_profile_config(prefix: &str, config: &ProfileConfig) {
 
     println!("[{prefix}.suffix]");
     println!("enabled = {}", config.suffix.enabled);
-    println!("length = {}", config.suffix.length);
-    println!("source = {:?}", config.suffix.source.to_string());
-    println!("hash = {:?}", config.suffix.hash.to_string());
+    println!("min_length = {}", config.suffix.min_length);
 }
 
 fn print_generate_options(prefix: &str, options: &GenerateOptions) {
@@ -422,9 +435,7 @@ fn print_generate_options(prefix: &str, options: &GenerateOptions) {
 
     println!("[{prefix}.suffix]");
     println!("enabled = {}", options.suffix_enabled);
-    println!("length = {}", options.suffix_length);
-    println!("source = {:?}", options.suffix_source.to_string());
-    println!("hash = {:?}", options.suffix_hash.to_string());
+    println!("min_length = {}", options.suffix_min_length);
     println!();
 
     println!("[{prefix}.request]");
@@ -474,7 +485,7 @@ fn reconcile_atomic_profile(
     profile: StoredProfile,
     options: &GenerateOptions,
 ) -> anyhow::Result<StoredProfile> {
-    if !options.suffix_enabled || options.suffix_source != SuffixSource::Atomic {
+    if !options.suffix_enabled {
         return Ok(profile);
     }
 
@@ -510,7 +521,11 @@ fn confirm_atomic_profile_replacement(profile: &StoredProfile) -> anyhow::Result
     stderr.flush()?;
 
     let mut first = String::new();
-    io::stdin().read_line(&mut first)?;
+    if io::stdin().read_line(&mut first)? == 0 {
+        anyhow::bail!(
+            "profile replacement requires interactive confirmation; re-run interactively, use matching profile options, or pass --no-suffix"
+        );
+    }
     if first.trim() != profile.slug.as_str() {
         anyhow::bail!("profile replacement cancelled");
     }
@@ -519,7 +534,11 @@ fn confirm_atomic_profile_replacement(profile: &StoredProfile) -> anyhow::Result
     stderr.flush()?;
 
     let mut second = String::new();
-    io::stdin().read_line(&mut second)?;
+    if io::stdin().read_line(&mut second)? == 0 {
+        anyhow::bail!(
+            "profile replacement requires interactive confirmation; re-run interactively, use matching profile options, or pass --no-suffix"
+        );
+    }
     if !second.trim().eq_ignore_ascii_case("replace") {
         anyhow::bail!("profile replacement cancelled");
     }
