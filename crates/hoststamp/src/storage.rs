@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-use crate::profile::{ProfileConfig, ProfileSlug};
+use crate::profile::{ProfileAccess, ProfileConfig, ProfileSlug};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -54,9 +54,26 @@ impl StorageUrl {
 pub struct StoredProfile {
     pub id: Uuid,
     pub slug: ProfileSlug,
+    pub access: ProfileAccess,
     pub config: ProfileConfig,
     pub config_hash: [u8; 32],
     pub last_atomic_value: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredProfileToken {
+    pub token_id: String,
+    pub profile_id: Uuid,
+    pub name: String,
+    pub created_at_ms: i64,
+    pub last_used_at_ms: Option<i64>,
+    pub revoked_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfileTokenAuthRecord {
+    pub profile_id: Uuid,
+    pub token_hash: Vec<u8>,
 }
 
 pub struct ProfileStore {
@@ -88,11 +105,12 @@ impl ProfileStore {
         if !active_profile_exists(&tx, slug)? {
             tx.execute(
                 "INSERT INTO hoststamp_profiles (
-                    id, slug, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
-                ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+                    id, slug, access, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6)",
                 params![
                     Uuid::now_v7().as_bytes().as_slice(),
                     slug.as_str(),
+                    ProfileAccess::Private.to_string(),
                     config_json,
                     config_hash.as_slice(),
                     now,
@@ -111,7 +129,7 @@ impl ProfileStore {
 
     pub fn list_profiles(&self) -> Result<Vec<StoredProfile>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, slug, config_json, config_hash, last_atomic_value
+            "SELECT id, slug, access, config_json, config_hash, last_atomic_value
              FROM hoststamp_profiles
              WHERE replaced_at_ms IS NULL
              ORDER BY slug ASC",
@@ -140,11 +158,12 @@ impl ProfileStore {
         let config_hash = config_hash(config)?;
         tx.execute(
             "INSERT INTO hoststamp_profiles (
-                id, slug, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
-            ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+                id, slug, access, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6)",
             params![
                 Uuid::now_v7().as_bytes().as_slice(),
                 slug.as_str(),
+                ProfileAccess::Private.to_string(),
                 config_json,
                 config_hash.as_slice(),
                 now,
@@ -173,6 +192,30 @@ impl ProfileStore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn set_profile_access(
+        &mut self,
+        slug: &ProfileSlug,
+        access: ProfileAccess,
+    ) -> Result<StoredProfile> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = unix_epoch_millis()?;
+        let changed = tx.execute(
+            "UPDATE hoststamp_profiles
+             SET access = ?1,
+                 updated_at_ms = ?2
+             WHERE slug = ?3 AND replaced_at_ms IS NULL",
+            params![access.to_string(), now, slug.as_str()],
+        )?;
+        if changed == 0 {
+            bail!("profile {:?} does not exist", slug.as_str());
+        }
+        let profile = select_profile(&tx, slug)?;
+        tx.commit()?;
+        Ok(profile)
     }
 
     pub fn reset_atomic_value(
@@ -276,11 +319,12 @@ impl ProfileStore {
         let config_hash = config_hash(config)?;
         tx.execute(
             "INSERT INTO hoststamp_profiles (
-                id, slug, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
-            ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+                id, slug, access, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6)",
             params![
                 new_id.as_bytes().as_slice(),
                 slug.as_str(),
+                ProfileAccess::Private.to_string(),
                 config_json,
                 config_hash.as_slice(),
                 now,
@@ -290,6 +334,107 @@ impl ProfileStore {
         let profile = select_profile(&tx, slug)?;
         tx.commit()?;
         Ok(profile)
+    }
+
+    pub fn create_profile_token(
+        &mut self,
+        profile_id: Uuid,
+        token_id: &str,
+        name: &str,
+        token_hash: [u8; 32],
+    ) -> Result<StoredProfileToken> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("profile token name must not be empty");
+        }
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = unix_epoch_millis()?;
+        tx.execute(
+            "INSERT INTO hoststamp_profile_tokens (
+                token_id, profile_id, name, token_hash, created_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                token_id,
+                profile_id.as_bytes().as_slice(),
+                name,
+                token_hash.as_slice(),
+                now,
+            ],
+        )?;
+        let token = select_profile_token(&tx, profile_id, token_id)?;
+        tx.commit()?;
+        Ok(token)
+    }
+
+    pub fn list_profile_tokens(&self, profile_id: Uuid) -> Result<Vec<StoredProfileToken>> {
+        let mut statement = self.connection.prepare(
+            "SELECT token_id, profile_id, name, created_at_ms, last_used_at_ms, revoked_at_ms
+             FROM hoststamp_profile_tokens
+             WHERE profile_id = ?1
+             ORDER BY created_at_ms ASC",
+        )?;
+        let tokens = statement
+            .query_map(
+                params![profile_id.as_bytes().as_slice()],
+                profile_token_from_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(tokens)
+    }
+
+    pub fn revoke_profile_token(
+        &mut self,
+        profile_id: Uuid,
+        token_id: &str,
+    ) -> Result<StoredProfileToken> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = unix_epoch_millis()?;
+        let changed = tx.execute(
+            "UPDATE hoststamp_profile_tokens
+             SET revoked_at_ms = ?1
+             WHERE profile_id = ?2 AND token_id = ?3 AND revoked_at_ms IS NULL",
+            params![now, profile_id.as_bytes().as_slice(), token_id],
+        )?;
+        if changed == 0 {
+            bail!("active profile token {token_id:?} does not exist");
+        }
+        let token = select_profile_token(&tx, profile_id, token_id)?;
+        tx.commit()?;
+        Ok(token)
+    }
+
+    pub fn load_profile_token_auth(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<ProfileTokenAuthRecord>> {
+        self.connection
+            .query_row(
+                "SELECT profile_id, token_hash
+                 FROM hoststamp_profile_tokens
+                 WHERE token_id = ?1 AND revoked_at_ms IS NULL",
+                params![token_id],
+                |row| {
+                    let profile_id_blob: Vec<u8> = row.get(0)?;
+                    let profile_id = Uuid::from_slice(&profile_id_blob).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Blob,
+                            error.into(),
+                        )
+                    })?;
+                    Ok(ProfileTokenAuthRecord {
+                        profile_id,
+                        token_hash: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     fn open_sqlite(path: &Path) -> Result<Self> {
@@ -346,6 +491,7 @@ fn migrate(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS hoststamp_profiles (
             id BLOB PRIMARY KEY NOT NULL CHECK(length(id) = 16),
             slug TEXT NOT NULL,
+            access TEXT NOT NULL DEFAULT 'private' CHECK(access IN ('public', 'private')),
             config_json TEXT NOT NULL,
             config_hash BLOB NOT NULL CHECK(length(config_hash) = 32),
             last_atomic_value INTEGER NOT NULL DEFAULT 0,
@@ -353,6 +499,17 @@ fn migrate(connection: &Connection) -> Result<()> {
             updated_at_ms INTEGER NOT NULL,
             replaced_at_ms INTEGER,
             replaced_by_id BLOB CHECK(replaced_by_id IS NULL OR length(replaced_by_id) = 16)
+        );
+
+        CREATE TABLE IF NOT EXISTS hoststamp_profile_tokens (
+            token_id TEXT PRIMARY KEY NOT NULL,
+            profile_id BLOB NOT NULL CHECK(length(profile_id) = 16)
+                REFERENCES hoststamp_profiles(id),
+            name TEXT NOT NULL,
+            token_hash BLOB NOT NULL CHECK(length(token_hash) = 32),
+            created_at_ms INTEGER NOT NULL,
+            last_used_at_ms INTEGER,
+            revoked_at_ms INTEGER
         );
         ",
     )?;
@@ -367,6 +524,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_hoststamp_profiles_active_slug
             ON hoststamp_profiles(slug)
             WHERE replaced_at_ms IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_hoststamp_profile_tokens_profile_id
+            ON hoststamp_profile_tokens(profile_id);
         ",
     )?;
     Ok(())
@@ -386,7 +546,7 @@ fn active_profile_exists(connection: &Connection, slug: &ProfileSlug) -> Result<
 fn select_profile(connection: &Connection, slug: &ProfileSlug) -> Result<StoredProfile> {
     connection
         .query_row(
-            "SELECT id, slug, config_json, config_hash, last_atomic_value
+            "SELECT id, slug, access, config_json, config_hash, last_atomic_value
              FROM hoststamp_profiles
              WHERE slug = ?1 AND replaced_at_ms IS NULL",
             params![slug.as_str()],
@@ -399,12 +559,14 @@ fn select_profile(connection: &Connection, slug: &ProfileSlug) -> Result<StoredP
 fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProfile> {
     let id_blob: Vec<u8> = row.get(0)?;
     let slug_value: String = row.get(1)?;
-    let config_json: String = row.get(2)?;
-    let config_hash_blob: Vec<u8> = row.get(3)?;
-    let last_atomic_value: i64 = row.get(4)?;
+    let access_value: String = row.get(2)?;
+    let config_json: String = row.get(3)?;
+    let config_hash_blob: Vec<u8> = row.get(4)?;
+    let last_atomic_value: i64 = row.get(5)?;
     stored_profile_from_parts(
         id_blob,
         slug_value,
+        access_value,
         config_json,
         config_hash_blob,
         last_atomic_value,
@@ -417,6 +579,7 @@ fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProfile> 
 fn stored_profile_from_parts(
     id_blob: Vec<u8>,
     slug_value: String,
+    access_value: String,
     config_json: String,
     config_hash_blob: Vec<u8>,
     last_atomic_value: i64,
@@ -426,15 +589,54 @@ fn stored_profile_from_parts(
         .parse::<ProfileSlug>()
         .map_err(anyhow::Error::msg)
         .context("stored profile slug is invalid")?;
+    let access = access_value
+        .parse::<ProfileAccess>()
+        .map_err(anyhow::Error::msg)
+        .context("stored profile access is invalid")?;
     let config = serde_json::from_str::<ProfileConfig>(&config_json)
         .context("stored profile config is invalid")?;
     let config_hash = fixed_hash(config_hash_blob)?;
     Ok(StoredProfile {
         id,
         slug,
+        access,
         config,
         config_hash,
         last_atomic_value,
+    })
+}
+
+fn select_profile_token(
+    connection: &Connection,
+    profile_id: Uuid,
+    token_id: &str,
+) -> Result<StoredProfileToken> {
+    connection
+        .query_row(
+            "SELECT token_id, profile_id, name, created_at_ms, last_used_at_ms, revoked_at_ms
+             FROM hoststamp_profile_tokens
+             WHERE profile_id = ?1 AND token_id = ?2",
+            params![profile_id.as_bytes().as_slice(), token_id],
+            profile_token_from_row,
+        )
+        .optional()?
+        .with_context(|| format!("profile token {token_id:?} does not exist"))
+}
+
+fn profile_token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProfileToken> {
+    let token_id: String = row.get(0)?;
+    let profile_id_blob: Vec<u8> = row.get(1)?;
+    let profile_id = Uuid::from_slice(&profile_id_blob).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob, error.into())
+    })?;
+
+    Ok(StoredProfileToken {
+        token_id,
+        profile_id,
+        name: row.get(2)?,
+        created_at_ms: row.get(3)?,
+        last_used_at_ms: row.get(4)?,
+        revoked_at_ms: row.get(5)?,
     })
 }
 
@@ -503,6 +705,7 @@ mod tests {
 
         assert_eq!(profile.id, loaded.id);
         assert_eq!(loaded.slug.as_str(), DEFAULT_PROFILE_SLUG);
+        assert_eq!(loaded.access, ProfileAccess::Private);
         assert_eq!(loaded.config, seed);
         assert_eq!(loaded.config_hash, config_hash(&seed).expect("hash"));
         assert_eq!(loaded.last_atomic_value, 0);
@@ -657,6 +860,50 @@ mod tests {
         let recreated = store.create_profile(&slug, &seed).expect("recreated");
         assert_ne!(recreated.id, created.id);
         assert_eq!(recreated.last_atomic_value, 0);
+    }
+
+    #[test]
+    fn profile_access_and_tokens_round_trip() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let profile = store
+            .create_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+
+        let public = store
+            .set_profile_access(&slug, ProfileAccess::Public)
+            .expect("access");
+        assert_eq!(public.access, ProfileAccess::Public);
+
+        let hash = [7_u8; 32];
+        let token = store
+            .create_profile_token(profile.id, "token-id", "deploy", hash)
+            .expect("token");
+        assert_eq!(token.name, "deploy");
+        assert_eq!(
+            store.list_profile_tokens(profile.id).expect("tokens").len(),
+            1
+        );
+
+        let auth_record = store
+            .load_profile_token_auth("token-id")
+            .expect("auth")
+            .expect("record");
+        assert_eq!(auth_record.profile_id, profile.id);
+        assert_eq!(auth_record.token_hash, hash);
+
+        let revoked = store
+            .revoke_profile_token(profile.id, "token-id")
+            .expect("revoked");
+        assert!(revoked.revoked_at_ms.is_some());
+        assert!(
+            store
+                .load_profile_token_auth("token-id")
+                .expect("auth")
+                .is_none()
+        );
     }
 
     #[test]

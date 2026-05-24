@@ -71,6 +71,35 @@ pub fn parse_profile_slug(value: &str) -> Result<ProfileSlug, String> {
     Ok(ProfileSlug(value.to_owned()))
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProfileAccess {
+    Public,
+    #[default]
+    Private,
+}
+
+impl fmt::Display for ProfileAccess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Public => f.write_str("public"),
+            Self::Private => f.write_str("private"),
+        }
+    }
+}
+
+impl FromStr for ProfileAccess {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "public" => Ok(Self::Public),
+            "private" => Ok(Self::Private),
+            _ => Err("profile access must be public or private".to_owned()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileConfig {
@@ -181,6 +210,19 @@ mod tests {
             Some(vec![generator::DEFAULT_WORD_LENGTH])
         );
         assert!(profile.uses_current_dictionary());
+    }
+
+    #[test]
+    fn parses_profile_access() {
+        assert_eq!(
+            "public".parse::<ProfileAccess>().expect("public"),
+            ProfileAccess::Public
+        );
+        assert_eq!(
+            "private".parse::<ProfileAccess>().expect("private"),
+            ProfileAccess::Private
+        );
+        assert!("missing".parse::<ProfileAccess>().is_err());
     }
 
     #[test]

@@ -2,9 +2,10 @@
 
 use crate::{
     SERVICE_NAME,
+    auth::{ApiAuthConfig, constant_time_eq, parse_profile_token, verify_profile_token_hash},
     generator::{self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname},
-    profile::{ProfileConfig, ProfileSlug},
-    storage::ProfileStore,
+    profile::{ProfileAccess, ProfileConfig, ProfileSlug},
+    storage::{ProfileStore, StoredProfile},
     ux,
 };
 use anyhow::anyhow;
@@ -23,6 +24,7 @@ use tokio::{net::TcpListener, signal, sync::Mutex};
 pub struct AppState {
     generate: GenerateOptions,
     atomic: Option<AtomicContext>,
+    auth: ApiAuthConfig,
 }
 
 #[derive(Clone)]
@@ -120,6 +122,14 @@ pub fn app(generate_options: GenerateOptions) -> Router {
 }
 
 pub fn app_with_atomic(generate_options: GenerateOptions, atomic: Option<AtomicContext>) -> Router {
+    app_with_auth(generate_options, atomic, ApiAuthConfig::default())
+}
+
+pub fn app_with_auth(
+    generate_options: GenerateOptions,
+    atomic: Option<AtomicContext>,
+    auth: ApiAuthConfig,
+) -> Router {
     Router::new()
         .route("/", get(ux::index))
         .route("/healthz", get(healthz))
@@ -134,6 +144,7 @@ pub fn app_with_atomic(generate_options: GenerateOptions, atomic: Option<AtomicC
         .with_state(AppState {
             generate: generate_options,
             atomic,
+            auth,
         })
 }
 
@@ -162,13 +173,14 @@ async fn generate_method_not_allowed() -> Response {
 
 async fn generate_one(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<GenerateQuery>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<Response, Response> {
     let overrides = GenerateOverrides {
         count: query.count,
         ..GenerateOverrides::default()
     };
-    let hostnames = generate_with_state(overrides, &state)
+    let hostnames = generate_with_state(overrides, &state, &headers)
         .await
         .map_err(generate_error_response)?;
 
@@ -178,8 +190,8 @@ async fn generate_one(
     ))
 }
 
-async fn random_one(Query(query): Query<RandomQuery>) -> Result<Response, (StatusCode, String)> {
-    let overrides = random_overrides(&query)?;
+async fn random_one(Query(query): Query<RandomQuery>) -> Result<Response, Response> {
+    let overrides = random_overrides(&query).map_err(bad_request_response)?;
     let options = GenerateOptions::default().with_overrides(overrides);
     let hostnames = generator::generate_many(options)
         .map(|hostnames| {
@@ -199,16 +211,17 @@ async fn random_one(Query(query): Query<RandomQuery>) -> Result<Response, (Statu
 
 async fn regenerate_one(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<RegenerateQuery>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<Response, Response> {
     if query.atomic_value < generator::ATOMIC_MIN_VALUE {
-        return Err(bad_request(format!(
+        return Err(bad_request_response(format!(
             "atomic value must be at least {}",
             generator::ATOMIC_MIN_VALUE
         )));
     }
 
-    let hostname = regenerate_with_state(&query, &state)
+    let hostname = regenerate_with_state(&query, &state, &headers)
         .await
         .map_err(generate_error_response)?;
 
@@ -218,31 +231,31 @@ async fn regenerate_one(
     ))
 }
 
-fn random_overrides(query: &RandomQuery) -> Result<GenerateOverrides, (StatusCode, String)> {
+fn random_overrides(query: &RandomQuery) -> Result<GenerateOverrides, String> {
     let word1_categories = query
         .word1_categories
         .as_deref()
         .map(generator::parse_categories)
         .transpose()
-        .map_err(bad_request)?;
+        .map_err(|error| error.to_string())?;
     let word2_categories = query
         .word2_categories
         .as_deref()
         .map(generator::parse_categories)
         .transpose()
-        .map_err(bad_request)?;
+        .map_err(|error| error.to_string())?;
     let word1_lengths = query
         .word1_lengths
         .as_deref()
         .map(generator::parse_lengths)
         .transpose()
-        .map_err(bad_request)?;
+        .map_err(|error| error.to_string())?;
     let word2_lengths = query
         .word2_lengths
         .as_deref()
         .map(generator::parse_lengths)
         .transpose()
-        .map_err(bad_request)?;
+        .map_err(|error| error.to_string())?;
 
     let overrides = GenerateOverrides {
         word1_enabled: query.word1_enabled,
@@ -262,6 +275,7 @@ fn random_overrides(query: &RandomQuery) -> Result<GenerateOverrides, (StatusCod
 async fn regenerate_with_state(
     query: &RegenerateQuery,
     state: &AppState,
+    headers: &HeaderMap,
 ) -> Result<GeneratedHostname, GenerateError> {
     let Some(atomic) = &state.atomic else {
         return Err(GenerateError::BadRequest(
@@ -275,9 +289,14 @@ async fn regenerate_with_state(
     };
 
     let store = atomic.store.lock().await;
-    let profile = store
-        .load_profile(&profile_slug)
-        .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
+    let profile = match store.load_profile(&profile_slug) {
+        Ok(profile) => profile,
+        Err(error) => {
+            authorize_missing_profile_request(headers, &state.auth)?;
+            return Err(GenerateError::BadRequest(error.to_string()));
+        }
+    };
+    authorize_profile_request(headers, &state.auth, &store, &profile)?;
     if !profile.config.suffix.enabled {
         return Err(GenerateError::BadRequest(format!(
             "profile {:?} cannot regenerate hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
@@ -373,13 +392,21 @@ fn shared_profile(hostnames: &[GeneratedHostname]) -> Option<&str> {
 async fn generate_with_state(
     overrides: GenerateOverrides,
     state: &AppState,
+    headers: &HeaderMap,
 ) -> Result<Vec<GeneratedHostname>, GenerateError> {
     let options = match &state.atomic {
         Some(atomic) => {
             let mut store = atomic.store.lock().await;
-            let profile = store
-                .load_or_seed_profile(&atomic.profile_slug, &ProfileConfig::default())
-                .map_err(GenerateError::Internal)?;
+            let profile = if state.auth.required {
+                store
+                    .load_profile(&atomic.profile_slug)
+                    .map_err(|error| GenerateError::BadRequest(error.to_string()))?
+            } else {
+                store
+                    .load_or_seed_profile(&atomic.profile_slug, &ProfileConfig::default())
+                    .map_err(GenerateError::Internal)?
+            };
+            authorize_profile_request(headers, &state.auth, &store, &profile)?;
             let base = profile.config.to_generate_options(state.generate.count);
             let options = base.with_overrides(overrides);
 
@@ -429,12 +456,109 @@ async fn generate_with_state(
         .map_err(|error| GenerateError::BadRequest(error.to_string()))
 }
 
-fn bad_request(error: impl ToString) -> (StatusCode, String) {
-    (StatusCode::BAD_REQUEST, error.to_string())
+fn authorize_profile_request(
+    headers: &HeaderMap,
+    auth: &ApiAuthConfig,
+    store: &ProfileStore,
+    profile: &StoredProfile,
+) -> Result<(), GenerateError> {
+    if !auth.required || profile.access == ProfileAccess::Public {
+        return Ok(());
+    }
+
+    let Some(token) = bearer_token(headers) else {
+        return Err(GenerateError::Unauthorized(
+            "authorization bearer token is required".to_owned(),
+        ));
+    };
+
+    if auth
+        .admin_token
+        .as_ref()
+        .is_some_and(|admin_token| constant_time_eq(token, admin_token.expose()))
+    {
+        return Ok(());
+    }
+
+    let Some(parsed) = parse_profile_token(token) else {
+        return Err(GenerateError::Unauthorized(
+            "authorization bearer token is invalid".to_owned(),
+        ));
+    };
+    let Some(hash_key) = auth.token_hash_key.as_ref() else {
+        return Err(GenerateError::Unauthorized(
+            "authorization bearer token is invalid".to_owned(),
+        ));
+    };
+    let Some(record) = store
+        .load_profile_token_auth(parsed.token_id)
+        .map_err(GenerateError::Internal)?
+    else {
+        return Err(GenerateError::Unauthorized(
+            "authorization bearer token is invalid".to_owned(),
+        ));
+    };
+    if record.profile_id != profile.id {
+        return Err(GenerateError::Unauthorized(
+            "authorization bearer token is invalid".to_owned(),
+        ));
+    }
+    if verify_profile_token_hash(hash_key, parsed.secret, &record.token_hash)
+        .map_err(GenerateError::Internal)?
+    {
+        return Ok(());
+    }
+
+    Err(GenerateError::Unauthorized(
+        "authorization bearer token is invalid".to_owned(),
+    ))
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let mut parts = value.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+    if parts.next().is_some() || !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    Some(token)
+}
+
+fn authorize_missing_profile_request(
+    headers: &HeaderMap,
+    auth: &ApiAuthConfig,
+) -> Result<(), GenerateError> {
+    if !auth.required {
+        return Ok(());
+    }
+
+    let Some(token) = bearer_token(headers) else {
+        return Err(GenerateError::Unauthorized(
+            "authorization bearer token is required".to_owned(),
+        ));
+    };
+
+    if auth
+        .admin_token
+        .as_ref()
+        .is_some_and(|admin_token| constant_time_eq(token, admin_token.expose()))
+    {
+        return Ok(());
+    }
+
+    Err(GenerateError::Unauthorized(
+        "authorization bearer token is invalid".to_owned(),
+    ))
+}
+
+fn bad_request_response(error: impl ToString) -> Response {
+    (StatusCode::BAD_REQUEST, error.to_string()).into_response()
 }
 
 enum GenerateError {
     BadRequest(String),
+    Unauthorized(String),
     Internal(anyhow::Error),
 }
 
@@ -453,13 +577,21 @@ impl std::error::Error for AtomicStorageError {
     }
 }
 
-fn generate_error_response(error: GenerateError) -> (StatusCode, String) {
+fn generate_error_response(error: GenerateError) -> Response {
     match error {
-        GenerateError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+        GenerateError::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+        GenerateError::Unauthorized(message) => {
+            let mut response = (StatusCode::UNAUTHORIZED, message).into_response();
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+            response
+        }
         GenerateError::Internal(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             anyhow!("profile storage error: {error}").to_string(),
-        ),
+        )
+            .into_response(),
     }
 }
 
@@ -476,10 +608,17 @@ pub async fn serve_with_atomic(
     addr: SocketAddr,
     generate: GenerateOptions,
     atomic: AtomicContext,
+    auth: ApiAuthConfig,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    serve_with_shutdown_with_options_and_atomic(listener, generate, Some(atomic), shutdown_signal())
-        .await
+    serve_with_shutdown_with_options_and_atomic(
+        listener,
+        generate,
+        Some(atomic),
+        auth,
+        shutdown_signal(),
+    )
+    .await
 }
 
 pub async fn serve_with_shutdown<F>(listener: TcpListener, shutdown: F) -> std::io::Result<()>
@@ -497,13 +636,21 @@ pub async fn serve_with_shutdown_with_options<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    serve_with_shutdown_with_options_and_atomic(listener, generate, None, shutdown).await
+    serve_with_shutdown_with_options_and_atomic(
+        listener,
+        generate,
+        None,
+        ApiAuthConfig::default(),
+        shutdown,
+    )
+    .await
 }
 
 pub async fn serve_with_shutdown_with_options_and_atomic<F>(
     listener: TcpListener,
     generate: GenerateOptions,
     atomic: Option<AtomicContext>,
+    auth: ApiAuthConfig,
     shutdown: F,
 ) -> std::io::Result<()>
 where
@@ -511,7 +658,7 @@ where
 {
     let bound = listener.local_addr()?;
     tracing::info!(%bound, "hoststamp listening");
-    axum::serve(listener, app_with_atomic(generate, atomic))
+    axum::serve(listener, app_with_auth(generate, atomic, auth))
         .with_graceful_shutdown(shutdown)
         .await
 }

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-use crate::storage::{DATABASE_ENV, DEFAULT_DATABASE_FILE, StorageUrl};
+use crate::{
+    auth::{
+        ADMIN_TOKEN_ENV, API_AUTH_REQUIRED_ENV, ApiAuthConfig, PROFILE_TOKEN_HASH_KEY_ENV,
+        SecretString,
+    },
+    storage::{DATABASE_ENV, DEFAULT_DATABASE_FILE, StorageUrl},
+};
 use serde::Deserialize;
 use std::{
     env, fmt, fs, io,
@@ -18,6 +24,7 @@ pub struct Settings {
     pub addr: SocketAddr,
     pub config_path: Option<PathBuf>,
     pub database_url: StorageUrl,
+    pub auth: ApiAuthConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -32,6 +39,9 @@ pub struct ConfigEnv {
     pub config_path: Option<PathBuf>,
     pub addr: Option<String>,
     pub database_url: Option<String>,
+    pub api_auth_required: Option<String>,
+    pub admin_token: Option<String>,
+    pub token_hash_key: Option<String>,
     pub xdg_config_home: Option<PathBuf>,
     pub home: Option<PathBuf>,
 }
@@ -42,6 +52,9 @@ impl ConfigEnv {
             config_path: env::var_os(CONFIG_ENV).map(PathBuf::from),
             addr: env::var(ADDR_ENV).ok(),
             database_url: env::var(DATABASE_ENV).ok(),
+            api_auth_required: env::var(API_AUTH_REQUIRED_ENV).ok(),
+            admin_token: env::var(ADMIN_TOKEN_ENV).ok(),
+            token_hash_key: env::var(PROFILE_TOKEN_HASH_KEY_ENV).ok(),
             xdg_config_home: env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
             home: env::var_os("HOME").map(PathBuf::from),
         }
@@ -71,6 +84,16 @@ pub enum LoadError {
         source_name: &'static str,
         reason: String,
     },
+    ParseBool {
+        value: String,
+        source_name: &'static str,
+    },
+    InvalidSecret {
+        source_name: String,
+    },
+    MissingSecret {
+        source_name: String,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -99,6 +122,11 @@ impl fmt::Display for LoadError {
                 source_name,
                 reason,
             } => write!(f, "invalid {source_name} database URL {value:?}: {reason}"),
+            Self::ParseBool { value, source_name } => {
+                write!(f, "invalid {source_name} boolean {value:?}")
+            }
+            Self::InvalidSecret { source_name } => write!(f, "{source_name} must not be empty"),
+            Self::MissingSecret { source_name } => write!(f, "{source_name} is required"),
         }
     }
 }
@@ -106,7 +134,11 @@ impl fmt::Display for LoadError {
 impl std::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::MissingConfig { .. } | Self::ParseDatabaseUrl { .. } => None,
+            Self::MissingConfig { .. }
+            | Self::ParseDatabaseUrl { .. }
+            | Self::ParseBool { .. }
+            | Self::InvalidSecret { .. }
+            | Self::MissingSecret { .. } => None,
             Self::Read { source, .. } => Some(source),
             Self::ParseToml { source, .. } => Some(source),
             Self::ParseAddr { source, .. } => Some(source),
@@ -119,6 +151,7 @@ impl std::error::Error for LoadError {
 struct FileConfig {
     server: Option<ServerConfig>,
     storage: Option<StorageConfig>,
+    api: Option<ApiConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -131,6 +164,20 @@ struct ServerConfig {
 #[serde(deny_unknown_fields)]
 struct StorageConfig {
     url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ApiConfig {
+    auth: Option<ApiAuthFileConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ApiAuthFileConfig {
+    required: Option<bool>,
+    admin_token_env: Option<String>,
+    token_hash_key_env: Option<String>,
 }
 
 pub fn load(overrides: Overrides) -> Result<Settings, LoadError> {
@@ -181,11 +228,73 @@ pub fn load_with_env(overrides: Overrides, env: ConfigEnv) -> Result<Settings, L
             .and_then(|storage| storage.url.as_deref()),
         config_path.as_deref(),
     )?;
+    let auth = resolve_auth(&file, &env)?;
 
     Ok(Settings {
         addr,
         config_path: loaded_config_path,
         database_url,
+        auth,
+    })
+}
+
+fn resolve_auth(file: &FileConfig, env: &ConfigEnv) -> Result<ApiAuthConfig, LoadError> {
+    let file_auth = file.api.as_ref().and_then(|api| api.auth.as_ref());
+    let mut required = file_auth.and_then(|auth| auth.required).unwrap_or(false);
+    if let Some(value) = env.api_auth_required.as_deref() {
+        required = parse_bool(value, API_AUTH_REQUIRED_ENV)?;
+    }
+
+    let admin_env = file_auth
+        .and_then(|auth| auth.admin_token_env.as_deref())
+        .unwrap_or(ADMIN_TOKEN_ENV);
+    let hash_key_env = file_auth
+        .and_then(|auth| auth.token_hash_key_env.as_deref())
+        .unwrap_or(PROFILE_TOKEN_HASH_KEY_ENV);
+
+    let admin_token = env
+        .admin_token
+        .as_deref()
+        .map(|value| parse_secret(value, admin_env))
+        .transpose()?;
+    let token_hash_key = env
+        .token_hash_key
+        .as_deref()
+        .map(|value| parse_secret(value, hash_key_env))
+        .transpose()?;
+
+    if required && admin_token.is_none() {
+        return Err(LoadError::MissingSecret {
+            source_name: admin_env.to_owned(),
+        });
+    }
+    if required && token_hash_key.is_none() {
+        return Err(LoadError::MissingSecret {
+            source_name: hash_key_env.to_owned(),
+        });
+    }
+
+    Ok(ApiAuthConfig {
+        required,
+        admin_token,
+        token_hash_key,
+    })
+}
+
+fn parse_bool(value: &str, source_name: &'static str) -> Result<bool, LoadError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(LoadError::ParseBool {
+            value: value.to_owned(),
+            source_name,
+        }),
+    }
+}
+
+fn parse_secret(value: &str, source_name: &str) -> Result<SecretString, LoadError> {
+    SecretString::new(value.to_owned()).map_err(|_| LoadError::InvalidSecret {
+        source_name: source_name.to_owned(),
     })
 }
 
@@ -410,6 +519,51 @@ mod tests {
             settings.database_url,
             StorageUrl::Sqlite(PathBuf::from("/tmp/env.db"))
         );
+    }
+
+    #[test]
+    fn reads_api_auth_from_config_and_env() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [api.auth]
+                required = true
+            "#,
+        )
+        .expect("config");
+
+        let settings = load_with_env(
+            Overrides {
+                config_path: Some(config_path),
+                ..Overrides::default()
+            },
+            ConfigEnv {
+                admin_token: Some("admin".to_owned()),
+                token_hash_key: Some("hash-key".to_owned()),
+                ..ConfigEnv::default()
+            },
+        )
+        .expect("settings");
+
+        assert!(settings.auth.required);
+        assert!(settings.auth.admin_token.is_some());
+        assert!(settings.auth.token_hash_key.is_some());
+    }
+
+    #[test]
+    fn required_api_auth_requires_secrets() {
+        let error = load_with_env(
+            Overrides::default(),
+            ConfigEnv {
+                api_auth_required: Some("true".to_owned()),
+                ..ConfigEnv::default()
+            },
+        )
+        .expect_err("missing auth secrets");
+
+        assert!(matches!(error, LoadError::MissingSecret { .. }));
     }
 
     #[test]

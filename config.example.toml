@@ -9,3 +9,10 @@ addr = "127.0.0.1:8080"
 [storage]
 # Defaults to hoststamp.db next to this config file.
 # url = "sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db"
+
+[api.auth]
+# Disabled by default for local development.
+required = false
+# Secrets are read from environment variables, not from this file.
+admin_token_env = "HOSTSTAMP_ADMIN_TOKEN"
+token_hash_key_env = "HOSTSTAMP_TOKEN_HASH_KEY"

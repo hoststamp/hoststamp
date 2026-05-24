@@ -3,14 +3,14 @@
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use hoststamp::{
-    SERVICE_NAME,
+    SERVICE_NAME, auth,
     config::{self, Overrides},
     credits, dictionary,
     generator::{self, GenerateOptions, ProfileGeneratedHostname},
     notices,
-    profile::{self, ProfileConfig, ProfileSlug},
+    profile::{self, ProfileAccess, ProfileConfig, ProfileSlug},
     server,
-    storage::{self, ProfileStore, StoredProfile},
+    storage::{self, ProfileStore, StoredProfile, StoredProfileToken},
 };
 use std::{
     io::{self, Write},
@@ -218,11 +218,39 @@ enum ProfileCommand {
     New,
     /// Delete the selected active profile.
     Delete,
+    /// Set the selected profile's API access mode.
+    SetAccess {
+        /// Profile API access mode.
+        #[arg(long, value_parser = parse_profile_access)]
+        access: ProfileAccess,
+    },
+    /// Manage profile-scoped API tokens.
+    Token {
+        #[command(subcommand)]
+        command: ProfileTokenCommand,
+    },
     /// Reset the selected profile's stored atomic value.
     ResetAtomicValue {
         /// Stored atomic value to reset to.
         #[arg(long, value_parser = parse_stored_atomic_value)]
         atomic_value: i64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ProfileTokenCommand {
+    /// Create a profile token and print the secret once.
+    Create {
+        /// Human-readable token name.
+        #[arg(long)]
+        name: String,
+    },
+    /// List profile tokens.
+    List,
+    /// Revoke a profile token.
+    Revoke {
+        /// Token ID to revoke.
+        token_id: String,
     },
 }
 
@@ -309,7 +337,11 @@ async fn main() -> anyhow::Result<()> {
                     Ok(())
                 }
                 ProfileCommand::Show => {
-                    let profile = store.load_profile(&cli.profile)?;
+                    let profile = if cli.profile.as_str() == profile::DEFAULT_PROFILE_SLUG {
+                        store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?
+                    } else {
+                        store.load_profile(&cli.profile)?
+                    };
                     print_profile_show(&profile);
                     Ok(())
                 }
@@ -325,6 +357,45 @@ async fn main() -> anyhow::Result<()> {
                     println!("deleted profile {:?}", cli.profile.as_str());
                     Ok(())
                 }
+                ProfileCommand::SetAccess { access } => {
+                    let profile = store.set_profile_access(&cli.profile, access)?;
+                    print_profile_show(&profile);
+                    Ok(())
+                }
+                ProfileCommand::Token { command } => match command {
+                    ProfileTokenCommand::Create { name } => {
+                        let hash_key = settings.auth.token_hash_key.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "{} is required to create profile tokens",
+                                auth::PROFILE_TOKEN_HASH_KEY_ENV
+                            )
+                        })?;
+                        let profile =
+                            store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+                        let generated = auth::generate_profile_token();
+                        let token_hash = auth::profile_token_hash(hash_key, &generated.secret)?;
+                        let token = store.create_profile_token(
+                            profile.id,
+                            &generated.token_id,
+                            &name,
+                            token_hash,
+                        )?;
+                        print_profile_token(&token);
+                        println!("token = {:?}", generated.token);
+                        Ok(())
+                    }
+                    ProfileTokenCommand::List => {
+                        let profile = store.load_profile(&cli.profile)?;
+                        print_profile_token_list(&store.list_profile_tokens(profile.id)?);
+                        Ok(())
+                    }
+                    ProfileTokenCommand::Revoke { token_id } => {
+                        let profile = store.load_profile(&cli.profile)?;
+                        let token = store.revoke_profile_token(profile.id, &token_id)?;
+                        print_profile_token(&token);
+                        Ok(())
+                    }
+                },
                 ProfileCommand::ResetAtomicValue { atomic_value } => {
                     let profile = store.load_profile(&cli.profile)?;
                     confirm_atomic_value_reset(&profile, atomic_value)?;
@@ -467,7 +538,7 @@ async fn main() -> anyhow::Result<()> {
             ensure_profile_dictionary_is_current(&profile)?;
             generator::validate_generate_options(&options)?;
             let atomic = server::AtomicContext::new(store, profile.slug);
-            server::serve_with_atomic(settings.addr, options, atomic)
+            server::serve_with_atomic(settings.addr, options, atomic, settings.auth)
                 .await
                 .context("server failed")
         }
@@ -605,6 +676,17 @@ fn print_config_show(
         format_storage_url(&settings.database_url)
     );
     println!();
+    println!("[api.auth]");
+    println!("required = {}", settings.auth.required);
+    println!(
+        "admin_token_configured = {}",
+        settings.auth.admin_token.is_some()
+    );
+    println!(
+        "token_hash_key_configured = {}",
+        settings.auth.token_hash_key.is_some()
+    );
+    println!();
 
     print_profile_show(profile);
     println!();
@@ -612,12 +694,13 @@ fn print_config_show(
 }
 
 fn print_profile_list(profiles: &[StoredProfile]) {
-    println!("slug\tid\tlast_atomic_value");
+    println!("slug\tid\taccess\tlast_atomic_value");
     for profile in profiles {
         println!(
-            "{}\t{}\t{}",
+            "{}\t{}\t{}\t{}",
             profile.slug.as_str(),
             profile.id,
+            profile.access,
             profile.last_atomic_value
         );
     }
@@ -627,10 +710,53 @@ fn print_profile_show(profile: &StoredProfile) {
     println!("[profile]");
     println!("slug = {:?}", profile.slug.as_str());
     println!("id = {:?}", profile.id.to_string());
+    println!("access = {:?}", profile.access.to_string());
     println!("last_atomic_value = {}", profile.last_atomic_value);
     println!("config_hash = {:?}", hex_string(&profile.config_hash));
     println!();
     print_profile_config("profile.config", &profile.config);
+}
+
+fn print_profile_token_list(tokens: &[StoredProfileToken]) {
+    println!("token_id\tname\tcreated_at_ms\tlast_used_at_ms\trevoked_at_ms");
+    for token in tokens {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            token.token_id,
+            token.name,
+            token.created_at_ms,
+            token
+                .last_used_at_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
+            token
+                .revoked_at_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned())
+        );
+    }
+}
+
+fn print_profile_token(token: &StoredProfileToken) {
+    println!("[profile.token]");
+    println!("token_id = {:?}", token.token_id);
+    println!("profile_id = {:?}", token.profile_id.to_string());
+    println!("name = {:?}", token.name);
+    println!("created_at_ms = {}", token.created_at_ms);
+    println!(
+        "last_used_at_ms = {}",
+        token
+            .last_used_at_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_owned())
+    );
+    println!(
+        "revoked_at_ms = {}",
+        token
+            .revoked_at_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_owned())
+    );
 }
 
 fn print_profile_config(prefix: &str, config: &ProfileConfig) {
@@ -752,6 +878,10 @@ fn parse_stored_atomic_value(value: &str) -> Result<i64, String> {
         return Err("atomic value must be at least 0".to_owned());
     }
     Ok(atomic_value)
+}
+
+fn parse_profile_access(value: &str) -> Result<ProfileAccess, String> {
+    value.parse()
 }
 
 fn confirm_profile_delete(profile: &StoredProfile) -> anyhow::Result<()> {

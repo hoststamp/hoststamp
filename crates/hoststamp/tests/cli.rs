@@ -421,6 +421,21 @@ fn config_show_prints_bootstrap_profile_and_effective_generate_config() {
 }
 
 #[test]
+fn profile_show_seeds_default_profile() {
+    let (mut cmd, _tempdir) = command_with_database();
+    cmd.args(["profile", "--profile", "_", "show"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("[profile]")
+                .and(predicate::str::contains(r#"slug = "_""#))
+                .and(predicate::str::contains(r#"access = "private""#))
+                .and(predicate::str::contains("last_atomic_value = 0"))
+                .and(predicate::str::contains("[profile.config.word1]")),
+        );
+}
+
+#[test]
 fn profile_commands_create_show_list_and_delete_profiles() {
     let (mut create, tempdir) = command_with_database();
     create
@@ -436,8 +451,9 @@ fn profile_commands_create_show_list_and_delete_profiles() {
     let database = tempdir.path().join("hoststamp.db");
     let mut list = command_for_database(&database);
     list.arg("profile").arg("list").assert().success().stdout(
-        predicate::str::contains("slug\tid\tlast_atomic_value")
+        predicate::str::contains("slug\tid\taccess\tlast_atomic_value")
             .and(predicate::str::contains("team-a\t"))
+            .and(predicate::str::contains("\tprivate\t"))
             .and(predicate::str::contains("\t0")),
     );
 
@@ -495,6 +511,73 @@ fn profile_reset_atomic_value_sets_the_stored_counter() {
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
     assert_eq!(payload["hostnames"][0]["atomic_value"], 11);
+}
+
+#[test]
+fn profile_access_and_token_commands_manage_api_auth() {
+    let (mut create, tempdir) = command_with_database();
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let database = tempdir.path().join("hoststamp.db");
+    let mut access = command_for_database(&database);
+    access
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "set-access",
+            "--access",
+            "public",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"access = "public""#));
+
+    let mut create_token = command_for_database(&database);
+    create_token.env("HOSTSTAMP_TOKEN_HASH_KEY", "hash-key");
+    let assert = create_token
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "token",
+            "create",
+            "--name",
+            "deploy",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("token = \"hspt_"));
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let token_id = output
+        .lines()
+        .find_map(|line| line.strip_prefix("token_id = \""))
+        .and_then(|value| value.strip_suffix('"'))
+        .expect("token id")
+        .to_owned();
+
+    let mut list = command_for_database(&database);
+    list.args(["--profile", "team-a", "profile", "token", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy"));
+
+    let mut revoke = command_for_database(&database);
+    revoke
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "token",
+            "revoke",
+            &token_id,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("revoked_at_ms = "));
 }
 
 #[test]

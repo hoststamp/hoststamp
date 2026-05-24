@@ -2,8 +2,9 @@
 
 use axum::{body::Body, http};
 use hoststamp::{
+    auth::{self, ApiAuthConfig, SecretString},
     generator::{GenerateOptions, is_base36_suffix},
-    profile::{ProfileConfig, ProfileSlug},
+    profile::{ProfileAccess, ProfileConfig, ProfileSlug},
     server,
     storage::{ProfileStore, StorageUrl},
 };
@@ -24,6 +25,14 @@ async fn response_text(response: http::Response<Body>) -> String {
         .expect("body")
         .to_bytes();
     String::from_utf8(body.to_vec()).expect("utf8")
+}
+
+fn auth_config() -> ApiAuthConfig {
+    ApiAuthConfig {
+        required: true,
+        admin_token: Some(SecretString::new("admin-secret".to_owned()).expect("admin")),
+        token_hash_key: Some(SecretString::new("hash-key".to_owned()).expect("hash key")),
+    }
 }
 
 #[tokio::test]
@@ -287,6 +296,214 @@ async fn generate_endpoint_supports_profile_backed_suffix_context() {
 }
 
 #[tokio::test]
+async fn generate_endpoint_requires_auth_for_private_profiles() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/api/generate")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()["www-authenticate"], "Bearer");
+}
+
+#[tokio::test]
+async fn generate_endpoint_accepts_admin_token_for_private_profiles() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+            .uri("/api/generate")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn generate_endpoint_accepts_case_insensitive_bearer_scheme() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .header(http::header::AUTHORIZATION, "bearer   admin-secret")
+            .uri("/api/generate")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn generate_endpoint_accepts_profile_token_for_matching_profile() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    let profile = store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let generated = auth::generate_profile_token();
+    let hash_key = SecretString::new("hash-key".to_owned()).expect("key");
+    let token_hash = auth::profile_token_hash(&hash_key, &generated.secret).expect("hash");
+    store
+        .create_profile_token(profile.id, &generated.token_id, "deploy", token_hash)
+        .expect("token");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        ApiAuthConfig {
+            required: true,
+            admin_token: Some(SecretString::new("admin-secret".to_owned()).expect("admin")),
+            token_hash_key: Some(hash_key),
+        },
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .header(
+                http::header::AUTHORIZATION,
+                format!("Bearer {}", generated.token),
+            )
+            .uri("/api/generate")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn generate_endpoint_rejects_wrong_profile_token_with_generic_error() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let other_slug: ProfileSlug = "other".parse().expect("slug");
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let other_profile = store
+        .create_profile(&other_slug, &ProfileConfig::default())
+        .expect("other profile");
+    let generated = auth::generate_profile_token();
+    let hash_key = SecretString::new("hash-key".to_owned()).expect("key");
+    let token_hash = auth::profile_token_hash(&hash_key, &generated.secret).expect("hash");
+    store
+        .create_profile_token(other_profile.id, &generated.token_id, "deploy", token_hash)
+        .expect("token");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        ApiAuthConfig {
+            required: true,
+            admin_token: Some(SecretString::new("admin-secret".to_owned()).expect("admin")),
+            token_hash_key: Some(hash_key),
+        },
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .header(
+                http::header::AUTHORIZATION,
+                format!("Bearer {}", generated.token),
+            )
+            .uri("/api/generate")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+    let body = response_text(response).await;
+    assert_eq!(body, "authorization bearer token is invalid");
+}
+
+#[tokio::test]
+async fn generate_endpoint_allows_public_profiles_without_token() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    store
+        .set_profile_access(&slug, ProfileAccess::Public)
+        .expect("access");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/api/generate")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
 async fn regenerate_endpoint_recreates_profile_hostname_without_incrementing_counter() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
@@ -434,6 +651,52 @@ async fn regenerate_endpoint_does_not_seed_missing_client_profile() {
     let store = ProfileStore::open(&database_url).expect("store");
     let missing = "missing".parse().expect("slug");
     assert!(store.load_profile(&missing).is_err());
+}
+
+#[tokio::test]
+async fn regenerate_endpoint_requires_auth_before_reporting_missing_private_profile() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    );
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/regenerate?profile=missing&atomic_value=1")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), http::StatusCode::UNAUTHORIZED);
+    assert_eq!(unauthorized.headers()["www-authenticate"], "Bearer");
+    let unauthorized_body = response_text(unauthorized).await;
+    assert!(!unauthorized_body.contains("does not exist"));
+
+    let authorized = app
+        .oneshot(
+            http::Request::builder()
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .uri("/api/regenerate?profile=missing&atomic_value=1")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(authorized.status(), http::StatusCode::BAD_REQUEST);
+    let authorized_body = response_text(authorized).await;
+    assert!(authorized_body.contains("profile \"missing\" does not exist"));
 }
 
 #[tokio::test]

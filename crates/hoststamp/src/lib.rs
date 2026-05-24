@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
+pub mod auth;
 pub mod config;
 pub mod credits;
 pub mod dictionary;
