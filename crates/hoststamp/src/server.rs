@@ -13,7 +13,7 @@ use axum::{
     extract::{Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use std::{fmt, net::SocketAddr, sync::Arc};
@@ -116,7 +116,10 @@ pub fn app_with_atomic(generate_options: GenerateOptions, atomic: Option<AtomicC
         .route("/", get(ux::index))
         .route("/healthz", get(healthz))
         .route("/api/health", get(healthz))
-        .route("/api/generate", get(generate_one))
+        .route(
+            "/api/generate",
+            post(generate_one).get(generate_method_not_allowed),
+        )
         .route("/api/random", get(random_one))
         .fallback(not_found)
         .with_state(AppState {
@@ -134,6 +137,18 @@ pub fn health_payload() -> Health {
 
 async fn healthz() -> Json<Health> {
     Json(health_payload())
+}
+
+async fn generate_method_not_allowed() -> Response {
+    let mut response = (
+        StatusCode::METHOD_NOT_ALLOWED,
+        "use POST /api/generate for profile-backed generation",
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("POST"));
+    response
 }
 
 async fn generate_one(

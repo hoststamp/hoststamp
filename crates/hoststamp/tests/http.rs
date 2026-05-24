@@ -88,6 +88,7 @@ async fn generate_endpoint_uses_server_defaults() {
     })
     .oneshot(
         http::Request::builder()
+            .method(http::Method::POST)
             .uri("/api/generate")
             .body(Body::empty())
             .expect("request"),
@@ -109,6 +110,25 @@ async fn generate_endpoint_uses_server_defaults() {
 
     assert_eq!(parts.len(), 2);
     assert!(parts.iter().all(|part| part.chars().count() == 4));
+}
+
+#[tokio::test]
+async fn generate_endpoint_rejects_get_requests() {
+    let response = server::app(GenerateOptions::default())
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/generate")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.headers()["allow"], "POST");
+
+    let body = response_text(response).await;
+    assert!(body.contains("use POST /api/generate"));
 }
 
 #[tokio::test]
@@ -187,6 +207,7 @@ async fn generate_endpoint_honors_count_query() {
     let response = server::app(GenerateOptions::default())
         .oneshot(
             http::Request::builder()
+                .method(http::Method::POST)
                 .uri("/api/generate?count=3")
                 .body(Body::empty())
                 .expect("request"),
@@ -239,6 +260,7 @@ async fn generate_endpoint_supports_profile_backed_suffix_context() {
     )
     .oneshot(
         http::Request::builder()
+            .method(http::Method::POST)
             .uri("/api/generate?count=2")
             .body(Body::empty())
             .expect("request"),
@@ -292,6 +314,7 @@ async fn generate_endpoint_reloads_active_atomic_profile() {
     let response = app
         .oneshot(
             http::Request::builder()
+                .method(http::Method::POST)
                 .uri("/api/generate?format=json")
                 .body(Body::empty())
                 .expect("request"),
@@ -350,6 +373,7 @@ async fn generate_endpoint_rejects_atomic_profile_config_overrides() {
     )
     .oneshot(
         http::Request::builder()
+            .method(http::Method::POST)
             .uri("/api/generate?word1_lengths=4")
             .body(Body::empty())
             .expect("request"),
@@ -393,6 +417,7 @@ async fn generate_endpoint_returns_internal_error_for_atomic_increment_failures(
     )
     .oneshot(
         http::Request::builder()
+            .method(http::Method::POST)
             .uri("/api/generate")
             .body(Body::empty())
             .expect("request"),
@@ -408,6 +433,7 @@ async fn generate_endpoint_rejects_random_query_overrides() {
     let response = server::app(GenerateOptions::default())
         .oneshot(
             http::Request::builder()
+                .method(http::Method::POST)
                 .uri("/api/generate?word1_lengths=4")
                 .body(Body::empty())
                 .expect("request"),

@@ -166,15 +166,17 @@ Local endpoints:
 
 - UX: `http://127.0.0.1:8080/`
 - API health: `http://127.0.0.1:8080/api/health`
-- API generate: `http://127.0.0.1:8080/api/generate?count=3`
-- API generate JSON: `http://127.0.0.1:8080/api/generate?count=3&format=json`
+- API generate: `POST http://127.0.0.1:8080/api/generate?count=3`
+- API generate JSON: `POST http://127.0.0.1:8080/api/generate?count=3&format=json`
 - API random: `http://127.0.0.1:8080/api/random?count=3&word1_lengths=4&word2_lengths=4`
 - API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
 - Container health: `http://127.0.0.1:8080/healthz`
 
-`/api/generate` returns newline-delimited `text/plain` by default so command
-line clients can pipe the response directly. Profile-backed atomic generation
-also returns metadata headers:
+`POST /api/generate` returns newline-delimited `text/plain` by default so
+command line clients can pipe the response directly. `GET /api/generate`
+returns `405 Method Not Allowed` because profile-backed generation can mutate
+the selected profile's atomic counter. Profile-backed atomic generation also
+returns metadata headers:
 
 - `x-hoststamp-profile`
 - `x-hoststamp-atomic-values`
