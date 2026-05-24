@@ -91,15 +91,20 @@ fixed-length space for that minimum. The fixed-length suffix space is
 
 With profile storage, Hoststamp increments the selected profile's database
 counter and derives the full hostname from the profile UUID, profile config
-hash, and atomic value. Word choices walk a deterministic permutation of the
-valid word space, so each valid word pair is used once before that profile
-cycle repeats. The suffix encodes the same atomic value with Sqids. The profile
-UUID also derives a deterministic profile-specific suffix alphabet, so each
-profile gets a different-looking sequence while keeping the uniqueness
-guarantee scoped to the active profile row. For stateless random generation,
-Hoststamp encodes a random number from `1..=(36^suffix_min_length / 2)`. That
-fallback keeps the suffix inside the requested minimum length range, but it is
-not uniqueness-tracked or reproducible.
+hash, and atomic value. Stored profile configs include `engine = "atomic-v1"`.
+That engine freezes the deterministic generation contract: word-pair
+permutation, no-repeat word handling, suffix encoding, profile-specific suffix
+alphabet derivation, and `word1-word2-suffix` formatting. Word choices walk a
+deterministic permutation of the valid word space, so each valid word pair is
+used once before that profile cycle repeats. The suffix encodes the same
+atomic value with Sqids. The profile UUID also derives a deterministic
+profile-specific suffix alphabet, so each profile gets a different-looking
+sequence while keeping the uniqueness guarantee scoped to the active profile
+row. Future algorithm changes must use a new engine value instead of changing
+`atomic-v1`. For stateless random generation, Hoststamp encodes a random
+number from `1..=(36^suffix_min_length / 2)`. That fallback keeps the suffix
+inside the requested minimum length range, but it is not uniqueness-tracked or
+reproducible.
 
 Sqids can expand past the configured minimum length. For example,
 `--suffix-min-length 5` keeps profile-backed atomic values `1..=60,466,176`
@@ -162,9 +167,10 @@ return the hostname with `profile` and `atomic_value` metadata. The requested
 atomic value must already have been issued by the active profile generation. It
 requires suffixes to be enabled for the stored profile because atomic values are
 tracked only for profile-backed suffix generation. Stored profiles include the
-selected dictionary and blocklist versions, those version hashes, and resolved
-word-pool hashes. Hoststamp will not regenerate if the selected version content
-or resolved pools drift.
+generation engine, selected dictionary and blocklist versions, those version
+hashes, and resolved word-pool hashes. Hoststamp will not regenerate if the
+engine, selected version content, or resolved pools drift from what this binary
+supports.
 
 Local endpoints:
 

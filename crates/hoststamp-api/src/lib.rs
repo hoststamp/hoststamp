@@ -804,9 +804,9 @@ async fn regenerate_with_state(
             query.atomic_value
         )));
     }
-    if !profile.config.uses_current_dictionary() {
+    if !profile.config.uses_current_generation_contract() {
         return Err(GenerateError::BadRequest(format!(
-            "profile {:?} was created with dictionary/blocklist versions or resolved word pools that do not match this binary; profile-backed generation cannot run safely across dictionary changes",
+            "profile {:?} was created with a generation engine, dictionary/blocklist versions, or resolved word pools that do not match this binary; profile-backed generation cannot run safely across generation contract changes",
             profile.slug.as_str()
         )));
     }

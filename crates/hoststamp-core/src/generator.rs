@@ -2,11 +2,14 @@
 
 use crate::dictionary;
 use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqids::Sqids;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use uuid::Uuid;
 
+pub const DEFAULT_GENERATION_ENGINE: GenerationEngine = GenerationEngine::AtomicV1;
 pub const DEFAULT_WORD_LENGTH: usize = 5;
 pub const DEFAULT_SUFFIX_MIN_LENGTH: usize = 5;
 pub const MIN_SUFFIX_MIN_LENGTH: usize = 4;
@@ -38,8 +41,30 @@ pub const DEFAULT_WORD2_CATEGORIES: &[&str] = &[
     "wind",
 ];
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GenerationEngine {
+    #[default]
+    AtomicV1,
+}
+
+impl GenerationEngine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AtomicV1 => "atomic-v1",
+        }
+    }
+}
+
+impl fmt::Display for GenerationEngine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GenerateOptions {
+    pub engine: GenerationEngine,
     pub dictionary_version: u32,
     pub blocklist_version: u32,
     pub word1_enabled: bool,
@@ -56,6 +81,7 @@ pub struct GenerateOptions {
 impl Default for GenerateOptions {
     fn default() -> Self {
         Self {
+            engine: DEFAULT_GENERATION_ENGINE,
             dictionary_version: dictionary::default_dictionary_version(),
             blocklist_version: dictionary::default_blocklist_version(),
             word1_enabled: true,
@@ -80,6 +106,7 @@ impl Default for GenerateOptions {
 impl GenerateOptions {
     pub fn with_overrides(&self, overrides: GenerateOverrides) -> Self {
         Self {
+            engine: self.engine,
             dictionary_version: self.dictionary_version,
             blocklist_version: self.blocklist_version,
             word1_enabled: overrides.word1_enabled.unwrap_or(self.word1_enabled),
@@ -237,6 +264,7 @@ fn generate_profile_hostname_with_plans(
     config_hash: &[u8; 32],
     atomic_value: i64,
 ) -> Result<String> {
+    validate_generation_engine(options.engine)?;
     if atomic_value < ATOMIC_MIN_VALUE {
         bail!("atomic value must be at least {ATOMIC_MIN_VALUE}");
     }
@@ -485,6 +513,8 @@ impl SelectionPlan {
 }
 
 fn validate_options(options: &GenerateOptions) -> Result<()> {
+    validate_generation_engine(options.engine)?;
+
     if !options.word1_enabled && !options.word2_enabled && !options.suffix_enabled {
         bail!("at least one position must be enabled");
     }
@@ -500,6 +530,12 @@ fn validate_options(options: &GenerateOptions) -> Result<()> {
     validate_count(options.count)?;
 
     Ok(())
+}
+
+fn validate_generation_engine(engine: GenerationEngine) -> Result<()> {
+    match engine {
+        GenerationEngine::AtomicV1 => Ok(()),
+    }
 }
 
 impl<'a> ProfileWordSelection<'a> {

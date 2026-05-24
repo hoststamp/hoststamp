@@ -855,7 +855,7 @@ fn generate_rejects_stale_dictionary_pool_hash() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "profile-backed generation cannot run safely across dictionary changes",
+            "profile-backed generation cannot run safely across generation contract changes",
         ));
 }
 

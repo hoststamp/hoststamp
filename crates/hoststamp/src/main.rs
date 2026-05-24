@@ -444,7 +444,7 @@ async fn main() -> anyhow::Result<()> {
                 print_capacity_report(&options)?;
                 return Ok(());
             }
-            ensure_profile_dictionary_is_current(&profile)?;
+            ensure_profile_generation_contract_is_current(&profile)?;
             generator::validate_generate_options(&options)?;
             let hostnames = generate_with_profile(options, &mut store, &profile)?;
             if cli.generate.json {
@@ -513,7 +513,7 @@ async fn main() -> anyhow::Result<()> {
                     atomic_value
                 );
             }
-            ensure_profile_dictionary_is_current(&profile)?;
+            ensure_profile_generation_contract_is_current(&profile)?;
             let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
             generator::validate_generate_options(&options)?;
             let hostname = generator::generate_profile_hostname(
@@ -560,7 +560,7 @@ async fn main() -> anyhow::Result<()> {
                 print_capacity_report(&options)?;
                 return Ok(());
             }
-            ensure_profile_dictionary_is_current(&profile)?;
+            ensure_profile_generation_contract_is_current(&profile)?;
             generator::validate_generate_options(&options)?;
             let atomic = server::AtomicContext::new(store, profile.slug);
             server::serve_with_atomic_and_mode(
@@ -792,6 +792,7 @@ fn print_profile_token(token: &StoredProfileToken) {
 
 fn print_profile_config(prefix: &str, config: &ProfileConfig) {
     println!("[{prefix}]");
+    println!("engine = {:?}", config.engine.to_string());
     println!("dictionary_version = {}", config.dictionary_version);
     println!(
         "dictionary_version_hash = {:?}",
@@ -825,6 +826,7 @@ fn print_profile_config(prefix: &str, config: &ProfileConfig) {
 
 fn print_generate_options(prefix: &str, options: &GenerateOptions) {
     println!("[{prefix}]");
+    println!("engine = {:?}", options.engine.to_string());
     println!("dictionary_version = {}", options.dictionary_version);
     println!("blocklist_version = {}", options.blocklist_version);
     println!();
@@ -888,13 +890,13 @@ fn hex_string(bytes: &[u8]) -> String {
     hex
 }
 
-fn ensure_profile_dictionary_is_current(profile: &StoredProfile) -> anyhow::Result<()> {
-    if profile.config.uses_current_dictionary() {
+fn ensure_profile_generation_contract_is_current(profile: &StoredProfile) -> anyhow::Result<()> {
+    if profile.config.uses_current_generation_contract() {
         return Ok(());
     }
 
     anyhow::bail!(
-        "profile {:?} was created with dictionary/blocklist versions or resolved word pools that do not match this binary; profile-backed generation cannot run safely across dictionary changes",
+        "profile {:?} was created with a generation engine, dictionary/blocklist versions, or resolved word pools that do not match this binary; profile-backed generation cannot run safely across generation contract changes",
         profile.slug.as_str()
     )
 }

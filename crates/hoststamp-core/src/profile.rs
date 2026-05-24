@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-use crate::{dictionary, generator::GenerateOptions};
+use crate::{
+    dictionary,
+    generator::{GenerateOptions, GenerationEngine},
+};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
@@ -104,6 +107,7 @@ impl FromStr for ProfileAccess {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileConfig {
+    pub engine: GenerationEngine,
     pub dictionary_version: u32,
     pub dictionary_version_hash: String,
     pub blocklist_version: u32,
@@ -137,6 +141,7 @@ impl ProfileConfig {
             .ok_or_else(|| anyhow!("unknown blocklist version {}", options.blocklist_version))?
             .to_owned();
         Ok(Self {
+            engine: options.engine,
             dictionary_version: options.dictionary_version,
             dictionary_version_hash,
             blocklist_version: options.blocklist_version,
@@ -199,8 +204,13 @@ impl ProfileConfig {
                 .flatten()
     }
 
+    pub fn uses_current_generation_contract(&self) -> bool {
+        self.engine == GenerationEngine::AtomicV1 && self.uses_current_dictionary()
+    }
+
     pub fn to_generate_options(&self, count: usize) -> GenerateOptions {
         GenerateOptions {
+            engine: self.engine,
             dictionary_version: self.dictionary_version,
             blocklist_version: self.blocklist_version,
             word1_enabled: self.word1.enabled,
@@ -286,6 +296,8 @@ mod tests {
             Some(vec![generator::DEFAULT_WORD_LENGTH])
         );
         assert!(profile.uses_current_dictionary());
+        assert!(profile.uses_current_generation_contract());
+        assert_eq!(profile.engine, GenerationEngine::AtomicV1);
         assert_eq!(
             profile.dictionary_version,
             dictionary::default_dictionary_version()
@@ -308,6 +320,18 @@ mod tests {
             ProfileAccess::Private
         );
         assert!("missing".parse::<ProfileAccess>().is_err());
+    }
+
+    #[test]
+    fn profile_config_serializes_generation_engine() {
+        let profile = ProfileConfig::default();
+        let value = serde_json::to_value(&profile).expect("json");
+
+        assert_eq!(value["engine"], "atomic-v1");
+        assert_eq!(
+            serde_json::from_value::<ProfileConfig>(value).expect("profile"),
+            profile
+        );
     }
 
     #[test]
