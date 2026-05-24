@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use crate::{dictionary, generator::GenerateOptions};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
@@ -103,7 +104,10 @@ impl FromStr for ProfileAccess {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileConfig {
-    pub dictionary_fingerprint: String,
+    pub dictionary_version: u32,
+    pub dictionary_version_hash: String,
+    pub blocklist_version: u32,
+    pub blocklist_version_hash: String,
     pub word1: WordProfileConfig,
     pub word2: WordProfileConfig,
     pub suffix: SuffixProfileConfig,
@@ -117,33 +121,88 @@ impl Default for ProfileConfig {
 
 impl From<&GenerateOptions> for ProfileConfig {
     fn from(options: &GenerateOptions) -> Self {
-        Self {
-            dictionary_fingerprint: dictionary::artifact_sha256().to_owned(),
+        Self::try_from_options(options).expect("profile config must resolve to valid word pools")
+    }
+}
+
+impl ProfileConfig {
+    pub fn try_from_options(options: &GenerateOptions) -> Result<Self> {
+        let dictionary_version_hash =
+            dictionary::dictionary_version_hash(options.dictionary_version)
+                .ok_or_else(|| {
+                    anyhow!("unknown dictionary version {}", options.dictionary_version)
+                })?
+                .to_owned();
+        let blocklist_version_hash = dictionary::blocklist_version_hash(options.blocklist_version)
+            .ok_or_else(|| anyhow!("unknown blocklist version {}", options.blocklist_version))?
+            .to_owned();
+        Ok(Self {
+            dictionary_version: options.dictionary_version,
+            dictionary_version_hash,
+            blocklist_version: options.blocklist_version,
+            blocklist_version_hash,
             word1: WordProfileConfig {
                 enabled: options.word1_enabled,
                 lengths: options.word1_lengths.clone(),
                 categories: options.word1_categories.clone(),
+                pool_hash: pool_hash(
+                    options.dictionary_version,
+                    options.blocklist_version,
+                    options.word1_enabled,
+                    &options.word1_categories,
+                    options.word1_lengths.as_deref(),
+                )?,
             },
             word2: WordProfileConfig {
                 enabled: options.word2_enabled,
                 lengths: options.word2_lengths.clone(),
                 categories: options.word2_categories.clone(),
+                pool_hash: pool_hash(
+                    options.dictionary_version,
+                    options.blocklist_version,
+                    options.word2_enabled,
+                    &options.word2_categories,
+                    options.word2_lengths.as_deref(),
+                )?,
             },
             suffix: SuffixProfileConfig {
                 enabled: options.suffix_enabled,
                 min_length: options.suffix_min_length,
             },
-        }
+        })
     }
-}
 
-impl ProfileConfig {
     pub fn uses_current_dictionary(&self) -> bool {
-        self.dictionary_fingerprint == dictionary::artifact_sha256()
+        self.dictionary_version_hash
+            == dictionary::dictionary_version_hash(self.dictionary_version).unwrap_or_default()
+            && self.blocklist_version_hash
+                == dictionary::blocklist_version_hash(self.blocklist_version).unwrap_or_default()
+            && self.word1.pool_hash
+                == pool_hash(
+                    self.dictionary_version,
+                    self.blocklist_version,
+                    self.word1.enabled,
+                    &self.word1.categories,
+                    self.word1.lengths.as_deref(),
+                )
+                .ok()
+                .flatten()
+            && self.word2.pool_hash
+                == pool_hash(
+                    self.dictionary_version,
+                    self.blocklist_version,
+                    self.word2.enabled,
+                    &self.word2.categories,
+                    self.word2.lengths.as_deref(),
+                )
+                .ok()
+                .flatten()
     }
 
     pub fn to_generate_options(&self, count: usize) -> GenerateOptions {
         GenerateOptions {
+            dictionary_version: self.dictionary_version,
+            blocklist_version: self.blocklist_version,
             word1_enabled: self.word1.enabled,
             word1_lengths: self.word1.lengths.clone(),
             word1_categories: self.word1.categories.clone(),
@@ -163,6 +222,7 @@ pub struct WordProfileConfig {
     pub enabled: bool,
     pub lengths: Option<Vec<usize>>,
     pub categories: Vec<String>,
+    pub pool_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +230,22 @@ pub struct WordProfileConfig {
 pub struct SuffixProfileConfig {
     pub enabled: bool,
     pub min_length: usize,
+}
+
+fn pool_hash(
+    dictionary_version: u32,
+    blocklist_version: u32,
+    enabled: bool,
+    categories: &[String],
+    lengths: Option<&[usize]>,
+) -> Result<Option<String>> {
+    if !enabled {
+        return Ok(None);
+    }
+    let words =
+        dictionary::resolve_words(dictionary_version, blocklist_version, categories, lengths)
+            .map_err(anyhow::Error::msg)?;
+    Ok(Some(dictionary::resolved_pool_hash(&words)))
 }
 
 #[cfg(test)]
@@ -210,6 +286,15 @@ mod tests {
             Some(vec![generator::DEFAULT_WORD_LENGTH])
         );
         assert!(profile.uses_current_dictionary());
+        assert_eq!(
+            profile.dictionary_version,
+            dictionary::default_dictionary_version()
+        );
+        assert_eq!(
+            profile.blocklist_version,
+            dictionary::default_blocklist_version()
+        );
+        assert!(profile.word1.pool_hash.is_some());
     }
 
     #[test]
@@ -226,9 +311,22 @@ mod tests {
     }
 
     #[test]
-    fn detects_stale_dictionary_fingerprint() {
+    fn detects_stale_dictionary_version_hash() {
         let profile = ProfileConfig {
-            dictionary_fingerprint: "old".to_owned(),
+            dictionary_version_hash: "old".to_owned(),
+            ..ProfileConfig::default()
+        };
+
+        assert!(!profile.uses_current_dictionary());
+    }
+
+    #[test]
+    fn detects_stale_word_pool_hash() {
+        let profile = ProfileConfig {
+            word1: WordProfileConfig {
+                pool_hash: Some("old".to_owned()),
+                ..ProfileConfig::default().word1
+            },
             ..ProfileConfig::default()
         };
 

@@ -30,16 +30,6 @@ Generated: {generated_at}
         writeln!(credits, "  Changes: {}", source.changes).expect("write to string");
     }
 
-    credits.push_str(
-        "\nExternal suffix blocklist:\n\
-- Sqids default blocklist\n\
-  Attribution: Sqids maintainers\n\
-  Source: https://github.com/sqids/sqids-rust/blob/v0.4.2/src/blocklist.json\n\
-  License: MIT\n\
-  Version: sqids 0.4.2\n\
-  Changes: used through the pinned sqids crate; filtered by lowercase base36 alphabet at runtime\n",
-    );
-
     credits
 }
 

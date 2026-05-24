@@ -29,18 +29,6 @@ pub fn text() -> String {
         writeln!(notices).expect("write to string");
     }
 
-    notices.push_str(
-        "## Sqids default blocklist\n\n\
-- Source ID: `sqids-default-blocklist`\n\
-- Attribution: Sqids maintainers\n\
-- Source: <https://github.com/sqids/sqids-rust/blob/v0.4.2/src/blocklist.json>\n\
-- License: MIT\n\
-- License URL: <https://opensource.org/license/mit>\n\
-- Retrieved: via pinned `sqids` crate 0.4.2\n\
-- Notice required: true\n\
-- Changes: used through the pinned sqids crate; filtered by lowercase base36 alphabet at runtime\n\n",
-    );
-
     if notices.ends_with("\n\n") {
         notices.pop();
     }

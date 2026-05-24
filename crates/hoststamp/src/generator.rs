@@ -40,6 +40,8 @@ pub const DEFAULT_WORD2_CATEGORIES: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct GenerateOptions {
+    pub dictionary_version: u32,
+    pub blocklist_version: u32,
     pub word1_enabled: bool,
     pub word1_lengths: Option<Vec<usize>>,
     pub word1_categories: Vec<String>,
@@ -54,6 +56,8 @@ pub struct GenerateOptions {
 impl Default for GenerateOptions {
     fn default() -> Self {
         Self {
+            dictionary_version: dictionary::default_dictionary_version(),
+            blocklist_version: dictionary::default_blocklist_version(),
             word1_enabled: true,
             word1_lengths: Some(vec![DEFAULT_WORD_LENGTH]),
             word1_categories: DEFAULT_WORD1_CATEGORIES
@@ -76,6 +80,8 @@ impl Default for GenerateOptions {
 impl GenerateOptions {
     pub fn with_overrides(&self, overrides: GenerateOverrides) -> Self {
         Self {
+            dictionary_version: self.dictionary_version,
+            blocklist_version: self.blocklist_version,
             word1_enabled: overrides.word1_enabled.unwrap_or(self.word1_enabled),
             word1_lengths: overrides
                 .word1_lengths
@@ -241,6 +247,7 @@ fn generate_profile_hostname_with_plans(
             profile_id,
             atomic_value,
             options.suffix_min_length,
+            options.blocklist_version,
         )?);
     }
 
@@ -323,7 +330,7 @@ fn generate_hostname_with_plans(
     plans: &[SelectionPlan],
 ) -> Result<String> {
     generate_hostname_with_plans_and_suffix(options, plans, &mut || {
-        random_sqids_suffix(options.suffix_min_length)
+        random_sqids_suffix(options.suffix_min_length, options.blocklist_version)
     })
 }
 
@@ -378,6 +385,8 @@ fn build_word_plans_with_distinct_check(
             &options.word1_categories,
             options.word1_lengths.as_deref(),
             "word1",
+            options.dictionary_version,
+            options.blocklist_version,
         )?);
     }
     if options.word2_enabled {
@@ -385,6 +394,8 @@ fn build_word_plans_with_distinct_check(
             &options.word2_categories,
             options.word2_lengths.as_deref(),
             "word2",
+            options.dictionary_version,
+            options.blocklist_version,
         )?);
     }
 
@@ -406,7 +417,13 @@ fn build_word_plans_with_distinct_check(
 }
 
 impl SelectionPlan {
-    fn build(categories: &[String], lengths: Option<&[usize]>, position: &str) -> Result<Self> {
+    fn build(
+        categories: &[String],
+        lengths: Option<&[usize]>,
+        position: &str,
+        dictionary_version: u32,
+        blocklist_version: u32,
+    ) -> Result<Self> {
         if categories.is_empty() {
             bail!("{position} categories must not be empty");
         }
@@ -416,41 +433,19 @@ impl SelectionPlan {
             bail!("{position} lengths must not be empty (omit to allow any length)");
         }
 
-        let mut seen = HashSet::new();
-        let mut total = 0usize;
-        let mut cells = Vec::new();
-        let mut plan_words = Vec::new();
-
-        for category in categories {
-            let buckets = dictionary::category_lengths(category)
-                .ok_or_else(|| anyhow!("unknown category {category:?}"))?;
-            for (length, words) in buckets {
-                if lengths.is_some_and(|allowed| !allowed.contains(length)) {
-                    continue;
-                }
-
-                let cell_words = words
-                    .iter()
-                    .copied()
-                    .filter(|word| seen.insert(*word))
-                    .collect::<Vec<_>>();
-                if cell_words.is_empty() {
-                    continue;
-                }
-
-                total += cell_words.len();
-                plan_words.extend(cell_words.iter().copied());
-                cells.push(SelectionCell {
-                    upper_bound: total,
-                    words: cell_words,
-                });
-            }
-        }
+        let plan_words =
+            dictionary::resolve_words(dictionary_version, blocklist_version, categories, lengths)
+                .map_err(anyhow::Error::msg)?;
+        let total = plan_words.len();
 
         if total == 0 {
             bail!("{position} categories do not contain words matching the requested filters");
         }
 
+        let cells = vec![SelectionCell {
+            upper_bound: total,
+            words: plan_words.clone(),
+        }];
         let word_indexes = plan_words
             .iter()
             .enumerate()
@@ -662,20 +657,21 @@ pub fn compute_profile_suffix(
     profile_id: Uuid,
     atomic_value: i64,
     suffix_min_length: usize,
+    blocklist_version: u32,
 ) -> Result<String> {
     if atomic_value < 1 {
         bail!("atomic value must be at least 1");
     }
     let value = u64::try_from(atomic_value).expect("positive i64 fits in u64");
-    sqids_for_profile(Some(profile_id), suffix_min_length)?
+    sqids_for_profile(Some(profile_id), suffix_min_length, blocklist_version)?
         .encode(&[value])
         .map_err(Into::into)
 }
 
-pub fn random_sqids_suffix(suffix_min_length: usize) -> Result<String> {
+pub fn random_sqids_suffix(suffix_min_length: usize, blocklist_version: u32) -> Result<String> {
     let max = random_fallback_max_value(suffix_min_length)?;
     let value = random_u64(1, max);
-    sqids_for_profile(None, suffix_min_length)?
+    sqids_for_profile(None, suffix_min_length, blocklist_version)?
         .encode(&[value])
         .map_err(Into::into)
 }
@@ -718,12 +714,21 @@ fn random_u64(min: u64, max: u64) -> u64 {
     min + value
 }
 
-fn sqids_for_profile(profile_id: Option<Uuid>, suffix_min_length: usize) -> Result<Sqids> {
+fn sqids_for_profile(
+    profile_id: Option<Uuid>,
+    suffix_min_length: usize,
+    blocklist_version: u32,
+) -> Result<Sqids> {
     let min_length = u8::try_from(suffix_min_length).context("suffix minimum length exceeds u8")?;
+    let blocklist = dictionary::blocklist_words(blocklist_version)
+        .ok_or_else(|| anyhow!("unknown blocklist version {blocklist_version}"))?
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     Sqids::builder()
         .alphabet(profile_alphabet(profile_id).chars().collect())
         .min_length(min_length)
-        .blocklist(sqids::default_blocklist())
+        .blocklist(blocklist)
         .build()
         .map_err(Into::into)
 }
@@ -1191,24 +1196,28 @@ mod tests {
     fn profile_suffix_is_stable_per_profile_and_value() {
         let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
 
-        let first = compute_profile_suffix(profile_id, 1, 8).expect("suffix");
-        let first_again = compute_profile_suffix(profile_id, 1, 8).expect("suffix");
-        let second = compute_profile_suffix(profile_id, 2, 8).expect("suffix");
+        let blocklist_version = dictionary::default_blocklist_version();
+        let first = compute_profile_suffix(profile_id, 1, 8, blocklist_version).expect("suffix");
+        let first_again =
+            compute_profile_suffix(profile_id, 1, 8, blocklist_version).expect("suffix");
+        let second = compute_profile_suffix(profile_id, 2, 8, blocklist_version).expect("suffix");
 
         assert_eq!(first, first_again);
         assert_ne!(first, second);
         assert!(first.len() >= 8);
         assert!(is_base36_suffix(&first));
-        assert!(compute_profile_suffix(profile_id, 0, 8).is_err());
+        assert!(compute_profile_suffix(profile_id, 0, 8, blocklist_version).is_err());
     }
 
     #[test]
     fn profile_suffix_is_unique_for_initial_counter_values() {
         let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+        let blocklist_version = dictionary::default_blocklist_version();
 
         let mut seen = HashSet::new();
         for atomic_value in 1..=100 {
-            let suffix = compute_profile_suffix(profile_id, atomic_value, 5).expect("suffix");
+            let suffix = compute_profile_suffix(profile_id, atomic_value, 5, blocklist_version)
+                .expect("suffix");
             assert!(suffix.len() >= 5);
             assert!(is_base36_suffix(&suffix));
             assert!(seen.insert(suffix));

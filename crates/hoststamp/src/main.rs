@@ -128,34 +128,35 @@ impl ConfigSetArgs {
             && self.suffix_min_length.is_none()
     }
 
-    fn apply(&self, mut config: ProfileConfig) -> anyhow::Result<ProfileConfig> {
+    fn apply(&self, config: ProfileConfig) -> anyhow::Result<ProfileConfig> {
+        let mut options = config.to_generate_options(generator::DEFAULT_COUNT);
         if let Some(enabled) = self.word1_enabled {
-            config.word1.enabled = enabled;
+            options.word1_enabled = enabled;
         }
         if let Some(value) = self.word1_lengths.as_deref() {
-            config.word1.lengths = generator::parse_lengths(value).map_err(anyhow::Error::msg)?;
+            options.word1_lengths = generator::parse_lengths(value).map_err(anyhow::Error::msg)?;
         }
         if let Some(value) = self.word1_categories.as_deref() {
-            config.word1.categories =
+            options.word1_categories =
                 generator::parse_categories(value).map_err(anyhow::Error::msg)?;
         }
         if let Some(enabled) = self.word2_enabled {
-            config.word2.enabled = enabled;
+            options.word2_enabled = enabled;
         }
         if let Some(value) = self.word2_lengths.as_deref() {
-            config.word2.lengths = generator::parse_lengths(value).map_err(anyhow::Error::msg)?;
+            options.word2_lengths = generator::parse_lengths(value).map_err(anyhow::Error::msg)?;
         }
         if let Some(value) = self.word2_categories.as_deref() {
-            config.word2.categories =
+            options.word2_categories =
                 generator::parse_categories(value).map_err(anyhow::Error::msg)?;
         }
         if let Some(enabled) = self.suffix_enabled {
-            config.suffix.enabled = enabled;
+            options.suffix_enabled = enabled;
         }
         if let Some(min_length) = self.suffix_min_length {
-            config.suffix.min_length = min_length;
+            options.suffix_min_length = min_length;
         }
-        Ok(config)
+        ProfileConfig::try_from_options(&options)
     }
 }
 
@@ -761,9 +762,15 @@ fn print_profile_token(token: &StoredProfileToken) {
 
 fn print_profile_config(prefix: &str, config: &ProfileConfig) {
     println!("[{prefix}]");
+    println!("dictionary_version = {}", config.dictionary_version);
     println!(
-        "dictionary_fingerprint = {:?}",
-        config.dictionary_fingerprint
+        "dictionary_version_hash = {:?}",
+        config.dictionary_version_hash
+    );
+    println!("blocklist_version = {}", config.blocklist_version);
+    println!(
+        "blocklist_version_hash = {:?}",
+        config.blocklist_version_hash
     );
     println!();
 
@@ -771,12 +778,14 @@ fn print_profile_config(prefix: &str, config: &ProfileConfig) {
     println!("enabled = {}", config.word1.enabled);
     print_lengths("lengths", config.word1.lengths.as_deref());
     print_string_array("categories", &config.word1.categories);
+    println!("pool_hash = {:?}", config.word1.pool_hash);
     println!();
 
     println!("[{prefix}.word2]");
     println!("enabled = {}", config.word2.enabled);
     print_lengths("lengths", config.word2.lengths.as_deref());
     print_string_array("categories", &config.word2.categories);
+    println!("pool_hash = {:?}", config.word2.pool_hash);
     println!();
 
     println!("[{prefix}.suffix]");
@@ -785,6 +794,11 @@ fn print_profile_config(prefix: &str, config: &ProfileConfig) {
 }
 
 fn print_generate_options(prefix: &str, options: &GenerateOptions) {
+    println!("[{prefix}]");
+    println!("dictionary_version = {}", options.dictionary_version);
+    println!("blocklist_version = {}", options.blocklist_version);
+    println!();
+
     println!("[{prefix}.word1]");
     println!("enabled = {}", options.word1_enabled);
     print_lengths("lengths", options.word1_lengths.as_deref());
@@ -850,10 +864,8 @@ fn ensure_profile_dictionary_is_current(profile: &StoredProfile) -> anyhow::Resu
     }
 
     anyhow::bail!(
-        "profile {:?} was created with dictionary artifact {}, but this binary uses {}; profile-backed generation cannot run safely across dictionary changes",
-        profile.slug.as_str(),
-        profile.config.dictionary_fingerprint,
-        dictionary::artifact_sha256()
+        "profile {:?} was created with dictionary/blocklist versions or resolved word pools that do not match this binary; profile-backed generation cannot run safely across dictionary changes",
+        profile.slug.as_str()
     )
 }
 

@@ -141,7 +141,7 @@ Category stats from the generated artifact:
 | `ocean` | 5 | 6-8 |
 | `phonetic` | 26 | 4-8 |
 | `planet` | 13 | 4-8 |
-| `river` | 187 | 3-12 |
+| `river` | 186 | 3-12 |
 | `scientist` | 241 | 4-12 |
 | `star` | 435 | 3-12 |
 | `stone` | 48 | 4-12 |
@@ -159,8 +159,9 @@ return the hostname with `profile` and `atomic_value` metadata. The requested
 atomic value must already have been issued by the active profile generation. It
 requires suffixes to be enabled for the stored profile because atomic values are
 tracked only for profile-backed suffix generation. Stored profiles include the
-embedded dictionary artifact fingerprint, and Hoststamp will not regenerate
-across dictionary artifact changes.
+selected dictionary and blocklist versions, those version hashes, and resolved
+word-pool hashes. Hoststamp will not regenerate if the selected version content
+or resolved pools drift.
 
 Local endpoints:
 
@@ -307,13 +308,15 @@ does not trigger profile replacement. API requests cannot provide interactive
 confirmation, so profile config overrides are rejected; use the CLI to confirm
 a profile replacement first.
 
-Stored profiles include the embedded dictionary artifact fingerprint. If a
-newer Hoststamp binary embeds a different dictionary artifact, profile-backed
-`generate`, `serve`, and `regenerate` fail closed for the stale profile so they
-do not emit names that cannot later be regenerated under the recorded profile
-state. Create a new profile, delete and recreate the existing profile, or use
-`config set` to replace the active profile row with the current dictionary
-artifact.
+Stored profiles include dictionary and blocklist version hashes plus resolved
+word-pool hashes. If a newer Hoststamp binary changes unrelated dictionary
+versions, old profiles can continue to run. If the selected dictionary version,
+selected blocklist version, or resolved pools for the profile change,
+profile-backed `generate`, `serve`, and `regenerate` fail closed so they do not
+emit names that cannot later be regenerated under the recorded profile state.
+Create a new profile, delete and recreate the existing profile, or use
+`config set` to replace the active profile row with the current dictionary and
+blocklist versions.
 
 SQLite storage is implemented for local profiles. `postgres://` and
 `postgresql://` URLs are recognized as planned remote storage backends, but

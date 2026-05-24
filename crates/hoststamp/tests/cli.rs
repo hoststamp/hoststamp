@@ -597,7 +597,10 @@ fn config_set_rejects_unknown_category() {
     cmd.args(["config", "set", "--word1-categories", "missing"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unknown category"));
+        .stderr(
+            predicate::str::contains("unknown category")
+                .and(predicate::str::contains("panicked").not()),
+        );
 }
 
 #[test]
@@ -808,12 +811,15 @@ fn config_set_replacement_requires_confirmation() {
 }
 
 #[test]
-fn generate_rejects_stale_dictionary_fingerprint() {
+fn generate_rejects_stale_dictionary_pool_hash() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");
     let slug = ProfileSlug::default_profile();
     let stale_config = ProfileConfig {
-        dictionary_fingerprint: "old".to_owned(),
+        word1: hoststamp::profile::WordProfileConfig {
+            pool_hash: Some("old".to_owned()),
+            ..ProfileConfig::default().word1
+        },
         ..ProfileConfig::default()
     };
     let mut store = ProfileStore::open(&StorageUrl::Sqlite(database.clone())).expect("store");

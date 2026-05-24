@@ -313,10 +313,8 @@ async fn regenerate_with_state(
     }
     if !profile.config.uses_current_dictionary() {
         return Err(GenerateError::BadRequest(format!(
-            "profile {:?} was created with dictionary artifact {}, but this binary uses {}; profile-backed generation cannot run safely across dictionary changes",
-            profile.slug.as_str(),
-            profile.config.dictionary_fingerprint,
-            crate::dictionary::artifact_sha256()
+            "profile {:?} was created with dictionary/blocklist versions or resolved word pools that do not match this binary; profile-backed generation cannot run safely across dictionary changes",
+            profile.slug.as_str()
         )));
     }
 

@@ -1,102 +1,42 @@
 # Third-Party Notices
 
-Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
+Generated from Hoststamp dictionary artifact schema 1 at 2026-05-24T18:37:32Z.
 
-## golang-petname adjectives
+## Corpora decorative stones
 
-- Source ID: `petname-adjectives`
-- Attribution: Dustin Kirkland
-- Source: <https://github.com/dustinkirkland/golang-petname>
-- License: Apache-2.0
-- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
+- Source ID: `corpora-decorative-stones`
+- Attribution: Darius Kazemi and corpora contributors
+- Source: <https://github.com/dariusk/corpora>
+- License: CC0-1.0
+- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
 - Retrieved: 2026-05-19
-- SHA-256: `93eba9c686a9e89d89f338849664f8bf90b84c9a5567854abc0ce147f76071f5`
-- Notice required: true
-- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## golang-petname adverbs
-
-- Source ID: `petname-adverbs`
-- Attribution: Dustin Kirkland
-- Source: <https://github.com/dustinkirkland/golang-petname>
-- License: Apache-2.0
-- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
-- Retrieved: 2026-05-19
-- SHA-256: `93eba9c686a9e89d89f338849664f8bf90b84c9a5567854abc0ce147f76071f5`
-- Notice required: true
-- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## golang-petname animal names
-
-- Source ID: `petname-animals`
-- Attribution: Dustin Kirkland
-- Source: <https://github.com/dustinkirkland/golang-petname>
-- License: Apache-2.0
-- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
-- Retrieved: 2026-05-19
-- SHA-256: `93eba9c686a9e89d89f338849664f8bf90b84c9a5567854abc0ce147f76071f5`
-- Notice required: true
-- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## Docker/Moby name generator adjectives
-
-- Source ID: `docker-moby-adjectives`
-- Attribution: Docker, Inc. and Moby contributors
-- Source: <https://github.com/moby/moby/tree/v24.0.7/pkg/namesgenerator>
-- License: Apache-2.0
-- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
-- Retrieved: 2026-05-19
-- SHA-256: `aeeb39f862049aafab98a216da7e676e12c13081fd9d6fc5c6a17c11251ec380`
-- Notice required: true
-- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## Docker/Moby name generator scientist surnames
-
-- Source ID: `docker-moby-scientists`
-- Attribution: Docker, Inc. and Moby contributors
-- Source: <https://github.com/moby/moby/tree/v24.0.7/pkg/namesgenerator>
-- License: Apache-2.0
-- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
-- Retrieved: 2026-05-19
-- SHA-256: `aeeb39f862049aafab98a216da7e676e12c13081fd9d6fc5c6a17c11251ec380`
-- Notice required: true
-- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## haikunator adjectives
-
-- Source ID: `haikunator-adjectives`
-- Attribution: Atrox
-- Source: <https://github.com/Atrox/haikunatorgo>
-- License: MIT
-- License URL: <https://opensource.org/license/mit>
-- Retrieved: 2026-05-19
-- SHA-256: `b60e8a358c7c55b1f41375a42303bc011988ca2457d69dd40a40bf7997b6966b`
-- Notice required: true
-- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## haikunator nouns
-
-- Source ID: `haikunator-nouns`
-- Attribution: Atrox
-- Source: <https://github.com/Atrox/haikunatorgo>
-- License: MIT
-- License URL: <https://opensource.org/license/mit>
-- Retrieved: 2026-05-19
-- SHA-256: `b60e8a358c7c55b1f41375a42303bc011988ca2457d69dd40a40bf7997b6966b`
-- Notice required: true
-- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## IAU Catalog of Star Names
-
-- Source ID: `iau-star-names`
-- Attribution: International Astronomical Union
-- Source: <https://www.iau.org/public/themes/naming_stars/>
-- License: public domain (facts)
-- License URL: <https://www.iau.org/public/copyright/>
-- Retrieved: 2026-05-19
-- SHA-256: `84fac0c90f1b19abc491c2793469e0caa7b003ad1bc93a790ca41147010d0eb0`
+- SHA-256: `63bedee3d44dc853b5ee87ea8946951be867578c3f929e8ef25eb4252f84f058`
 - Notice required: false
-- Changes: extracted fixed-width name column; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+- Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## Corpora periodic elements
+
+- Source ID: `corpora-elements`
+- Attribution: Darius Kazemi and corpora contributors
+- Source: <https://github.com/dariusk/corpora>
+- License: CC0-1.0
+- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
+- Retrieved: 2026-05-19
+- SHA-256: `0d3d4dd78ff17cd70edde27bd829c69444def45818e787e93f4161f81a618430`
+- Notice required: false
+- Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## Corpora gemstones
+
+- Source ID: `corpora-gemstones`
+- Attribution: Darius Kazemi and corpora contributors
+- Source: <https://github.com/dariusk/corpora>
+- License: CC0-1.0
+- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
+- Retrieved: 2026-05-19
+- SHA-256: `d14cadcadd03988ec72cfefda4e609b43ed14cc4c1237546447bd4c93ba0e1a2`
+- Notice required: false
+- Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
 ## Corpora Greek gods
 
@@ -107,18 +47,6 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
 - License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
 - Retrieved: 2026-05-19
 - SHA-256: `fb14e676df3ebd19e2e6e52de4ce8386c97008cfd4edde92e66b822ec08aae4f`
-- Notice required: false
-- Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## Corpora Greek titans
-
-- Source ID: `corpora-greek-titans`
-- Attribution: Darius Kazemi and corpora contributors
-- Source: <https://github.com/dariusk/corpora>
-- License: CC0-1.0
-- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
-- Retrieved: 2026-05-19
-- SHA-256: `492f57e493514f4e67d743f652387e1f0a4c45bd2bfa17c0de00b61ea3bbdc7b`
 - Notice required: false
 - Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
@@ -134,51 +62,27 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
 - Notice required: false
 - Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
-## Corpora Roman deities
+## Corpora Greek titans
 
-- Source ID: `corpora-roman-deities`
+- Source ID: `corpora-greek-titans`
 - Attribution: Darius Kazemi and corpora contributors
 - Source: <https://github.com/dariusk/corpora>
 - License: CC0-1.0
 - License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
 - Retrieved: 2026-05-19
-- SHA-256: `76c46daf34eeff6f0a82811e0bdd0d2d07c1ff510626a1f6a9691bcb034a53da`
+- SHA-256: `492f57e493514f4e67d743f652387e1f0a4c45bd2bfa17c0de00b61ea3bbdc7b`
 - Notice required: false
 - Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
-## Corpora Norse gods
+## Corpora metals
 
-- Source ID: `corpora-norse-gods`
+- Source ID: `corpora-metals`
 - Attribution: Darius Kazemi and corpora contributors
 - Source: <https://github.com/dariusk/corpora>
 - License: CC0-1.0
 - License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
 - Retrieved: 2026-05-19
-- SHA-256: `0be6f9ea517fea9740606207c38ae627d76af41f41bbbd6ae2b922f7032ebaaa`
-- Notice required: false
-- Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## Corpora periodic elements
-
-- Source ID: `corpora-elements`
-- Attribution: Darius Kazemi and corpora contributors
-- Source: <https://github.com/dariusk/corpora>
-- License: CC0-1.0
-- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
-- Retrieved: 2026-05-19
-- SHA-256: `0d3d4dd78ff17cd70edde27bd829c69444def45818e787e93f4161f81a618430`
-- Notice required: false
-- Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## Corpora planets
-
-- Source ID: `corpora-planets`
-- Attribution: Darius Kazemi and corpora contributors
-- Source: <https://github.com/dariusk/corpora>
-- License: CC0-1.0
-- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
-- Retrieved: 2026-05-19
-- SHA-256: `cc459cf9e109fecd500bf80e6b13d29a0aba12f8025669bd76222cb8da8f8a06`
+- SHA-256: `7e72f93923704bef59783374db3b0ff180b26cc11ffc34420ea15fbd6a966e1c`
 - Notice required: false
 - Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
@@ -194,39 +98,51 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
 - Notice required: false
 - Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
-## Corpora gemstones
+## Corpora neutral given names
 
-- Source ID: `corpora-gemstones`
+- Source ID: `corpora-neutral-names`
 - Attribution: Darius Kazemi and corpora contributors
 - Source: <https://github.com/dariusk/corpora>
 - License: CC0-1.0
 - License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
 - Retrieved: 2026-05-19
-- SHA-256: `d14cadcadd03988ec72cfefda4e609b43ed14cc4c1237546447bd4c93ba0e1a2`
+- SHA-256: `7b1fd96554f98192849983d885529934a0fc7b00558b6fb822fcbc07e8163582`
+- Notice required: false
+- Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## Corpora Norse gods
+
+- Source ID: `corpora-norse-gods`
+- Attribution: Darius Kazemi and corpora contributors
+- Source: <https://github.com/dariusk/corpora>
+- License: CC0-1.0
+- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
+- Retrieved: 2026-05-19
+- SHA-256: `0be6f9ea517fea9740606207c38ae627d76af41f41bbbd6ae2b922f7032ebaaa`
+- Notice required: false
+- Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## Corpora oceans and seas
+
+- Source ID: `corpora-oceans`
+- Attribution: Darius Kazemi and corpora contributors
+- Source: <https://github.com/dariusk/corpora>
+- License: CC0-1.0
+- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
+- Retrieved: 2026-05-19
+- SHA-256: `63f3dab4fb34f882589e7936f0938da51030a645bcea1885aeb9f67371354811`
 - Notice required: false
 - Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
-## Corpora decorative stones
+## Corpora planets
 
-- Source ID: `corpora-decorative-stones`
+- Source ID: `corpora-planets`
 - Attribution: Darius Kazemi and corpora contributors
 - Source: <https://github.com/dariusk/corpora>
 - License: CC0-1.0
 - License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
 - Retrieved: 2026-05-19
-- SHA-256: `63bedee3d44dc853b5ee87ea8946951be867578c3f929e8ef25eb4252f84f058`
-- Notice required: false
-- Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## Corpora metals
-
-- Source ID: `corpora-metals`
-- Attribution: Darius Kazemi and corpora contributors
-- Source: <https://github.com/dariusk/corpora>
-- License: CC0-1.0
-- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
-- Retrieved: 2026-05-19
-- SHA-256: `7e72f93923704bef59783374db3b0ff180b26cc11ffc34420ea15fbd6a966e1c`
+- SHA-256: `cc459cf9e109fecd500bf80e6b13d29a0aba12f8025669bd76222cb8da8f8a06`
 - Notice required: false
 - Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
@@ -242,29 +158,17 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
 - Notice required: false
 - Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
-## Corpora winds
+## Corpora Roman deities
 
-- Source ID: `corpora-winds`
+- Source ID: `corpora-roman-deities`
 - Attribution: Darius Kazemi and corpora contributors
 - Source: <https://github.com/dariusk/corpora>
 - License: CC0-1.0
 - License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
 - Retrieved: 2026-05-19
-- SHA-256: `0a469a42f12bfdf36c9f38281bdf923ceea206b5a4dd98388f856d4fbf64b651`
+- SHA-256: `76c46daf34eeff6f0a82811e0bdd0d2d07c1ff510626a1f6a9691bcb034a53da`
 - Notice required: false
-- Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
-
-## Corpora oceans and seas
-
-- Source ID: `corpora-oceans`
-- Attribution: Darius Kazemi and corpora contributors
-- Source: <https://github.com/dariusk/corpora>
-- License: CC0-1.0
-- License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
-- Retrieved: 2026-05-19
-- SHA-256: `63f3dab4fb34f882589e7936f0938da51030a645bcea1885aeb9f67371354811`
-- Notice required: false
-- Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+- Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
 ## Corpora scientists
 
@@ -290,29 +194,41 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
 - Notice required: false
 - Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
-## Corpora neutral given names
+## Corpora winds
 
-- Source ID: `corpora-neutral-names`
+- Source ID: `corpora-winds`
 - Attribution: Darius Kazemi and corpora contributors
 - Source: <https://github.com/dariusk/corpora>
 - License: CC0-1.0
 - License URL: <https://creativecommons.org/publicdomain/zero/1.0/>
 - Retrieved: 2026-05-19
-- SHA-256: `7b1fd96554f98192849983d885529934a0fc7b00558b6fb822fcbc07e8163582`
+- SHA-256: `0a469a42f12bfdf36c9f38281bdf923ceea206b5a4dd98388f856d4fbf64b651`
 - Notice required: false
-- Changes: read extracted line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+- Changes: read extracted line list; dropped multiword entries; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
-## NATO phonetic alphabet
+## Docker/Moby name generator adjectives
 
-- Source ID: `facts-nato-phonetic`
-- Attribution: ICAO/NATO spelling alphabet
-- Source: <https://www.nato.int/cps/en/natohq/declassified_136216.htm>
-- License: public domain (facts)
-- License URL: <https://en.wikipedia.org/wiki/Public_domain>
+- Source ID: `docker-moby-adjectives`
+- Attribution: Docker, Inc. and Moby contributors
+- Source: <https://github.com/moby/moby/tree/v24.0.7/pkg/namesgenerator>
+- License: Apache-2.0
+- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
 - Retrieved: 2026-05-19
-- SHA-256: `657e95d4cc8179db978f5c547581366b5d958df5a8e35e0bed8f857516516614`
-- Notice required: false
-- Changes: read fact line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+- SHA-256: `aeeb39f862049aafab98a216da7e676e12c13081fd9d6fc5c6a17c11251ec380`
+- Notice required: true
+- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## Docker/Moby name generator scientist surnames
+
+- Source ID: `docker-moby-scientists`
+- Attribution: Docker, Inc. and Moby contributors
+- Source: <https://github.com/moby/moby/tree/v24.0.7/pkg/namesgenerator>
+- License: Apache-2.0
+- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
+- Retrieved: 2026-05-19
+- SHA-256: `aeeb39f862049aafab98a216da7e676e12c13081fd9d6fc5c6a17c11251ec380`
+- Notice required: true
+- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
 ## EFF large Diceware wordlist
 
@@ -350,6 +266,102 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
 - Notice required: true
 - Changes: extracted Diceware word column; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
 
+## NATO phonetic alphabet
+
+- Source ID: `facts-nato-phonetic`
+- Attribution: ICAO/NATO spelling alphabet
+- Source: <https://www.nato.int/cps/en/natohq/declassified_136216.htm>
+- License: public domain (facts)
+- License URL: <https://en.wikipedia.org/wiki/Public_domain>
+- Retrieved: 2026-05-19
+- SHA-256: `657e95d4cc8179db978f5c547581366b5d958df5a8e35e0bed8f857516516614`
+- Notice required: false
+- Changes: read fact line list; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## haikunator adjectives
+
+- Source ID: `haikunator-adjectives`
+- Attribution: Atrox
+- Source: <https://github.com/Atrox/haikunatorgo>
+- License: MIT
+- License URL: <https://opensource.org/license/mit>
+- Retrieved: 2026-05-19
+- SHA-256: `b60e8a358c7c55b1f41375a42303bc011988ca2457d69dd40a40bf7997b6966b`
+- Notice required: true
+- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## haikunator nouns
+
+- Source ID: `haikunator-nouns`
+- Attribution: Atrox
+- Source: <https://github.com/Atrox/haikunatorgo>
+- License: MIT
+- License URL: <https://opensource.org/license/mit>
+- Retrieved: 2026-05-19
+- SHA-256: `b60e8a358c7c55b1f41375a42303bc011988ca2457d69dd40a40bf7997b6966b`
+- Notice required: true
+- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## Hoststamp server-name safety blocklist
+
+- Source ID: `hoststamp-server-name-blocklist`
+- Attribution: hoststamp contributors
+- Source: <https://github.com/hoststamp/hoststamp>
+- License: MIT
+- License URL: <https://opensource.org/license/mit>
+- Retrieved: 2026-05-24
+- SHA-256: `4a9cab6d66819364909d5bc6fba1713716557a94ce88eaf6745acc0e093df6fa`
+- Notice required: false
+- Changes: normalized as lowercase base36 tokens; base64url-encoded in artifact
+
+## IAU Catalog of Star Names
+
+- Source ID: `iau-star-names`
+- Attribution: International Astronomical Union
+- Source: <https://www.iau.org/public/themes/naming_stars/>
+- License: public domain (facts)
+- License URL: <https://www.iau.org/public/copyright/>
+- Retrieved: 2026-05-19
+- SHA-256: `84fac0c90f1b19abc491c2793469e0caa7b003ad1bc93a790ca41147010d0eb0`
+- Notice required: false
+- Changes: extracted fixed-width name column; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## golang-petname adjectives
+
+- Source ID: `petname-adjectives`
+- Attribution: Dustin Kirkland
+- Source: <https://github.com/dustinkirkland/golang-petname>
+- License: Apache-2.0
+- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
+- Retrieved: 2026-05-19
+- SHA-256: `93eba9c686a9e89d89f338849664f8bf90b84c9a5567854abc0ce147f76071f5`
+- Notice required: true
+- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## golang-petname adverbs
+
+- Source ID: `petname-adverbs`
+- Attribution: Dustin Kirkland
+- Source: <https://github.com/dustinkirkland/golang-petname>
+- License: Apache-2.0
+- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
+- Retrieved: 2026-05-19
+- SHA-256: `93eba9c686a9e89d89f338849664f8bf90b84c9a5567854abc0ce147f76071f5`
+- Notice required: true
+- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
+## golang-petname animal names
+
+- Source ID: `petname-animals`
+- Attribution: Dustin Kirkland
+- Source: <https://github.com/dustinkirkland/golang-petname>
+- License: Apache-2.0
+- License URL: <https://www.apache.org/licenses/LICENSE-2.0>
+- Retrieved: 2026-05-19
+- SHA-256: `93eba9c686a9e89d89f338849664f8bf90b84c9a5567854abc0ce147f76071f5`
+- Notice required: true
+- Changes: extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped
+
 ## Sqids default blocklist
 
 - Source ID: `sqids-default-blocklist`
@@ -357,6 +369,7 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-20T02:56:16Z.
 - Source: <https://github.com/sqids/sqids-rust/blob/v0.4.2/src/blocklist.json>
 - License: MIT
 - License URL: <https://opensource.org/license/mit>
-- Retrieved: via pinned `sqids` crate 0.4.2
+- Retrieved: 2026-05-24
+- SHA-256: `053de66a93ec3f149f0b773a659201522f3f017fb3c9238e3ac1bbfdac0e2e35`
 - Notice required: true
-- Changes: used through the pinned sqids crate; filtered by lowercase base36 alphabet at runtime
+- Changes: extracted from pinned sqids 0.4.2 blocklist.json; base64url-encoded in artifact
