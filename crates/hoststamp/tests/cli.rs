@@ -908,7 +908,7 @@ fn generate_rejects_stale_dictionary_pool_hash() {
 fn config_set_rejects_suffix_min_length_below_floor() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
-    cmd.args(["config", "set", "--suffix-min-length", "3"])
+    cmd.args(["config", "set", "--suffix-min-length", "2"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(

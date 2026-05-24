@@ -84,7 +84,7 @@ without generating or modifying that profile. The report includes the
 candidate count for each word position, overlap removed by the no-repeat rule,
 unique word combinations, suffix variants, suffix bits, and total variants.
 Suffixes are Sqids-encoded lowercase base36 (`0-9a-z`) values with a pinned
-Sqids blocklist. `config set --suffix-min-length` is bounded to `[4, 13]` and
+Sqids blocklist. `config set --suffix-min-length` is bounded to `[3, 13]` and
 is a minimum: suffixes can grow longer as the encoded number passes the
 fixed-length space for that minimum. The fixed-length suffix space is
 `36^suffix_min_length`; with the default minimum length of `5`, that space is
@@ -129,8 +129,7 @@ used by Hoststamp profile storage (`1..=9,223,372,036,854,775,807`).
 
 *Approximate base36 space before Sqids blocklist filtering. The pinned Sqids
 blocklist can skip some encoded values, so expansion may happen a few values
-earlier for a given profile alphabet. Length `3` is shown for planning math;
-the CLI accepts suffix minimum lengths `4..=13`.
+earlier for a given profile alphabet.
 
 Category stats from the generated artifact:
 

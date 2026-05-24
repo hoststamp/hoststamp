@@ -12,7 +12,7 @@ use uuid::Uuid;
 pub const DEFAULT_GENERATION_ENGINE: GenerationEngine = GenerationEngine::AtomicV1;
 pub const DEFAULT_WORD_LENGTH: usize = 5;
 pub const DEFAULT_SUFFIX_MIN_LENGTH: usize = 5;
-pub const MIN_SUFFIX_MIN_LENGTH: usize = 4;
+pub const MIN_SUFFIX_MIN_LENGTH: usize = 3;
 pub const MAX_SUFFIX_MIN_LENGTH: usize = 13;
 pub const SUFFIX_ALPHABET_SIZE: u32 = 36;
 pub const DEFAULT_COUNT: usize = 1;
@@ -1164,7 +1164,7 @@ mod tests {
         assert!(parse_count("nope").is_err());
         assert!(parse_count("0").is_err());
         assert!(parse_suffix_min_length("nope").is_err());
-        assert!(parse_suffix_min_length("3").is_err());
+        assert!(parse_suffix_min_length("2").is_err());
         assert!(parse_suffix_min_length("14").is_err());
     }
 
@@ -1182,9 +1182,9 @@ mod tests {
 
     #[test]
     fn suffix_min_length_floor_and_ceiling_at_parser() {
-        assert!(parse_suffix_min_length("4").is_ok());
+        assert!(parse_suffix_min_length("3").is_ok());
         assert!(parse_suffix_min_length("13").is_ok());
-        assert!(parse_suffix_min_length("3").is_err());
+        assert!(parse_suffix_min_length("2").is_err());
         assert!(parse_suffix_min_length("14").is_err());
         assert_eq!(random_fallback_max_value(5).expect("max"), 30_233_088);
     }
