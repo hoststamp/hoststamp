@@ -6,7 +6,7 @@ use hoststamp::{
     SERVICE_NAME,
     config::{self, Overrides},
     credits, dictionary,
-    generator::{self, GenerateOptions},
+    generator::{self, GenerateOptions, ProfileGeneratedHostname},
     notices,
     profile::{self, ProfileConfig, ProfileSlug},
     server,
@@ -94,6 +94,10 @@ struct GenerateArgs {
     /// Number of hostnames to generate.
     #[arg(long, global = true, value_parser = generator::parse_count)]
     count: Option<usize>,
+
+    /// Print generated hostnames as JSON with metadata.
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 impl GenerateArgs {
@@ -253,8 +257,16 @@ async fn main() -> anyhow::Result<()> {
             }
             generator::validate_generate_options(&options)?;
             let profile = reconcile_atomic_profile(&mut store, profile, &options)?;
-            for hostname in generate_with_profile(options, &mut store, &profile)? {
-                println!("{hostname}");
+            let hostnames = generate_with_profile(options, &mut store, &profile)?;
+            if cli.generate.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&server::GenerateResponse { hostnames })?
+                );
+            } else {
+                for generated in hostnames {
+                    println!("{}", generated.hostname);
+                }
             }
             Ok(())
         }
@@ -294,7 +306,23 @@ async fn main() -> anyhow::Result<()> {
                 &profile.config_hash,
                 atomic_value,
             )?;
-            println!("{hostname}");
+            if cli.generate.json {
+                let generated = server::GeneratedHostname::profile_backed(
+                    &profile.slug,
+                    ProfileGeneratedHostname {
+                        hostname,
+                        atomic_value,
+                    },
+                );
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&server::GenerateResponse {
+                        hostnames: vec![generated],
+                    })?
+                );
+            } else {
+                println!("{hostname}");
+            }
             Ok(())
         }
         Command::Serve { addr } => {
@@ -330,17 +358,28 @@ fn generate_with_profile(
     options: GenerateOptions,
     store: &mut ProfileStore,
     profile: &StoredProfile,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<server::GeneratedHostname>> {
     if options.suffix_enabled {
         let profile_id = profile.id;
         let profile_slug = profile.slug.clone();
         let config_hash = profile.config_hash;
         return generator::generate_profile_many(options, profile_id, &config_hash, || {
             store.increment_atomic_value(&profile_slug)
+        })
+        .map(|hostnames| {
+            hostnames
+                .into_iter()
+                .map(|hostname| server::GeneratedHostname::profile_backed(&profile_slug, hostname))
+                .collect()
         });
     }
 
-    generator::generate_many(options)
+    generator::generate_many(options).map(|hostnames| {
+        hostnames
+            .into_iter()
+            .map(server::GeneratedHostname::plain)
+            .collect()
+    })
 }
 
 fn print_capacity_report(options: &GenerateOptions) -> anyhow::Result<()> {

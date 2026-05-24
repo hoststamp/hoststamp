@@ -58,6 +58,7 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("--no-suffix"))
             .and(predicate::str::contains("--suffix-min-length"))
             .and(predicate::str::contains("--capacity"))
+            .and(predicate::str::contains("--json"))
             .and(predicate::str::contains("--profile"))
             .and(predicate::str::contains("--database-url"))
             .and(predicate::str::contains("regenerate"))
@@ -391,6 +392,31 @@ fn generate_uses_profile_backed_suffix_by_default() {
 }
 
 #[test]
+fn generate_json_prints_atomic_metadata() {
+    let (mut cmd, _tempdir) = command_with_database();
+
+    let assert = cmd
+        .args(["generate", "--count", "2", "--json"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+
+    assert_eq!(hostnames.len(), 2);
+    assert_eq!(hostnames[0]["profile"], "_");
+    assert_eq!(hostnames[0]["atomic_value"], 1);
+    assert_eq!(hostnames[1]["profile"], "_");
+    assert_eq!(hostnames[1]["atomic_value"], 2);
+    assert!(
+        hostnames[0]["hostname"]
+            .as_str()
+            .expect("hostname")
+            .contains('-')
+    );
+}
+
+#[test]
 fn regenerate_recreates_profile_hostname_without_incrementing_counter() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");
@@ -423,6 +449,31 @@ fn regenerate_recreates_profile_hostname_without_incrementing_counter() {
         .assert()
         .success()
         .stdout(predicate::str::contains("last_atomic_value = 2"));
+}
+
+#[test]
+fn regenerate_json_prints_atomic_metadata() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate.arg("generate").assert().success();
+    let generated = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = generated.trim();
+
+    let mut regenerate = command_for_database(&database);
+    let assert = regenerate
+        .args(["regenerate", "--atomic-value", "1", "--json"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+
+    assert_eq!(hostnames.len(), 1);
+    assert_eq!(hostnames[0]["hostname"], generated);
+    assert_eq!(hostnames[0]["profile"], "_");
+    assert_eq!(hostnames[0]["atomic_value"], 1);
 }
 
 #[test]

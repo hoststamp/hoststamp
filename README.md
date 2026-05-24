@@ -31,6 +31,7 @@ Generate hostnames:
 ```sh
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- generate --count 10
+cargo run -p hoststamp -- generate --count 10 --json
 cargo run -p hoststamp -- generate --word1-categories adjective --word2-categories animal
 cargo run -p hoststamp -- generate --word1-categories adjective,noun --word2-categories animal,name
 cargo run -p hoststamp -- generate --word1-lengths 4,5,6 --word2-lengths 4,5,6
@@ -40,6 +41,7 @@ cargo run -p hoststamp -- generate --no-suffix
 cargo run -p hoststamp -- generate --no-word2 --no-suffix
 cargo run -p hoststamp -- --profile team-a generate
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
+cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --json
 cargo run -p hoststamp -- --capacity --word1-lengths 5 --word2-lengths 5
 ```
 
@@ -138,11 +140,12 @@ compiled into the binary.
 Use `hoststamp regenerate --atomic-value <n>` to reproduce the hostname for a
 stored profile atomic value. Regeneration uses only the selected profile
 (`--profile`, default `_`) and the atomic value; it does not increment the
-counter, and generation option flags are rejected by design. The requested
-atomic value must already have been issued by the active profile generation.
-It requires suffixes to be enabled for the stored profile because atomic values
-are tracked only for profile-backed suffix generation. Stored profiles include
-the embedded dictionary artifact fingerprint, and Hoststamp will not regenerate
+counter, and generation option flags are rejected by design. Pass `--json` to
+return the hostname with `profile` and `atomic_value` metadata. The requested
+atomic value must already have been issued by the active profile generation. It
+requires suffixes to be enabled for the stored profile because atomic values are
+tracked only for profile-backed suffix generation. Stored profiles include the
+embedded dictionary artifact fingerprint, and Hoststamp will not regenerate
 across dictionary artifact changes.
 
 Local endpoints:
@@ -150,12 +153,34 @@ Local endpoints:
 - UX: `http://127.0.0.1:8080/`
 - API health: `http://127.0.0.1:8080/api/health`
 - API generate: `http://127.0.0.1:8080/api/generate?count=3`
+- API generate JSON: `http://127.0.0.1:8080/api/generate?count=3&format=json`
 - Container health: `http://127.0.0.1:8080/healthz`
 
-`/api/generate` returns JSON with a `hostnames` array. Query parameters mirror
-the generator option names, including `count`, `word1_lengths`,
-`word1_categories`, `word2_lengths`, `word2_categories`, `suffix_enabled`,
-and `suffix_min_length`.
+`/api/generate` returns newline-delimited `text/plain` by default so command
+line clients can pipe the response directly. Profile-backed atomic generation
+also returns metadata headers:
+
+- `x-hoststamp-profile`
+- `x-hoststamp-atomic-values`
+
+Pass `format=json` to return JSON with a `hostnames` array of generated items.
+Each item includes `hostname`; profile-backed atomic generation also includes
+`profile` and `atomic_value`. Query parameters mirror the generator option
+names, including `format`, `count`, `word1_lengths`, `word1_categories`,
+`word2_lengths`, `word2_categories`, `suffix_enabled`, and
+`suffix_min_length`.
+
+```json
+{
+  "hostnames": [
+    {
+      "hostname": "brief-cobra-db50d",
+      "profile": "_",
+      "atomic_value": 1
+    }
+  ]
+}
+```
 
 ### Configuration
 

@@ -12,6 +12,20 @@ use rusqlite::Connection;
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::ServiceExt;
 
+fn hostname_from_item(item: &serde_json::Value) -> &str {
+    item["hostname"].as_str().expect("hostname")
+}
+
+async fn response_text(response: http::Response<Body>) -> String {
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    String::from_utf8(body.to_vec()).expect("utf8")
+}
+
 #[tokio::test]
 async fn healthz_returns_ok_payload() {
     let response = server::app(GenerateOptions::default())
@@ -83,16 +97,14 @@ async fn generate_endpoint_uses_server_defaults() {
 
     assert_eq!(response.status(), http::StatusCode::OK);
 
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
-    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    assert_eq!(
+        response.headers()["content-type"],
+        "text/plain; charset=utf-8"
+    );
+    let body = response_text(response).await;
+    let hostnames = body.lines().collect::<Vec<_>>();
     assert_eq!(hostnames.len(), 1);
-    let hostname = hostnames[0].as_str().expect("hostname");
+    let hostname = hostnames[0];
     let parts = hostname.split('-').collect::<Vec<_>>();
 
     assert_eq!(parts.len(), 2);
@@ -121,16 +133,10 @@ async fn generate_endpoint_allows_query_overrides() {
 
     assert_eq!(response.status(), http::StatusCode::OK);
 
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
-    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    let body = response_text(response).await;
+    let hostnames = body.lines().collect::<Vec<_>>();
     assert_eq!(hostnames.len(), 1);
-    let hostname = hostnames[0].as_str().expect("hostname");
+    let hostname = hostnames[0];
     let parts = hostname.split('-').collect::<Vec<_>>();
 
     assert_eq!(parts.len(), 3);
@@ -156,16 +162,10 @@ async fn generate_endpoint_accepts_category_query_overrides() {
 
     assert_eq!(response.status(), http::StatusCode::OK);
 
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
-    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    let body = response_text(response).await;
+    let hostnames = body.lines().collect::<Vec<_>>();
     assert_eq!(hostnames.len(), 1);
-    let hostname = hostnames[0].as_str().expect("hostname");
+    let hostname = hostnames[0];
     let parts = hostname.split('-').collect::<Vec<_>>();
 
     assert_eq!(parts.len(), 2);
@@ -202,14 +202,8 @@ async fn generate_endpoint_honors_count_query() {
 
     assert_eq!(response.status(), http::StatusCode::OK);
 
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
-    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    let body = response_text(response).await;
+    let hostnames = body.lines().collect::<Vec<_>>();
 
     assert_eq!(hostnames.len(), 3);
 }
@@ -240,14 +234,10 @@ async fn generate_endpoint_supports_profile_backed_suffix_context() {
 
     assert_eq!(response.status(), http::StatusCode::OK);
 
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
-    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    assert_eq!(response.headers()["x-hoststamp-profile"], "_");
+    assert_eq!(response.headers()["x-hoststamp-atomic-values"], "1,2");
+    let body = response_text(response).await;
+    let hostnames = body.lines().collect::<Vec<_>>();
 
     assert_eq!(hostnames.len(), 2);
     let mut store = ProfileStore::open(&database_url).expect("store");
@@ -288,7 +278,7 @@ async fn generate_endpoint_reloads_active_atomic_profile() {
     let response = app
         .oneshot(
             http::Request::builder()
-                .uri("/api/generate")
+                .uri("/api/generate?format=json")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -296,6 +286,8 @@ async fn generate_endpoint_reloads_active_atomic_profile() {
         .expect("response");
 
     assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.headers()["x-hoststamp-profile"], "_");
+    assert_eq!(response.headers()["x-hoststamp-atomic-values"], "1");
 
     let body = response
         .into_body()
@@ -305,7 +297,9 @@ async fn generate_endpoint_reloads_active_atomic_profile() {
         .to_bytes();
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
     let hostnames = payload["hostnames"].as_array().expect("hostnames");
-    let hostname = hostnames[0].as_str().expect("hostname");
+    let hostname = hostname_from_item(&hostnames[0]);
+    assert_eq!(hostnames[0]["profile"], "_");
+    assert_eq!(hostnames[0]["atomic_value"], 1);
     let parts = hostname.split('-').collect::<Vec<_>>();
 
     assert_eq!(parts[0].chars().count(), 4);

@@ -127,6 +127,12 @@ pub struct CapacityReport {
     pub total_variants: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileGeneratedHostname {
+    pub hostname: String,
+    pub atomic_value: i64,
+}
+
 struct SelectionPlan {
     cells: Vec<SelectionCell>,
     words: Vec<&'static str>,
@@ -193,7 +199,7 @@ pub fn generate_profile_many<F>(
     profile_id: Uuid,
     config_hash: &[u8; 32],
     mut next_atomic_value: F,
-) -> Result<Vec<String>>
+) -> Result<Vec<ProfileGeneratedHostname>>
 where
     F: FnMut() -> Result<i64>,
 {
@@ -203,13 +209,17 @@ where
     (0..options.count)
         .map(|_| {
             let atomic_value = next_atomic_value()?;
-            generate_profile_hostname_with_plans(
+            let hostname = generate_profile_hostname_with_plans(
                 &options,
                 &word_selection,
                 profile_id,
                 config_hash,
                 atomic_value,
-            )
+            )?;
+            Ok(ProfileGeneratedHostname {
+                hostname,
+                atomic_value,
+            })
         })
         .collect()
 }

@@ -2,7 +2,7 @@
 
 use crate::{
     SERVICE_NAME,
-    generator::{self, GenerateOptions, GenerateOverrides},
+    generator::{self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname},
     profile::{ProfileConfig, ProfileSlug},
     storage::ProfileStore,
     ux,
@@ -11,8 +11,8 @@ use anyhow::anyhow;
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::{Deserialize, Serialize};
@@ -48,11 +48,39 @@ pub struct Health {
 
 #[derive(Debug, Serialize)]
 pub struct GenerateResponse {
-    pub hostnames: Vec<String>,
+    pub hostnames: Vec<GeneratedHostname>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratedHostname {
+    pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atomic_value: Option<i64>,
+}
+
+impl GeneratedHostname {
+    pub fn plain(hostname: String) -> Self {
+        Self {
+            hostname,
+            profile: None,
+            atomic_value: None,
+        }
+    }
+
+    pub fn profile_backed(profile: &ProfileSlug, generated: ProfileGeneratedHostname) -> Self {
+        Self {
+            hostname: generated.hostname,
+            profile: Some(profile.as_str().to_owned()),
+            atomic_value: Some(generated.atomic_value),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct GenerateQuery {
+    pub format: Option<GenerateFormat>,
     pub word1_enabled: Option<bool>,
     pub word1_lengths: Option<String>,
     pub word1_categories: Option<String>,
@@ -62,6 +90,13 @@ pub struct GenerateQuery {
     pub suffix_enabled: Option<bool>,
     pub suffix_min_length: Option<usize>,
     pub count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GenerateFormat {
+    Plain,
+    Json,
 }
 
 pub fn app(generate_options: GenerateOptions) -> Router {
@@ -95,7 +130,7 @@ async fn healthz() -> Json<Health> {
 async fn generate_one(
     State(state): State<AppState>,
     Query(query): Query<GenerateQuery>,
-) -> Result<Json<GenerateResponse>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     let word1_categories = query
         .word1_categories
         .as_deref()
@@ -136,13 +171,58 @@ async fn generate_one(
         .await
         .map_err(generate_error_response)?;
 
-    Ok(Json(GenerateResponse { hostnames }))
+    let mut response = match query.format.unwrap_or(GenerateFormat::Plain) {
+        GenerateFormat::Plain => {
+            let mut body = hostnames
+                .iter()
+                .map(|generated| generated.hostname.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            body.push('\n');
+            ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
+        }
+        GenerateFormat::Json => Json(GenerateResponse {
+            hostnames: hostnames.clone(),
+        })
+        .into_response(),
+    };
+    add_generate_metadata_headers(response.headers_mut(), &hostnames);
+    Ok(response)
+}
+
+fn add_generate_metadata_headers(headers: &mut HeaderMap, hostnames: &[GeneratedHostname]) {
+    let Some(profile) = shared_profile(hostnames) else {
+        return;
+    };
+    if let Ok(value) = HeaderValue::from_str(profile) {
+        headers.insert("x-hoststamp-profile", value);
+    }
+
+    let atomic_values = hostnames
+        .iter()
+        .filter_map(|generated| generated.atomic_value)
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    if atomic_values.is_empty() {
+        return;
+    }
+    if let Ok(value) = HeaderValue::from_str(&atomic_values.join(",")) {
+        headers.insert("x-hoststamp-atomic-values", value);
+    }
+}
+
+fn shared_profile(hostnames: &[GeneratedHostname]) -> Option<&str> {
+    let first = hostnames.first()?.profile.as_deref()?;
+    hostnames
+        .iter()
+        .all(|generated| generated.profile.as_deref() == Some(first))
+        .then_some(first)
 }
 
 async fn generate_with_state(
     overrides: GenerateOverrides,
     state: &AppState,
-) -> Result<Vec<String>, GenerateError> {
+) -> Result<Vec<GeneratedHostname>, GenerateError> {
     let options = match &state.atomic {
         Some(atomic) => {
             let mut store = atomic.store.lock().await;
@@ -165,11 +245,20 @@ async fn generate_with_state(
                 let profile_id = profile.id;
                 let profile_slug = profile.slug;
                 let config_hash = profile.config_hash;
+                let profile_slug_for_output = profile_slug.clone();
                 return generator::generate_profile_many(options, profile_id, &config_hash, || {
                     store
                         .increment_atomic_value(&profile_slug)
                         .map_err(AtomicStorageError)
                         .map_err(Into::into)
+                })
+                .map(|hostnames| {
+                    hostnames
+                        .into_iter()
+                        .map(|hostname| {
+                            GeneratedHostname::profile_backed(&profile_slug_for_output, hostname)
+                        })
+                        .collect()
                 })
                 .map_err(|error| {
                     if error.downcast_ref::<AtomicStorageError>().is_some() {
@@ -185,7 +274,14 @@ async fn generate_with_state(
         None => state.generate.with_overrides(overrides),
     };
 
-    generator::generate_many(options).map_err(|error| GenerateError::BadRequest(error.to_string()))
+    generator::generate_many(options)
+        .map(|hostnames| {
+            hostnames
+                .into_iter()
+                .map(GeneratedHostname::plain)
+                .collect()
+        })
+        .map_err(|error| GenerateError::BadRequest(error.to_string()))
 }
 
 fn bad_request(error: impl ToString) -> (StatusCode, String) {
