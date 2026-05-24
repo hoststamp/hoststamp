@@ -2,21 +2,25 @@
 
 use crate::{
     SERVICE_NAME,
-    auth::{ApiAuthConfig, constant_time_eq, parse_profile_token, verify_profile_token_hash},
+    auth::{
+        ApiAuthConfig, constant_time_eq, generate_profile_token, parse_profile_token,
+        profile_token_hash, verify_profile_token_hash,
+    },
     generator::{self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname},
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
-    storage::{ProfileStore, StoredProfile},
+    storage::{ProfileStore, StoredProfile, StoredProfileToken},
     ux,
 };
 use anyhow::anyhow;
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, patch, post},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{fmt, net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, signal, sync::Mutex};
 
@@ -117,6 +121,130 @@ pub enum GenerateFormat {
     Json,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ProfilesResponse {
+    pub profiles: Vec<ProfileResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileEnvelope {
+    pub profile: ProfileResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileResponse {
+    pub id: String,
+    pub slug: String,
+    pub access: ProfileAccess,
+    pub last_atomic_value: i64,
+    pub config_hash: String,
+    pub config: ProfileConfig,
+}
+
+impl From<StoredProfile> for ProfileResponse {
+    fn from(profile: StoredProfile) -> Self {
+        Self {
+            id: profile.id.to_string(),
+            slug: profile.slug.as_str().to_owned(),
+            access: profile.access,
+            last_atomic_value: profile.last_atomic_value,
+            config_hash: hex_string(&profile.config_hash),
+            config: profile.config,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileTokensResponse {
+    pub tokens: Vec<ProfileTokenResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreatedProfileTokenResponse {
+    pub token: ProfileTokenResponse,
+    pub profile_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileTokenEnvelope {
+    pub token: ProfileTokenResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileTokenResponse {
+    pub token_id: String,
+    pub profile_id: String,
+    pub name: String,
+    pub created_at_ms: i64,
+    pub last_used_at_ms: Option<i64>,
+    pub revoked_at_ms: Option<i64>,
+}
+
+impl From<StoredProfileToken> for ProfileTokenResponse {
+    fn from(token: StoredProfileToken) -> Self {
+        Self {
+            token_id: token.token_id,
+            profile_id: token.profile_id.to_string(),
+            name: token.name,
+            created_at_ms: token.created_at_ms,
+            last_used_at_ms: token.last_used_at_ms,
+            revoked_at_ms: token.revoked_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProfileRequest {
+    pub slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProfileAccessRequest {
+    pub access: ProfileAccess,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProfileTokenRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteProfileRequest {
+    pub confirmation: AdminConfirmation,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetAtomicValueRequest {
+    pub atomic_value: i64,
+    pub confirmation: AdminConfirmation,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProfileConfigRequest {
+    pub word1_enabled: Option<bool>,
+    pub word1_lengths: Option<Value>,
+    pub word1_categories: Option<Vec<String>>,
+    pub word2_enabled: Option<bool>,
+    pub word2_lengths: Option<Value>,
+    pub word2_categories: Option<Vec<String>>,
+    pub suffix_enabled: Option<bool>,
+    pub suffix_min_length: Option<usize>,
+    pub confirmation: Option<AdminConfirmation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminConfirmation {
+    pub profile: String,
+    pub action: String,
+}
+
 pub fn app(generate_options: GenerateOptions) -> Router {
     app_with_atomic(generate_options, None)
 }
@@ -140,6 +268,34 @@ pub fn app_with_auth(
         )
         .route("/api/regenerate", get(regenerate_one))
         .route("/api/random", get(random_one))
+        .route(
+            "/api/profiles",
+            get(admin_list_profiles).post(admin_create_profile),
+        )
+        .route(
+            "/api/profiles/{slug}",
+            get(admin_show_profile).delete(admin_delete_profile),
+        )
+        .route(
+            "/api/profiles/{slug}/config",
+            patch(admin_update_profile_config),
+        )
+        .route(
+            "/api/profiles/{slug}/access",
+            patch(admin_update_profile_access),
+        )
+        .route(
+            "/api/profiles/{slug}/tokens",
+            get(admin_list_profile_tokens).post(admin_create_profile_token),
+        )
+        .route(
+            "/api/profiles/{slug}/tokens/{token_id}",
+            delete(admin_revoke_profile_token),
+        )
+        .route(
+            "/api/profiles/{slug}/reset-atomic-value",
+            post(admin_reset_atomic_value),
+        )
         .fallback(not_found)
         .with_state(AppState {
             generate: generate_options,
@@ -231,6 +387,238 @@ async fn regenerate_one(
     ))
 }
 
+async fn admin_list_profiles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ProfilesResponse>, Response> {
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let store = store.lock().await;
+    let profiles = store
+        .list_profiles()
+        .map_err(admin_internal_response)?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+
+    Ok(Json(ProfilesResponse { profiles }))
+}
+
+async fn admin_show_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+) -> Result<Json<ProfileEnvelope>, Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let store = store.lock().await;
+    let profile = store
+        .load_profile(&slug)
+        .map_err(admin_bad_request_response)?;
+
+    Ok(Json(ProfileEnvelope {
+        profile: profile.into(),
+    }))
+}
+
+async fn admin_create_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateProfileRequest>,
+) -> Result<(StatusCode, Json<ProfileEnvelope>), Response> {
+    let slug = parse_slug(&request.slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let profile = store
+        .create_profile(&slug, &ProfileConfig::default())
+        .map_err(admin_bad_request_response)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ProfileEnvelope {
+            profile: profile.into(),
+        }),
+    ))
+}
+
+async fn admin_delete_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Json(request): Json<DeleteProfileRequest>,
+) -> Result<StatusCode, Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    confirm_admin_action(&request.confirmation, &slug, "delete")?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    store
+        .delete_profile(&slug)
+        .map_err(admin_bad_request_response)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn admin_update_profile_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Json(request): Json<UpdateProfileConfigRequest>,
+) -> Result<Json<ProfileEnvelope>, Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let profile = store
+        .load_profile(&slug)
+        .map_err(admin_bad_request_response)?;
+    let desired_config = request.apply(profile.config.clone())?;
+    let options = desired_config.to_generate_options(generator::DEFAULT_COUNT);
+    generator::validate_generate_options(&options).map_err(admin_bad_request_response)?;
+
+    if desired_config == profile.config {
+        return Ok(Json(ProfileEnvelope {
+            profile: profile.into(),
+        }));
+    }
+
+    let confirmation = request.confirmation.as_ref().ok_or_else(|| {
+        AdminError::BadRequest("profile config replacement requires confirmation".to_owned())
+    })?;
+    confirm_admin_action(confirmation, &slug, "replace")?;
+    let profile = store
+        .replace_profile_config(&slug, &desired_config)
+        .map_err(admin_bad_request_response)?;
+
+    Ok(Json(ProfileEnvelope {
+        profile: profile.into(),
+    }))
+}
+
+async fn admin_update_profile_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Json(request): Json<UpdateProfileAccessRequest>,
+) -> Result<Json<ProfileEnvelope>, Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let profile = store
+        .set_profile_access(&slug, request.access)
+        .map_err(admin_bad_request_response)?;
+
+    Ok(Json(ProfileEnvelope {
+        profile: profile.into(),
+    }))
+}
+
+async fn admin_list_profile_tokens(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+) -> Result<Json<ProfileTokensResponse>, Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let store = store.lock().await;
+    let profile = store
+        .load_profile(&slug)
+        .map_err(admin_bad_request_response)?;
+    let tokens = store
+        .list_profile_tokens(profile.id)
+        .map_err(admin_internal_response)?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+
+    Ok(Json(ProfileTokensResponse { tokens }))
+}
+
+async fn admin_create_profile_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Json(request): Json<CreateProfileTokenRequest>,
+) -> Result<(StatusCode, Json<CreatedProfileTokenResponse>), Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let hash_key = state.auth.token_hash_key.as_ref().ok_or_else(|| {
+        admin_bad_request_response(format!(
+            "{} is required to create profile tokens",
+            crate::auth::PROFILE_TOKEN_HASH_KEY_ENV
+        ))
+    })?;
+    let profile = store
+        .load_profile(&slug)
+        .map_err(admin_bad_request_response)?;
+    let generated = generate_profile_token();
+    let token_hash =
+        profile_token_hash(hash_key, &generated.secret).map_err(admin_internal_response)?;
+    let token = store
+        .create_profile_token(profile.id, &generated.token_id, &request.name, token_hash)
+        .map_err(admin_bad_request_response)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedProfileTokenResponse {
+            token: token.into(),
+            profile_token: generated.token,
+        }),
+    ))
+}
+
+async fn admin_revoke_profile_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((slug, token_id)): Path<(String, String)>,
+) -> Result<Json<ProfileTokenEnvelope>, Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let profile = store
+        .load_profile(&slug)
+        .map_err(admin_bad_request_response)?;
+    let token = store
+        .revoke_profile_token(profile.id, &token_id)
+        .map_err(admin_bad_request_response)?;
+
+    Ok(Json(ProfileTokenEnvelope {
+        token: token.into(),
+    }))
+}
+
+async fn admin_reset_atomic_value(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Json(request): Json<ResetAtomicValueRequest>,
+) -> Result<Json<ProfileEnvelope>, Response> {
+    let slug = parse_slug(&slug)?;
+    if request.atomic_value < 0 {
+        return Err(admin_bad_request_response(
+            "atomic value must be at least 0",
+        ));
+    }
+    authorize_admin_request(&headers, &state.auth)?;
+    confirm_admin_action(&request.confirmation, &slug, "reset")?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let profile = store
+        .reset_atomic_value(&slug, request.atomic_value)
+        .map_err(admin_bad_request_response)?;
+
+    Ok(Json(ProfileEnvelope {
+        profile: profile.into(),
+    }))
+}
+
 fn random_overrides(query: &RandomQuery) -> Result<GenerateOverrides, String> {
     let word1_categories = query
         .word1_categories
@@ -270,6 +658,92 @@ fn random_overrides(query: &RandomQuery) -> Result<GenerateOverrides, String> {
     };
 
     Ok(overrides)
+}
+
+impl UpdateProfileConfigRequest {
+    fn apply(&self, config: ProfileConfig) -> Result<ProfileConfig, AdminError> {
+        if self.is_empty() {
+            return Err(AdminError::BadRequest(
+                "profile config update requires at least one setting".to_owned(),
+            ));
+        }
+
+        let mut options = config.to_generate_options(generator::DEFAULT_COUNT);
+        if let Some(enabled) = self.word1_enabled {
+            options.word1_enabled = enabled;
+        }
+        if let Some(value) = &self.word1_lengths {
+            options.word1_lengths = parse_lengths_value(value)?;
+        }
+        if let Some(categories) = &self.word1_categories {
+            options.word1_categories = categories.clone();
+        }
+        if let Some(enabled) = self.word2_enabled {
+            options.word2_enabled = enabled;
+        }
+        if let Some(value) = &self.word2_lengths {
+            options.word2_lengths = parse_lengths_value(value)?;
+        }
+        if let Some(categories) = &self.word2_categories {
+            options.word2_categories = categories.clone();
+        }
+        if let Some(enabled) = self.suffix_enabled {
+            options.suffix_enabled = enabled;
+        }
+        if let Some(min_length) = self.suffix_min_length {
+            options.suffix_min_length = min_length;
+        }
+
+        ProfileConfig::try_from_options(&options)
+            .map_err(|error| AdminError::BadRequest(error.to_string()))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.word1_enabled.is_none()
+            && self.word1_lengths.is_none()
+            && self.word1_categories.is_none()
+            && self.word2_enabled.is_none()
+            && self.word2_lengths.is_none()
+            && self.word2_categories.is_none()
+            && self.suffix_enabled.is_none()
+            && self.suffix_min_length.is_none()
+    }
+}
+
+fn parse_lengths_value(value: &Value) -> Result<Option<Vec<usize>>, AdminError> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(value) => generator::parse_lengths(value)
+            .map_err(|error| AdminError::BadRequest(error.to_string())),
+        Value::Array(values) => {
+            let mut lengths = Vec::with_capacity(values.len());
+            for value in values {
+                let length = value.as_u64().ok_or_else(|| {
+                    AdminError::BadRequest("length values must be positive integers".to_owned())
+                })?;
+                if length == 0 {
+                    return Err(AdminError::BadRequest(
+                        "length must be at least 1".to_owned(),
+                    ));
+                }
+                let length = usize::try_from(length).map_err(|_| {
+                    AdminError::BadRequest("length value does not fit on this platform".to_owned())
+                })?;
+                lengths.push(length);
+            }
+            if lengths.is_empty() {
+                return Err(AdminError::BadRequest(
+                    "length list must not be empty (use null or \"any\" for no length filter)"
+                        .to_owned(),
+                ));
+            }
+            Ok(Some(lengths))
+        }
+        _ => Err(AdminError::BadRequest(
+            "lengths must be null, \"any\", a comma-separated string, or an integer array"
+                .to_owned(),
+        )),
+    }
 }
 
 async fn regenerate_with_state(
@@ -550,6 +1024,90 @@ fn authorize_missing_profile_request(
     ))
 }
 
+fn authorize_admin_request(headers: &HeaderMap, auth: &ApiAuthConfig) -> Result<(), AdminError> {
+    let Some(admin_token) = auth.admin_token.as_ref() else {
+        return Err(AdminError::Unavailable(
+            "admin API requires a configured admin token",
+        ));
+    };
+
+    let Some(token) = bearer_token(headers) else {
+        return Err(AdminError::Unauthorized(
+            "admin authorization bearer token is required",
+        ));
+    };
+
+    if constant_time_eq(token, admin_token.expose()) {
+        return Ok(());
+    }
+
+    Err(AdminError::Unauthorized(
+        "admin authorization bearer token is invalid",
+    ))
+}
+
+fn admin_store(state: &AppState) -> Result<Arc<Mutex<ProfileStore>>, AdminError> {
+    state
+        .atomic
+        .as_ref()
+        .map(|atomic| Arc::clone(&atomic.store))
+        .ok_or_else(|| {
+            AdminError::BadRequest(
+                "profile storage is required for API profile administration".to_owned(),
+            )
+        })
+}
+
+fn parse_slug(value: &str) -> Result<ProfileSlug, AdminError> {
+    value
+        .parse()
+        .map_err(|error: String| AdminError::BadRequest(error))
+}
+
+fn confirm_admin_action(
+    confirmation: &AdminConfirmation,
+    slug: &ProfileSlug,
+    action: &str,
+) -> Result<(), AdminError> {
+    if confirmation.profile.trim() != slug.as_str() || confirmation.action.trim() != action {
+        return Err(AdminError::BadRequest(format!(
+            "confirmation must include profile {:?} and action {:?}",
+            slug.as_str(),
+            action
+        )));
+    }
+    Ok(())
+}
+
+fn admin_bad_request_response(error: impl ToString) -> Response {
+    (StatusCode::BAD_REQUEST, error.to_string()).into_response()
+}
+
+fn admin_internal_response(error: impl Into<anyhow::Error>) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        anyhow!("profile administration error: {}", error.into()).to_string(),
+    )
+        .into_response()
+}
+
+fn unauthorized_response(message: &str) -> Response {
+    let mut response = (StatusCode::UNAUTHORIZED, message.to_owned()).into_response();
+    response
+        .headers_mut()
+        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    response
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(value, "{byte:02x}").expect("write to string");
+    }
+    value
+}
+
 fn bad_request_response(error: impl ToString) -> Response {
     (StatusCode::BAD_REQUEST, error.to_string()).into_response()
 }
@@ -558,6 +1116,24 @@ enum GenerateError {
     BadRequest(String),
     Unauthorized(String),
     Internal(anyhow::Error),
+}
+
+enum AdminError {
+    BadRequest(String),
+    Unauthorized(&'static str),
+    Unavailable(&'static str),
+}
+
+impl From<AdminError> for Response {
+    fn from(error: AdminError) -> Self {
+        match error {
+            AdminError::BadRequest(message) => admin_bad_request_response(message),
+            AdminError::Unauthorized(message) => unauthorized_response(message),
+            AdminError::Unavailable(message) => {
+                (StatusCode::SERVICE_UNAVAILABLE, message).into_response()
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

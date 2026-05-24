@@ -10,6 +10,7 @@ use hoststamp::{
 };
 use http_body_util::BodyExt;
 use rusqlite::Connection;
+use serde_json::json;
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::ServiceExt;
 
@@ -25,6 +26,46 @@ async fn response_text(response: http::Response<Body>) -> String {
         .expect("body")
         .to_bytes();
     String::from_utf8(body.to_vec()).expect("utf8")
+}
+
+async fn response_json(response: http::Response<Body>) -> serde_json::Value {
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    serde_json::from_slice(&body).expect("json")
+}
+
+fn json_request(method: http::Method, uri: &str, body: serde_json::Value) -> http::Request<Body> {
+    http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request")
+}
+
+fn admin_json_request(
+    method: http::Method,
+    uri: &str,
+    body: serde_json::Value,
+) -> http::Request<Body> {
+    let mut request = json_request(method, uri, body);
+    request.headers_mut().insert(
+        http::header::AUTHORIZATION,
+        "Bearer admin-secret".parse().expect("header"),
+    );
+    request
+}
+
+fn admin_get_request(uri: &str) -> http::Request<Body> {
+    http::Request::builder()
+        .uri(uri)
+        .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+        .body(Body::empty())
+        .expect("request")
 }
 
 fn auth_config() -> ApiAuthConfig {
@@ -902,6 +943,311 @@ async fn generate_endpoint_rejects_random_query_overrides() {
         .expect("response");
 
     assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admin_profile_endpoints_manage_profiles() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let default_slug = ProfileSlug::default_profile();
+    let store = ProfileStore::open(&database_url).expect("store");
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, default_slug)),
+        auth_config(),
+    );
+
+    let created = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles",
+            json!({ "slug": "team-a" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(created.status(), http::StatusCode::CREATED);
+    let created = response_json(created).await;
+    assert_eq!(created["profile"]["slug"], "team-a");
+    assert_eq!(created["profile"]["access"], "private");
+
+    let listed = app
+        .clone()
+        .oneshot(admin_get_request("/api/profiles"))
+        .await
+        .expect("response");
+    assert_eq!(listed.status(), http::StatusCode::OK);
+    let listed = response_json(listed).await;
+    assert_eq!(listed["profiles"].as_array().expect("profiles").len(), 1);
+
+    let access = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::PATCH,
+            "/api/profiles/team-a/access",
+            json!({ "access": "public" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(access.status(), http::StatusCode::OK);
+    let access = response_json(access).await;
+    assert_eq!(access["profile"]["access"], "public");
+
+    let unconfirmed_config = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::PATCH,
+            "/api/profiles/team-a/config",
+            json!({ "word1_lengths": [4] }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(unconfirmed_config.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(unconfirmed_config).await;
+    assert!(message.contains("requires confirmation"));
+
+    let config = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::PATCH,
+            "/api/profiles/team-a/config",
+            json!({
+                "word1_lengths": [4],
+                "confirmation": {
+                    "profile": "team-a",
+                    "action": "replace"
+                }
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(config.status(), http::StatusCode::OK);
+    let config = response_json(config).await;
+    assert_eq!(config["profile"]["config"]["word1"]["lengths"], json!([4]));
+    assert_eq!(config["profile"]["last_atomic_value"], 0);
+
+    let reset = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/team-a/reset-atomic-value",
+            json!({
+                "atomic_value": 42,
+                "confirmation": {
+                    "profile": "team-a",
+                    "action": "reset"
+                }
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(reset.status(), http::StatusCode::OK);
+    let reset = response_json(reset).await;
+    assert_eq!(reset["profile"]["last_atomic_value"], 42);
+
+    let deleted = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::DELETE,
+            "/api/profiles/team-a",
+            json!({
+                "confirmation": {
+                    "profile": "team-a",
+                    "action": "delete"
+                }
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(deleted.status(), http::StatusCode::NO_CONTENT);
+
+    let missing = app
+        .oneshot(admin_get_request("/api/profiles/team-a"))
+        .await
+        .expect("response");
+    assert_eq!(missing.status(), http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admin_endpoints_require_admin_token_when_auth_is_required() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    let profile = store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let generated = auth::generate_profile_token();
+    let hash_key = SecretString::new("hash-key".to_owned()).expect("key");
+    let token_hash = auth::profile_token_hash(&hash_key, &generated.secret).expect("hash");
+    store
+        .create_profile_token(profile.id, &generated.token_id, "deploy", token_hash)
+        .expect("token");
+
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        ApiAuthConfig {
+            required: true,
+            admin_token: Some(SecretString::new("admin-secret".to_owned()).expect("admin")),
+            token_hash_key: Some(hash_key),
+        },
+    );
+
+    let missing = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/profiles")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(missing.status(), http::StatusCode::UNAUTHORIZED);
+    assert_eq!(missing.headers()["www-authenticate"], "Bearer");
+
+    let profile_token = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/profiles")
+                .header(
+                    http::header::AUTHORIZATION,
+                    format!("Bearer {}", generated.token),
+                )
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(profile_token.status(), http::StatusCode::UNAUTHORIZED);
+
+    let admin = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/profiles")
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(admin.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_endpoints_require_configured_admin_token() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let store = ProfileStore::open(&database_url).expect("store");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/profiles")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+    let body = response_text(response).await;
+    assert!(body.contains("configured admin token"));
+}
+
+#[tokio::test]
+async fn admin_delete_authorizes_before_checking_confirmation() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    )
+    .oneshot(json_request(
+        http::Method::DELETE,
+        "/api/profiles/_",
+        json!({
+            "confirmation": {
+                "profile": "_",
+                "action": "wrong"
+            }
+        }),
+    ))
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_profile_token_endpoints_manage_tokens() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    );
+
+    let request = admin_json_request(
+        http::Method::POST,
+        "/api/profiles/_/tokens",
+        json!({ "name": "deploy" }),
+    );
+    let created = app.clone().oneshot(request).await.expect("response");
+    assert_eq!(created.status(), http::StatusCode::CREATED);
+    let created = response_json(created).await;
+    let token_id = created["token"]["token_id"].as_str().expect("token id");
+    assert_eq!(created["token"]["name"], "deploy");
+    assert!(
+        created["profile_token"]
+            .as_str()
+            .expect("profile token")
+            .starts_with("hspt_")
+    );
+
+    let listed = app
+        .clone()
+        .oneshot(admin_get_request("/api/profiles/_/tokens"))
+        .await
+        .expect("response");
+    assert_eq!(listed.status(), http::StatusCode::OK);
+    let listed = response_json(listed).await;
+    assert_eq!(listed["tokens"].as_array().expect("tokens").len(), 1);
+    assert!(listed.get("profile_token").is_none());
+
+    let revoked = app
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::DELETE)
+                .uri(format!("/api/profiles/_/tokens/{token_id}"))
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(revoked.status(), http::StatusCode::OK);
+    let revoked = response_json(revoked).await;
+    assert!(revoked["token"]["revoked_at_ms"].is_i64());
 }
 
 #[tokio::test]
