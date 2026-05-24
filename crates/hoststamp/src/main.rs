@@ -13,9 +13,10 @@ use hoststamp_core::{
     storage::{self, ProfileStore, StoredProfile, StoredProfileToken},
 };
 use std::{
+    fs::{self, OpenOptions},
     io::{self, Write},
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 #[derive(Parser, Debug)]
@@ -207,6 +208,8 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum ConfigCommand {
+    /// Create a bootstrap config file without overwriting an existing file.
+    Init,
     /// Print the resolved bootstrap and profile configuration.
     Show,
     /// Persist selected generator settings on the active profile.
@@ -313,49 +316,47 @@ async fn main() -> anyhow::Result<()> {
             print!("{}", notices::text());
             Ok(())
         }
-        Command::Config { command } => {
-            let settings = config::load(Overrides {
-                config_path: cli.config.clone(),
-                addr: None,
-                database_url: cli.database_url.clone(),
-            })?;
-            let mut store = ProfileStore::open(&settings.database_url)?;
-            match command {
-                ConfigCommand::Show => {
-                    let profile =
-                        store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
-                    let base = profile.config.to_generate_options(generator::DEFAULT_COUNT);
-                    let options = cli.generate.options(base);
-                    print_config_show(&settings, &profile, &options);
-                    Ok(())
-                }
-                ConfigCommand::Set(args) => {
-                    if args.is_empty() {
-                        anyhow::bail!("config set requires at least one setting");
-                    }
-                    let profile =
-                        store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
-                    let desired_config = args.apply(profile.config.clone())?;
-                    let options = desired_config.to_generate_options(generator::DEFAULT_COUNT);
-                    generator::validate_generate_options(&options)?;
-                    if desired_config == profile.config {
-                        print_profile_show(&profile);
-                        return Ok(());
-                    }
-                    confirm_profile_config_replacement(&profile)?;
-                    let profile = store.replace_profile_config(&profile.slug, &desired_config)?;
-                    print_profile_show(&profile);
-                    Ok(())
-                }
+        Command::Config { command } => match command {
+            ConfigCommand::Init => {
+                let path = resolve_config_init_path(cli.config.clone())?;
+                write_initial_config(&path)?;
+                println!("created config file {}", path.display());
+                Ok(())
             }
-        }
+            ConfigCommand::Show => {
+                let (settings, mut store) =
+                    load_profile_store(cli.config.clone(), cli.database_url.clone())?;
+                let profile =
+                    store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+                let base = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+                let options = cli.generate.options(base);
+                print_config_show(&settings, &profile, &options);
+                Ok(())
+            }
+            ConfigCommand::Set(args) => {
+                let (_settings, mut store) =
+                    load_profile_store(cli.config.clone(), cli.database_url.clone())?;
+                if args.is_empty() {
+                    anyhow::bail!("config set requires at least one setting");
+                }
+                let profile =
+                    store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+                let desired_config = args.apply(profile.config.clone())?;
+                let options = desired_config.to_generate_options(generator::DEFAULT_COUNT);
+                generator::validate_generate_options(&options)?;
+                if desired_config == profile.config {
+                    print_profile_show(&profile);
+                    return Ok(());
+                }
+                confirm_profile_config_replacement(&profile)?;
+                let profile = store.replace_profile_config(&profile.slug, &desired_config)?;
+                print_profile_show(&profile);
+                Ok(())
+            }
+        },
         Command::Profile { command } => {
-            let settings = config::load(Overrides {
-                config_path: cli.config.clone(),
-                addr: None,
-                database_url: cli.database_url.clone(),
-            })?;
-            let mut store = ProfileStore::open(&settings.database_url)?;
+            let (settings, mut store) =
+                load_profile_store(cli.config.clone(), cli.database_url.clone())?;
             match command {
                 ProfileCommand::List => {
                     print_profile_list(&store.list_profiles()?);
@@ -685,6 +686,94 @@ fn format_decimal(value: &str) -> String {
         formatted.push(digit);
     }
     formatted.chars().rev().collect()
+}
+
+fn load_profile_store(
+    config_path: Option<PathBuf>,
+    database_url: Option<String>,
+) -> anyhow::Result<(config::Settings, ProfileStore)> {
+    let settings = config::load(Overrides {
+        config_path,
+        addr: None,
+        database_url,
+    })?;
+    let store = ProfileStore::open(&settings.database_url)?;
+    Ok((settings, store))
+}
+
+const INITIAL_CONFIG_TEMPLATE: &str = r#"# Hoststamp bootstrap configuration.
+#
+# Generator profile settings live in the Hoststamp profile database. This file
+# only controls bootstrap settings: server bind address, storage location, and
+# API authentication.
+#
+# Generate 32-character secret values with OpenSSL:
+#
+#   openssl rand -base64 24
+#
+# Keep these values in your shell, service manager, container secret store, or
+# another secret manager. Do not commit them to source control.
+
+[server]
+# addr = "127.0.0.1:8080"
+
+[storage]
+# Defaults to hoststamp.db next to this config file.
+# url = "sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db"
+
+[api.auth]
+# Disabled by default for local development. Set to true before exposing the
+# API beyond a trusted local environment.
+required = false
+
+# Hoststamp reads secret values from environment variables instead of this file.
+admin_token_env = "HOSTSTAMP_ADMIN_TOKEN"
+token_hash_key_env = "HOSTSTAMP_TOKEN_HASH_KEY"
+
+# Example:
+#   export HOSTSTAMP_ADMIN_TOKEN="$(openssl rand -base64 24)"
+#   export HOSTSTAMP_TOKEN_HASH_KEY="$(openssl rand -base64 24)"
+"#;
+
+fn resolve_config_init_path(config_arg: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    if let Some(path) = config_arg {
+        return Ok(path);
+    }
+    if let Some(path) = std::env::var_os(config::CONFIG_ENV) {
+        return Ok(PathBuf::from(path));
+    }
+    config::default_user_config_path().ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot determine default config path; pass --config or set {}",
+            config::CONFIG_ENV
+        )
+    })
+}
+
+fn write_initial_config(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "config file already exists: {}; refusing to overwrite",
+            path.display()
+        );
+    }
+
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("failed to create config file {}", path.display()))?;
+    file.write_all(INITIAL_CONFIG_TEMPLATE.as_bytes())
+        .with_context(|| format!("failed to write config file {}", path.display()))?;
+    Ok(())
 }
 
 fn print_config_show(

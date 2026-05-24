@@ -8,7 +8,7 @@ use hoststamp_core::{
 };
 use predicates::prelude::*;
 use rusqlite::{Connection, params};
-use std::path::Path;
+use std::{fs, path::Path};
 use tempfile::TempDir;
 
 fn command_with_database() -> (Command, TempDir) {
@@ -90,6 +90,51 @@ fn config_set_help_prints_profile_config_flags() {
                 .and(predicate::str::contains("--suffix-enabled"))
                 .and(predicate::str::contains("--suffix-min-length")),
         );
+}
+
+#[test]
+fn config_init_writes_bootstrap_template() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let config_path = tempdir.path().join("hoststamp").join("config.toml");
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.arg("--config")
+        .arg(&config_path)
+        .args(["config", "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "created config file {}",
+            config_path.display()
+        )));
+
+    let contents = fs::read_to_string(&config_path).expect("config");
+    assert!(contents.contains("[server]"));
+    assert!(contents.contains("[storage]"));
+    assert!(contents.contains("[api.auth]"));
+    assert!(contents.contains("openssl rand -base64 24"));
+    assert!(contents.contains("HOSTSTAMP_ADMIN_TOKEN"));
+    assert!(contents.contains("HOSTSTAMP_TOKEN_HASH_KEY"));
+}
+
+#[test]
+fn config_init_refuses_to_overwrite_existing_file() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let config_path = tempdir.path().join("config.toml");
+    fs::write(&config_path, "existing = true\n").expect("existing config");
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.arg("--config")
+        .arg(&config_path)
+        .args(["config", "init"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("refusing to overwrite"));
+
+    assert_eq!(
+        fs::read_to_string(&config_path).expect("config"),
+        "existing = true\n"
+    );
 }
 
 #[test]

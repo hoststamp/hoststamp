@@ -44,6 +44,7 @@ cargo run -p hoststamp -- random --word1-lengths 4 --word2-lengths 4
 cargo run -p hoststamp -- random --word1-categories adjective --word2-categories animal
 cargo run -p hoststamp -- random --suffix-min-length 8
 cargo run -p hoststamp -- random --json
+cargo run -p hoststamp -- config init
 cargo run -p hoststamp -- --profile team-a generate
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --json
@@ -232,11 +233,27 @@ defaults are stored in the profile database. The default database path is
 `$XDG_CONFIG_HOME/hoststamp/hoststamp.db`, falling back to
 `~/.config/hoststamp/hoststamp.db`; it sits next to the default config file.
 
+Create the bootstrap config with:
+
+```sh
+hoststamp config init
+hoststamp --config /etc/hoststamp/config.toml config init
+```
+
+`config init` creates parent directories as needed and refuses to overwrite an
+existing file. The generated file keeps secret values in environment variables,
+not in TOML. Use OpenSSL to create 32-character secret values:
+
+```sh
+openssl rand -base64 24
+```
+
 ```toml
 [server]
-addr = "127.0.0.1:8080"
+# addr = "127.0.0.1:8080"
 
 [storage]
+# Defaults to hoststamp.db next to this config file.
 # url = "sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db"
 
 [api.auth]
@@ -244,6 +261,10 @@ addr = "127.0.0.1:8080"
 required = false
 admin_token_env = "HOSTSTAMP_ADMIN_TOKEN"
 token_hash_key_env = "HOSTSTAMP_TOKEN_HASH_KEY"
+
+# Example:
+#   export HOSTSTAMP_ADMIN_TOKEN="$(openssl rand -base64 24)"
+#   export HOSTSTAMP_TOKEN_HASH_KEY="$(openssl rand -base64 24)"
 ```
 
 Environment variables (all `HOSTSTAMP_*`):

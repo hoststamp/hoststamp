@@ -184,6 +184,10 @@ pub fn load(overrides: Overrides) -> Result<Settings, LoadError> {
     load_with_env(overrides, ConfigEnv::process())
 }
 
+pub fn default_user_config_path() -> Option<PathBuf> {
+    default_config_path(&ConfigEnv::process())
+}
+
 pub fn load_with_env(overrides: Overrides, env: ConfigEnv) -> Result<Settings, LoadError> {
     let config_arg = overrides.config_path.clone();
     let config_env = env.config_path.clone();
