@@ -168,6 +168,8 @@ Local endpoints:
 - API health: `http://127.0.0.1:8080/api/health`
 - API generate: `POST http://127.0.0.1:8080/api/generate?count=3`
 - API generate JSON: `POST http://127.0.0.1:8080/api/generate?count=3&format=json`
+- API regenerate: `http://127.0.0.1:8080/api/regenerate?atomic_value=42`
+- API regenerate JSON: `http://127.0.0.1:8080/api/regenerate?profile=_&atomic_value=42&format=json`
 - API random: `http://127.0.0.1:8080/api/random?count=3&word1_lengths=4&word2_lengths=4`
 - API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
 - Container health: `http://127.0.0.1:8080/healthz`
@@ -182,12 +184,15 @@ returns metadata headers:
 - `x-hoststamp-atomic-values`
 
 Pass `format=json` to return JSON with a `hostnames` array of generated items.
-Each item includes `hostname`; profile-backed atomic generation also includes
-`profile` and `atomic_value`. `/api/generate` accepts only `format` and
-`count`, and uses the active stored profile configuration. `/api/random`
-accepts `format`, `count`, `word1_enabled`, `word1_lengths`,
-`word1_categories`, `word2_enabled`, `word2_lengths`, `word2_categories`,
-`suffix_enabled`, and `suffix_min_length`.
+Each item includes `hostname`; profile-backed atomic generation and
+regeneration also include `profile` and `atomic_value`. `/api/generate`
+accepts only `format` and `count`, and uses the active stored profile
+configuration. `/api/regenerate` accepts `format`, `profile`, and
+`atomic_value`; `profile` defaults to the server's active profile. It is
+read-only and does not increment the counter. `/api/random` accepts `format`,
+`count`, `word1_enabled`, `word1_lengths`, `word1_categories`, `word2_enabled`,
+`word2_lengths`, `word2_categories`, `suffix_enabled`, and
+`suffix_min_length`.
 
 ```json
 {

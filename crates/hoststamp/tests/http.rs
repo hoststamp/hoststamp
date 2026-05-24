@@ -287,6 +287,203 @@ async fn generate_endpoint_supports_profile_backed_suffix_context() {
 }
 
 #[tokio::test]
+async fn regenerate_endpoint_recreates_profile_hostname_without_incrementing_counter() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let atomic_config = ProfileConfig::from(&GenerateOptions::default());
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &atomic_config)
+        .expect("profile");
+
+    let app = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug.clone())),
+    );
+
+    let generated_response = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/generate?count=2")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(generated_response.status(), http::StatusCode::OK);
+    let generated_body = response_text(generated_response).await;
+    let generated = generated_body.lines().collect::<Vec<_>>();
+    assert_eq!(generated.len(), 2);
+
+    let regenerated_response = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/regenerate?atomic_value=1&format=json")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(regenerated_response.status(), http::StatusCode::OK);
+    assert_eq!(regenerated_response.headers()["x-hoststamp-profile"], "_");
+    assert_eq!(
+        regenerated_response.headers()["x-hoststamp-atomic-values"],
+        "1"
+    );
+
+    let body = regenerated_response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    assert_eq!(hostname_from_item(&hostnames[0]), generated[0]);
+    assert_eq!(hostnames[0]["profile"], "_");
+    assert_eq!(hostnames[0]["atomic_value"], 1);
+
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    assert_eq!(
+        store
+            .load_or_seed_profile(&slug, &ProfileConfig::default())
+            .expect("profile")
+            .last_atomic_value,
+        2
+    );
+}
+
+#[tokio::test]
+async fn regenerate_endpoint_requires_profile_storage() {
+    let response = server::app(GenerateOptions::default())
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/regenerate?atomic_value=1")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("profile storage is required"));
+}
+
+#[tokio::test]
+async fn regenerate_endpoint_rejects_values_that_have_not_been_issued() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let atomic_config = ProfileConfig::from(&GenerateOptions::default());
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &atomic_config)
+        .expect("profile");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/regenerate?atomic_value=1")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("was never generated"));
+}
+
+#[tokio::test]
+async fn regenerate_endpoint_does_not_seed_missing_client_profile() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let atomic_config = ProfileConfig::from(&GenerateOptions::default());
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &atomic_config)
+        .expect("profile");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/regenerate?profile=missing&atomic_value=1")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("profile \"missing\" does not exist"));
+
+    let store = ProfileStore::open(&database_url).expect("store");
+    let missing = "missing".parse().expect("slug");
+    assert!(store.load_profile(&missing).is_err());
+}
+
+#[tokio::test]
+async fn regenerate_endpoint_rejects_invalid_atomic_value() {
+    let response = server::app(GenerateOptions::default())
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/regenerate?atomic_value=0")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("atomic value must be at least 1"));
+}
+
+#[tokio::test]
+async fn regenerate_endpoint_requires_profile_backed_suffixes() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let config = ProfileConfig::from(&GenerateOptions {
+        suffix_enabled: false,
+        ..GenerateOptions::default()
+    });
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store.load_or_seed_profile(&slug, &config).expect("profile");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/regenerate?atomic_value=1")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("atomic values are only tracked"));
+}
+
+#[tokio::test]
 async fn generate_endpoint_reloads_active_atomic_profile() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));

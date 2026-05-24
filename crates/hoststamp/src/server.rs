@@ -100,6 +100,14 @@ pub struct RandomQuery {
     pub count: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegenerateQuery {
+    pub format: Option<GenerateFormat>,
+    pub profile: Option<String>,
+    pub atomic_value: i64,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum GenerateFormat {
@@ -120,6 +128,7 @@ pub fn app_with_atomic(generate_options: GenerateOptions, atomic: Option<AtomicC
             "/api/generate",
             post(generate_one).get(generate_method_not_allowed),
         )
+        .route("/api/regenerate", get(regenerate_one))
         .route("/api/random", get(random_one))
         .fallback(not_found)
         .with_state(AppState {
@@ -188,6 +197,27 @@ async fn random_one(Query(query): Query<RandomQuery>) -> Result<Response, (Statu
     ))
 }
 
+async fn regenerate_one(
+    State(state): State<AppState>,
+    Query(query): Query<RegenerateQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    if query.atomic_value < generator::ATOMIC_MIN_VALUE {
+        return Err(bad_request(format!(
+            "atomic value must be at least {}",
+            generator::ATOMIC_MIN_VALUE
+        )));
+    }
+
+    let hostname = regenerate_with_state(&query, &state)
+        .await
+        .map_err(generate_error_response)?;
+
+    Ok(generate_response(
+        query.format.unwrap_or(GenerateFormat::Plain),
+        vec![hostname],
+    ))
+}
+
 fn random_overrides(query: &RandomQuery) -> Result<GenerateOverrides, (StatusCode, String)> {
     let word1_categories = query
         .word1_categories
@@ -227,6 +257,68 @@ fn random_overrides(query: &RandomQuery) -> Result<GenerateOverrides, (StatusCod
     };
 
     Ok(overrides)
+}
+
+async fn regenerate_with_state(
+    query: &RegenerateQuery,
+    state: &AppState,
+) -> Result<GeneratedHostname, GenerateError> {
+    let Some(atomic) = &state.atomic else {
+        return Err(GenerateError::BadRequest(
+            "profile storage is required for API regeneration".to_owned(),
+        ));
+    };
+
+    let profile_slug = match query.profile.as_deref() {
+        Some(profile) => profile.parse().map_err(GenerateError::BadRequest)?,
+        None => atomic.profile_slug.clone(),
+    };
+
+    let store = atomic.store.lock().await;
+    let profile = store
+        .load_profile(&profile_slug)
+        .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
+    if !profile.config.suffix.enabled {
+        return Err(GenerateError::BadRequest(format!(
+            "profile {:?} cannot regenerate hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
+            profile.slug.as_str()
+        )));
+    }
+    if query.atomic_value > profile.last_atomic_value {
+        return Err(GenerateError::BadRequest(format!(
+            "profile {:?} has issued {} atomic values; {} was never generated",
+            profile.slug.as_str(),
+            profile.last_atomic_value,
+            query.atomic_value
+        )));
+    }
+    if !profile.config.uses_current_dictionary() {
+        return Err(GenerateError::BadRequest(format!(
+            "profile {:?} was created with dictionary artifact {}, but this binary uses {}; profile-backed generation cannot run safely across dictionary changes",
+            profile.slug.as_str(),
+            profile.config.dictionary_fingerprint,
+            crate::dictionary::artifact_sha256()
+        )));
+    }
+
+    let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+    generator::validate_generate_options(&options)
+        .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
+    let hostname = generator::generate_profile_hostname(
+        &options,
+        profile.id,
+        &profile.config_hash,
+        query.atomic_value,
+    )
+    .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
+
+    Ok(GeneratedHostname::profile_backed(
+        &profile.slug,
+        ProfileGeneratedHostname {
+            hostname,
+            atomic_value: query.atomic_value,
+        },
+    ))
 }
 
 fn generate_response(format: GenerateFormat, hostnames: Vec<GeneratedHostname>) -> Response {
