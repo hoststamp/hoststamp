@@ -66,6 +66,7 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("--json"))
             .and(predicate::str::contains("--profile"))
             .and(predicate::str::contains("--database-url"))
+            .and(predicate::str::contains("random"))
             .and(predicate::str::contains("regenerate"))
             .and(predicate::str::contains("profile"))
             .and(predicate::str::contains("config")),
@@ -182,6 +183,65 @@ fn generate_supports_multiple_hostnames() {
         let parts = hostname.split('-').collect::<Vec<_>>();
         parts.len() == 3 && parts[0] != parts[1]
     }));
+}
+
+#[test]
+fn random_prints_stateless_word_word_hash_by_default() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+    let assert = cmd.arg("random").assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let hostname = output.trim();
+    let parts = hostname.split('-').collect::<Vec<_>>();
+
+    assert_eq!(parts.len(), 3);
+    assert_ne!(parts[0], parts[1]);
+    assert!(parts[..2].iter().all(|part| part.chars().count() == 5));
+    assert!(parts[2].len() >= 5);
+    assert!(is_base36_suffix(parts[2]));
+}
+
+#[test]
+fn random_accepts_ad_hoc_generation_options() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+    let assert = cmd
+        .args([
+            "random",
+            "--word1-lengths",
+            "4",
+            "--word2-lengths",
+            "4",
+            "--suffix-enabled",
+            "false",
+        ])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let parts = output.trim().split('-').collect::<Vec<_>>();
+
+    assert_eq!(parts.len(), 2);
+    assert!(parts.iter().all(|part| part.chars().count() == 4));
+}
+
+#[test]
+fn random_json_omits_profile_metadata() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+    let assert = cmd
+        .args(["random", "--count", "2", "--json"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+
+    assert_eq!(hostnames.len(), 2);
+    assert!(hostnames[0].get("profile").is_none());
+    assert!(hostnames[0].get("atomic_value").is_none());
+    assert!(
+        hostnames[0]["hostname"]
+            .as_str()
+            .expect("hostname")
+            .contains('-')
+    );
 }
 
 #[test]

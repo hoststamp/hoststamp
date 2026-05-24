@@ -79,7 +79,15 @@ impl GeneratedHostname {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenerateQuery {
+    pub format: Option<GenerateFormat>,
+    pub count: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RandomQuery {
     pub format: Option<GenerateFormat>,
     pub word1_enabled: Option<bool>,
     pub word1_lengths: Option<String>,
@@ -109,6 +117,7 @@ pub fn app_with_atomic(generate_options: GenerateOptions, atomic: Option<AtomicC
         .route("/healthz", get(healthz))
         .route("/api/health", get(healthz))
         .route("/api/generate", get(generate_one))
+        .route("/api/random", get(random_one))
         .fallback(not_found)
         .with_state(AppState {
             generate: generate_options,
@@ -131,6 +140,40 @@ async fn generate_one(
     State(state): State<AppState>,
     Query(query): Query<GenerateQuery>,
 ) -> Result<Response, (StatusCode, String)> {
+    let overrides = GenerateOverrides {
+        count: query.count,
+        ..GenerateOverrides::default()
+    };
+    let hostnames = generate_with_state(overrides, &state)
+        .await
+        .map_err(generate_error_response)?;
+
+    Ok(generate_response(
+        query.format.unwrap_or(GenerateFormat::Plain),
+        hostnames,
+    ))
+}
+
+async fn random_one(Query(query): Query<RandomQuery>) -> Result<Response, (StatusCode, String)> {
+    let overrides = random_overrides(&query)?;
+    let options = GenerateOptions::default().with_overrides(overrides);
+    let hostnames = generator::generate_many(options)
+        .map(|hostnames| {
+            hostnames
+                .into_iter()
+                .map(GeneratedHostname::plain)
+                .collect::<Vec<_>>()
+        })
+        .map_err(|error| GenerateError::BadRequest(error.to_string()))
+        .map_err(generate_error_response)?;
+
+    Ok(generate_response(
+        query.format.unwrap_or(GenerateFormat::Plain),
+        hostnames,
+    ))
+}
+
+fn random_overrides(query: &RandomQuery) -> Result<GenerateOverrides, (StatusCode, String)> {
     let word1_categories = query
         .word1_categories
         .as_deref()
@@ -167,11 +210,12 @@ async fn generate_one(
         suffix_min_length: query.suffix_min_length,
         count: query.count,
     };
-    let hostnames = generate_with_state(overrides, &state)
-        .await
-        .map_err(generate_error_response)?;
 
-    let mut response = match query.format.unwrap_or(GenerateFormat::Plain) {
+    Ok(overrides)
+}
+
+fn generate_response(format: GenerateFormat, hostnames: Vec<GeneratedHostname>) -> Response {
+    let mut response = match format {
         GenerateFormat::Plain => {
             let mut body = hostnames
                 .iter()
@@ -187,7 +231,7 @@ async fn generate_one(
         .into_response(),
     };
     add_generate_metadata_headers(response.headers_mut(), &hostnames);
-    Ok(response)
+    response
 }
 
 fn add_generate_metadata_headers(headers: &mut HeaderMap, hostnames: &[GeneratedHostname]) {
@@ -235,12 +279,6 @@ async fn generate_with_state(
             if options.suffix_enabled {
                 generator::validate_generate_options(&options)
                     .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
-                if ProfileConfig::from(&options) != profile.config {
-                    return Err(GenerateError::BadRequest(
-                        "atomic profile config overrides require interactive CLI confirmation"
-                            .to_owned(),
-                    ));
-                }
 
                 let profile_id = profile.id;
                 let profile_slug = profile.slug;

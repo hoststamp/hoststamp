@@ -159,10 +159,18 @@ impl ConfigSetArgs {
     }
 }
 
+#[derive(Args, Debug, Clone)]
+struct RandomArgs {
+    #[command(flatten)]
+    config: ConfigSetArgs,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Generate hostnames.
     Generate,
+    /// Generate stateless random hostnames.
+    Random(RandomArgs),
     /// Regenerate a profile-backed hostname from an atomic value.
     Regenerate {
         /// Atomic value to regenerate.
@@ -343,6 +351,33 @@ async fn main() -> anyhow::Result<()> {
             ensure_profile_dictionary_is_current(&profile)?;
             generator::validate_generate_options(&options)?;
             let hostnames = generate_with_profile(options, &mut store, &profile)?;
+            if cli.generate.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&server::GenerateResponse { hostnames })?
+                );
+            } else {
+                for generated in hostnames {
+                    println!("{}", generated.hostname);
+                }
+            }
+            Ok(())
+        }
+        Command::Random(args) => {
+            let options = cli.generate.options(
+                args.config
+                    .apply(ProfileConfig::default())?
+                    .to_generate_options(generator::DEFAULT_COUNT),
+            );
+            if cli.generate.capacity {
+                print_capacity_report(&options)?;
+                return Ok(());
+            }
+            generator::validate_generate_options(&options)?;
+            let hostnames = generator::generate_many(options)?
+                .into_iter()
+                .map(server::GeneratedHostname::plain)
+                .collect::<Vec<_>>();
             if cli.generate.json {
                 println!(
                     "{}",

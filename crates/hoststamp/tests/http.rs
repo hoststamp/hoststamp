@@ -112,18 +112,12 @@ async fn generate_endpoint_uses_server_defaults() {
 }
 
 #[tokio::test]
-async fn generate_endpoint_allows_query_overrides() {
-    let response = server::app(GenerateOptions {
-        word1_lengths: Some(vec![4]),
-        word2_lengths: Some(vec![4]),
-        suffix_enabled: false,
-        suffix_min_length: 7,
-        ..GenerateOptions::default()
-    })
+async fn random_endpoint_allows_query_overrides() {
+    let response = server::app(GenerateOptions::default())
     .oneshot(
         http::Request::builder()
             .uri(
-                "/api/generate?word1_lengths=5&word2_lengths=5&suffix_enabled=true&suffix_min_length=10",
+                "/api/random?word1_lengths=5&word2_lengths=5&suffix_enabled=true&suffix_min_length=10",
             )
             .body(Body::empty())
             .expect("request"),
@@ -147,12 +141,12 @@ async fn generate_endpoint_allows_query_overrides() {
 }
 
 #[tokio::test]
-async fn generate_endpoint_accepts_category_query_overrides() {
+async fn random_endpoint_accepts_category_query_overrides() {
     let response = server::app(GenerateOptions::default())
         .oneshot(
             http::Request::builder()
                 .uri(
-                    "/api/generate?word1_categories=diceware&word2_categories=diceware&word1_lengths=10&word2_lengths=10&suffix_enabled=false",
+                    "/api/random?word1_categories=diceware&word2_categories=diceware&word1_lengths=10&word2_lengths=10&suffix_enabled=false",
                 )
                 .body(Body::empty())
                 .expect("request"),
@@ -174,11 +168,11 @@ async fn generate_endpoint_accepts_category_query_overrides() {
 }
 
 #[tokio::test]
-async fn generate_endpoint_accepts_any_length_query() {
+async fn random_endpoint_accepts_any_length_query() {
     let response = server::app(GenerateOptions::default())
         .oneshot(
             http::Request::builder()
-                .uri("/api/generate?word1_lengths=any&word2_lengths=any&suffix_enabled=false")
+                .uri("/api/random?word1_lengths=any&word2_lengths=any&suffix_enabled=false")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -194,6 +188,26 @@ async fn generate_endpoint_honors_count_query() {
         .oneshot(
             http::Request::builder()
                 .uri("/api/generate?count=3")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+
+    let body = response_text(response).await;
+    let hostnames = body.lines().collect::<Vec<_>>();
+
+    assert_eq!(hostnames.len(), 3);
+}
+
+#[tokio::test]
+async fn random_endpoint_honors_count_query() {
+    let response = server::app(GenerateOptions::default())
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/random?count=3")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -390,11 +404,26 @@ async fn generate_endpoint_returns_internal_error_for_atomic_increment_failures(
 }
 
 #[tokio::test]
-async fn generate_endpoint_returns_bad_request_for_invalid_filter() {
+async fn generate_endpoint_rejects_random_query_overrides() {
     let response = server::app(GenerateOptions::default())
         .oneshot(
             http::Request::builder()
-                .uri("/api/generate?word1_lengths=100")
+                .uri("/api/generate?word1_lengths=4")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn random_endpoint_returns_bad_request_for_invalid_filter() {
+    let response = server::app(GenerateOptions::default())
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/random?word1_lengths=100")
                 .body(Body::empty())
                 .expect("request"),
         )

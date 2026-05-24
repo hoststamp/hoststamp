@@ -21,6 +21,7 @@ cargo run -p hoststamp -- --version
 cargo run -p hoststamp -- --credits
 cargo run -p hoststamp -- --list-categories
 cargo run -p hoststamp -- generate
+cargo run -p hoststamp -- random
 cargo run -p hoststamp -- regenerate --atomic-value 42
 cargo run -p hoststamp -- config show
 cargo run -p hoststamp -- profile list
@@ -34,6 +35,12 @@ Generate hostnames:
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- generate --count 10
 cargo run -p hoststamp -- generate --count 10 --json
+cargo run -p hoststamp -- random
+cargo run -p hoststamp -- random --count 10
+cargo run -p hoststamp -- random --word1-lengths 4 --word2-lengths 4
+cargo run -p hoststamp -- random --word1-categories adjective --word2-categories animal
+cargo run -p hoststamp -- random --suffix-min-length 8
+cargo run -p hoststamp -- random --json
 cargo run -p hoststamp -- --profile team-a generate
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --json
@@ -47,15 +54,19 @@ cargo run -p hoststamp -- --profile team-a --capacity
 ```
 
 Hostnames are assembled from three positions: `word1`, `word2`, and `suffix`.
-The selected profile supplies the default generator settings. The built-in
-profile seed is `word1-word2-suffix` (e.g. `5/5/5`) with `adjective,adverb`
-for `word1` and all non-`adjective`, non-`adverb`, non-`diceware` categories
-for `word2`. Each word position has independent enable, lengths, and
-categories controls stored on the selected profile with `hoststamp config set`
-(`--word1-enabled`, `--word1-lengths`, `--word1-categories`, and the matching
-`word2` flags). The suffix has `--suffix-enabled` and `--suffix-min-length`.
-Words never repeat within a single hostname. `--count` is a request option and
-is capped at 50.
+`generate` uses the selected profile's stored generator settings and atomic
+counter. `random` is stateless: it never opens or mutates the profile database,
+and it starts from the built-in `5/5/5` defaults unless ad hoc generation
+options are passed on the command line. The built-in profile seed is
+`word1-word2-suffix` (e.g. `5/5/5`) with `adjective,adverb` for `word1` and
+all non-`adjective`, non-`adverb`, non-`diceware` categories for `word2`. Each
+word position has independent enable, lengths, and categories controls stored
+on the selected profile with `hoststamp config set` (`--word1-enabled`,
+`--word1-lengths`, `--word1-categories`, and the matching `word2` flags). The
+same generation controls can be passed to `hoststamp random` without changing a
+profile. The suffix has `--suffix-enabled` and `--suffix-min-length`. Words
+never repeat within a single hostname. `--count` is a request option and is
+capped at 50.
 
 `config set --wordN-categories` accepts a comma-separated category list.
 `config set --wordN-lengths` accepts a comma-separated list of exact lengths or
@@ -82,10 +93,10 @@ valid word space, so each valid word pair is used once before that profile
 cycle repeats. The suffix encodes the same atomic value with Sqids. The profile
 UUID also derives a deterministic profile-specific suffix alphabet, so each
 profile gets a different-looking sequence while keeping the uniqueness
-guarantee scoped to the active profile row. Without profile storage, Hoststamp
-encodes a random number from `1..=(36^suffix_min_length / 2)`. That fallback
-keeps the suffix inside the requested minimum length range, but it is not
-uniqueness-tracked or reproducible.
+guarantee scoped to the active profile row. For stateless random generation,
+Hoststamp encodes a random number from `1..=(36^suffix_min_length / 2)`. That
+fallback keeps the suffix inside the requested minimum length range, but it is
+not uniqueness-tracked or reproducible.
 
 Sqids can expand past the configured minimum length. For example,
 `--suffix-min-length 5` keeps profile-backed atomic values `1..=60,466,176`
@@ -157,6 +168,8 @@ Local endpoints:
 - API health: `http://127.0.0.1:8080/api/health`
 - API generate: `http://127.0.0.1:8080/api/generate?count=3`
 - API generate JSON: `http://127.0.0.1:8080/api/generate?count=3&format=json`
+- API random: `http://127.0.0.1:8080/api/random?count=3&word1_lengths=4&word2_lengths=4`
+- API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
 - Container health: `http://127.0.0.1:8080/healthz`
 
 `/api/generate` returns newline-delimited `text/plain` by default so command
@@ -168,10 +181,11 @@ also returns metadata headers:
 
 Pass `format=json` to return JSON with a `hostnames` array of generated items.
 Each item includes `hostname`; profile-backed atomic generation also includes
-`profile` and `atomic_value`. Query parameters mirror the generator option
-names, including `format`, `count`, `word1_lengths`, `word1_categories`,
-`word2_lengths`, `word2_categories`, `suffix_enabled`, and
-`suffix_min_length`.
+`profile` and `atomic_value`. `/api/generate` accepts only `format` and
+`count`, and uses the active stored profile configuration. `/api/random`
+accepts `format`, `count`, `word1_enabled`, `word1_lengths`,
+`word1_categories`, `word2_enabled`, `word2_lengths`, `word2_categories`,
+`suffix_enabled`, and `suffix_min_length`.
 
 ```json
 {
