@@ -8,13 +8,18 @@
     <style>
       :root {
         color-scheme: light;
-        --bg: #f7f8fb;
+        --bg: #f6f7f9;
         --panel: #ffffff;
-        --ink: #1b1f24;
-        --muted: #5f6875;
-        --line: #d9dee7;
+        --ink: #161a1f;
+        --muted: #687382;
+        --line: #d9dee6;
+        --line-strong: #b7c0ce;
         --accent: #0f766e;
-        --accent-ink: #f0fdfa;
+        --accent-dark: #115e59;
+        --danger: #b42318;
+        --ok: #15803d;
+        --warn: #b7791f;
+        --code: #eef2f7;
       }
 
       * {
@@ -31,6 +36,81 @@
           "Segoe UI", sans-serif;
       }
 
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        min-height: 2.25rem;
+        border: 1px solid var(--line-strong);
+        border-radius: 0.375rem;
+        background: var(--panel);
+        color: var(--ink);
+        cursor: pointer;
+      }
+
+      button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      button.primary:hover {
+        background: var(--accent-dark);
+      }
+
+      button.danger {
+        border-color: #f4b8b2;
+        color: var(--danger);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      input,
+      select {
+        width: 100%;
+        min-height: 2.25rem;
+        border: 1px solid var(--line-strong);
+        border-radius: 0.375rem;
+        background: #ffffff;
+        color: var(--ink);
+        padding: 0 0.625rem;
+      }
+
+      label {
+        display: grid;
+        gap: 0.375rem;
+        color: var(--muted);
+        font-size: 0.8125rem;
+        font-weight: 650;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.875rem;
+      }
+
+      th,
+      td {
+        padding: 0.625rem 0.5rem;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 750;
+        text-transform: uppercase;
+      }
+
       .shell {
         min-height: 100vh;
         display: grid;
@@ -38,12 +118,11 @@
       }
 
       header {
-        display: flex;
+        display: grid;
+        grid-template-columns: auto minmax(16rem, 30rem) auto;
         align-items: center;
-        justify-content: space-between;
         gap: 1rem;
-        min-height: 4rem;
-        padding: 0 1.25rem;
+        padding: 0.875rem 1rem;
         border-bottom: 1px solid var(--line);
         background: var(--panel);
       }
@@ -52,7 +131,7 @@
         display: flex;
         align-items: center;
         gap: 0.75rem;
-        font-weight: 700;
+        font-weight: 800;
       }
 
       .mark {
@@ -62,18 +141,20 @@
         place-items: center;
         border-radius: 0.375rem;
         background: var(--accent);
-        color: var(--accent-ink);
-        font-weight: 800;
+        color: #ffffff;
+      }
+
+      .token {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.5rem;
       }
 
       .status {
         display: inline-flex;
         align-items: center;
+        justify-content: flex-end;
         gap: 0.5rem;
-        min-height: 2rem;
-        padding: 0 0.75rem;
-        border: 1px solid var(--line);
-        border-radius: 999px;
         color: var(--muted);
         font-size: 0.875rem;
         white-space: nowrap;
@@ -83,58 +164,173 @@
         width: 0.625rem;
         height: 0.625rem;
         border-radius: 999px;
-        background: #9aa4b2;
+        background: var(--line-strong);
       }
 
       .dot.ok {
-        background: #16a34a;
+        background: var(--ok);
       }
 
       main {
-        width: min(64rem, 100%);
+        width: min(88rem, 100%);
         margin: 0 auto;
-        padding: 2rem 1.25rem;
+        padding: 1rem;
       }
 
-      .grid {
+      .layout {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: minmax(16rem, 22rem) 1fr;
         gap: 1rem;
+        align-items: start;
       }
 
       .panel {
-        min-height: 8rem;
-        padding: 1rem;
         border: 1px solid var(--line);
         border-radius: 0.5rem;
         background: var(--panel);
       }
 
-      .panel h2 {
-        margin: 0 0 0.75rem;
-        font-size: 0.875rem;
-        font-weight: 700;
+      .panel-head {
+        min-height: 3.125rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--line);
       }
 
-      .metric {
+      .panel-head h2,
+      .panel-head h3 {
         margin: 0;
-        font-size: 1.875rem;
-        font-weight: 750;
+        font-size: 0.9375rem;
+      }
+
+      .panel-body {
+        padding: 1rem;
+      }
+
+      .stack {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
       }
 
       .muted {
         color: var(--muted);
-        font-size: 0.875rem;
       }
 
-      @media (max-width: 720px) {
+      .error {
+        color: var(--danger);
+      }
+
+      .ok-text {
+        color: var(--ok);
+      }
+
+      .warn {
+        color: var(--warn);
+      }
+
+      .mono {
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace,
+          monospace;
+      }
+
+      .profile-row {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.5rem;
+        align-items: center;
+        margin: 0 0 0.5rem;
+        padding: 0.625rem;
+        border: 1px solid var(--line);
+        border-radius: 0.375rem;
+        background: #ffffff;
+        text-align: left;
+      }
+
+      .profile-row.active {
+        border-color: var(--accent);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 1.5rem;
+        padding: 0 0.5rem;
+        border-radius: 999px;
+        background: var(--code);
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 700;
+      }
+
+      .result-list {
+        display: grid;
+        gap: 0.5rem;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .result-list li {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.75rem;
+        align-items: center;
+        min-height: 2.5rem;
+        padding: 0.5rem 0.625rem;
+        border: 1px solid var(--line);
+        border-radius: 0.375rem;
+        background: #ffffff;
+      }
+
+      .config-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+
+      .section-title {
+        margin: 0 0 0.75rem;
+        font-size: 0.8125rem;
+        color: var(--muted);
+        text-transform: uppercase;
+      }
+
+      .empty {
+        padding: 1rem;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      @media (max-width: 900px) {
         header {
-          align-items: flex-start;
-          flex-direction: column;
-          padding: 1rem;
+          grid-template-columns: 1fr;
         }
 
-        .grid {
+        .status {
+          justify-content: flex-start;
+        }
+
+        .layout,
+        .config-grid,
+        .form-grid {
           grid-template-columns: 1fr;
         }
       }
@@ -147,53 +343,604 @@
           <div class="mark" aria-hidden="true">H</div>
           <span>Hoststamp</span>
         </div>
+        <div class="token">
+          <input
+            id="admin-token"
+            type="password"
+            autocomplete="off"
+            placeholder="Admin bearer token"
+          />
+          <button id="save-token" type="button">Save</button>
+        </div>
         <div class="status" aria-live="polite">
           <span class="dot" id="status-dot"></span>
           <span id="status-text">Checking API</span>
         </div>
       </header>
+
       <main>
-        <section class="grid" aria-label="Hoststamp status">
-          <article class="panel">
-            <h2>API</h2>
-            <p class="metric" id="api-state">--</p>
-            <p class="muted">Local service health</p>
-          </article>
-          <article class="panel">
-            <h2>Service</h2>
-            <p class="metric">hoststamp</p>
-            <p class="muted">CLI, API, and UX runtime</p>
-          </article>
-          <article class="panel">
-            <h2>Endpoint</h2>
-            <p class="metric">/api</p>
-            <p class="muted">Server routes namespace</p>
-          </article>
-        </section>
+        <div class="layout">
+          <aside class="stack">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Profiles</h2>
+                <button id="refresh-profiles" type="button">Refresh</button>
+              </div>
+              <div class="panel-body">
+                <form id="create-profile" class="token">
+                  <input
+                    id="new-profile-slug"
+                    autocomplete="off"
+                    placeholder="new-profile"
+                  />
+                  <button class="primary" type="submit">New</button>
+                </form>
+                <div id="profiles" style="margin-top: 1rem"></div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Capacity</h3>
+                <button id="refresh-capacity" type="button">Refresh</button>
+              </div>
+              <div class="panel-body">
+                <table>
+                  <tbody id="capacity-body">
+                    <tr>
+                      <td class="empty" colspan="2">No profile selected</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </aside>
+
+          <section class="stack">
+            <section class="panel">
+              <div class="panel-head">
+                <h2 id="profile-title">Profile</h2>
+                <div class="actions">
+                  <select id="profile-access" aria-label="Profile access">
+                    <option value="private">private</option>
+                    <option value="public">public</option>
+                  </select>
+                  <button id="save-access" type="button">Set Access</button>
+                </div>
+              </div>
+              <div class="panel-body">
+                <div id="profile-meta" class="muted">No profile selected</div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Generate</h3>
+              </div>
+              <div class="panel-body stack">
+                <div class="form-grid">
+                  <label>
+                    Count
+                    <input id="generate-count" type="number" min="1" max="50" value="1" />
+                  </label>
+                  <label>
+                    Atomic value
+                    <input id="regenerate-value" type="number" min="1" value="1" />
+                  </label>
+                  <label>
+                    Reset counter
+                    <input id="reset-value" type="number" min="0" value="0" />
+                  </label>
+                </div>
+                <div class="actions">
+                  <button id="generate" class="primary" type="button">Generate</button>
+                  <button id="regenerate" type="button">Regenerate</button>
+                  <button id="reset-atomic" class="danger" type="button">Reset Atomic</button>
+                </div>
+                <ul id="results" class="result-list"></ul>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Config</h3>
+                <button id="save-config" type="button">Save Config</button>
+              </div>
+              <div class="panel-body">
+                <div class="config-grid">
+                  <div>
+                    <p class="section-title">Word 1</p>
+                    <div class="stack">
+                      <label>
+                        Enabled
+                        <select id="word1-enabled">
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                      </label>
+                      <label>
+                        Lengths
+                        <input id="word1-lengths" placeholder="5 or 6,7 or any" />
+                      </label>
+                      <label>
+                        Categories
+                        <input id="word1-categories" />
+                      </label>
+                    </div>
+                  </div>
+                  <div>
+                    <p class="section-title">Word 2</p>
+                    <div class="stack">
+                      <label>
+                        Enabled
+                        <select id="word2-enabled">
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                      </label>
+                      <label>
+                        Lengths
+                        <input id="word2-lengths" placeholder="5 or 6,7 or any" />
+                      </label>
+                      <label>
+                        Categories
+                        <input id="word2-categories" />
+                      </label>
+                    </div>
+                  </div>
+                  <div>
+                    <p class="section-title">Suffix</p>
+                    <div class="stack">
+                      <label>
+                        Enabled
+                        <select id="suffix-enabled">
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                      </label>
+                      <label>
+                        Min length
+                        <input id="suffix-min-length" type="number" min="3" max="13" />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Tokens</h3>
+                <button id="refresh-tokens" type="button">Refresh</button>
+              </div>
+              <div class="panel-body stack">
+                <form id="create-token" class="token">
+                  <input id="token-name" autocomplete="off" placeholder="deploy" />
+                  <button type="submit">Create</button>
+                </form>
+                <div id="created-token" class="mono ok-text"></div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Token ID</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="tokens-body">
+                    <tr>
+                      <td class="empty" colspan="3">No profile selected</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Events</h3>
+              </div>
+              <div class="panel-body">
+                <div id="message" class="muted">Ready</div>
+              </div>
+            </section>
+          </section>
+        </div>
       </main>
     </div>
-    <script>
-      async function refreshHealth() {
-        const dot = document.getElementById("status-dot");
-        const text = document.getElementById("status-text");
-        const state = document.getElementById("api-state");
 
-        try {
-          const response = await fetch("/api/health", { cache: "no-store" });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const payload = await response.json();
-          dot.classList.add("ok");
-          text.textContent = `${payload.service} online`;
-          state.textContent = payload.status;
-        } catch {
-          dot.classList.remove("ok");
-          text.textContent = "API offline";
-          state.textContent = "--";
+    <script>
+      const state = {
+        profiles: [],
+        selected: null,
+        adminToken: localStorage.getItem("hoststamp.adminToken") || "",
+      };
+
+      const el = (id) => document.getElementById(id);
+
+      function headers(json = false) {
+        const value = {};
+        if (json) value["content-type"] = "application/json";
+        if (state.adminToken) value.authorization = `Bearer ${state.adminToken}`;
+        return value;
+      }
+
+      function setMessage(text, kind = "muted") {
+        const message = el("message");
+        message.className = kind;
+        message.textContent = text;
+      }
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          cache: "no-store",
+          ...options,
+          headers: {
+            ...headers(options.json),
+            ...(options.headers || {}),
+          },
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `HTTP ${response.status}`);
+        }
+        if (response.status === 204) return null;
+        const type = response.headers.get("content-type") || "";
+        return type.includes("application/json")
+          ? response.json()
+          : response.text();
+      }
+
+      function slugPath(slug) {
+        return encodeURIComponent(slug);
+      }
+
+      function cell(text, className) {
+        const td = document.createElement("td");
+        if (className) td.className = className;
+        td.textContent = String(text);
+        return td;
+      }
+
+      function emptyRow(text, colspan) {
+        const row = document.createElement("tr");
+        const td = cell(text, "empty");
+        td.colSpan = colspan;
+        row.appendChild(td);
+        return row;
+      }
+
+      function selectedProfile() {
+        return state.profiles.find((profile) => profile.slug === state.selected);
+      }
+
+      function formatLengths(lengths) {
+        return lengths === null ? "any" : lengths.join(",");
+      }
+
+      function parseLengthsInput(value) {
+        const trimmed = value.trim();
+        return trimmed.toLowerCase() === "any" ? "any" : trimmed;
+      }
+
+      function renderProfiles() {
+        const root = el("profiles");
+        root.replaceChildren();
+        if (!state.profiles.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No profiles";
+          root.appendChild(empty);
+          return;
+        }
+        for (const profile of state.profiles) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className =
+            "profile-row" + (profile.slug === state.selected ? " active" : "");
+          const slug = document.createElement("span");
+          slug.className = "mono";
+          slug.textContent = profile.slug;
+          const access = document.createElement("span");
+          access.className = "badge";
+          access.textContent = profile.access;
+          button.append(slug, access);
+          button.addEventListener("click", () => selectProfile(profile.slug));
+          root.appendChild(button);
         }
       }
 
+      function renderProfile() {
+        const profile = selectedProfile();
+        el("profile-title").textContent = profile ? profile.slug : "Profile";
+        el("profile-access").value = profile?.access || "private";
+        if (!profile) {
+          el("profile-meta").textContent = "No profile selected";
+          return;
+        }
+        const meta = el("profile-meta");
+        const id = document.createElement("div");
+        id.className = "mono";
+        id.textContent = `id = ${profile.id}`;
+        const atomic = document.createElement("div");
+        atomic.textContent = `last_atomic_value = ${profile.last_atomic_value}`;
+        const hash = document.createElement("div");
+        hash.className = "mono";
+        hash.textContent = `config_hash = ${profile.config_hash}`;
+        meta.replaceChildren(id, atomic, hash);
+        const config = profile.config;
+        el("word1-enabled").value = String(config.word1.enabled);
+        el("word1-lengths").value = formatLengths(config.word1.lengths);
+        el("word1-categories").value = config.word1.categories.join(",");
+        el("word2-enabled").value = String(config.word2.enabled);
+        el("word2-lengths").value = formatLengths(config.word2.lengths);
+        el("word2-categories").value = config.word2.categories.join(",");
+        el("suffix-enabled").value = String(config.suffix.enabled);
+        el("suffix-min-length").value = config.suffix.min_length;
+      }
+
+      function renderResults(hostnames) {
+        const root = el("results");
+        root.replaceChildren();
+        for (const generated of hostnames) {
+          const item = document.createElement("li");
+          const hostname = document.createElement("span");
+          hostname.className = "mono";
+          hostname.textContent = generated.hostname;
+          item.appendChild(hostname);
+          if (generated.atomic_value !== undefined) {
+            const meta = document.createElement("span");
+            meta.className = "badge";
+            meta.textContent = `#${generated.atomic_value}`;
+            item.appendChild(meta);
+          }
+          root.appendChild(item);
+        }
+      }
+
+      function renderCapacity(report) {
+        const rows = [
+          ["word1_words", report.word1_count ?? "disabled"],
+          ["word2_words", report.word2_count ?? "disabled"],
+          ["overlapping_words", report.overlapping_words],
+          ["unique_word_combinations", report.unique_word_combinations],
+          ["fixed_suffix_variants", report.suffix_variants ?? "disabled"],
+          ["suffix_bits", report.suffix_bits ?? 0],
+          ["total_variants", report.total_variants],
+        ];
+        const body = el("capacity-body");
+        body.replaceChildren(
+          ...rows.map(([key, value]) => {
+            const row = document.createElement("tr");
+            row.append(cell(key), cell(value, "mono"));
+            return row;
+          }),
+        );
+      }
+
+      function renderTokens(tokens) {
+        const body = el("tokens-body");
+        body.replaceChildren();
+        if (!tokens.length) {
+          body.appendChild(emptyRow("No tokens", 3));
+          return;
+        }
+        for (const token of tokens) {
+          const row = document.createElement("tr");
+          const action = document.createElement("td");
+          const button = document.createElement("button");
+          button.className = "danger";
+          button.type = "button";
+          button.textContent = "Revoke";
+          button.addEventListener("click", () => revokeToken(token.token_id));
+          action.appendChild(button);
+          row.append(cell(token.name), cell(token.token_id, "mono"), action);
+          body.appendChild(row);
+        }
+      }
+
+      async function refreshHealth() {
+        const dot = el("status-dot");
+        const text = el("status-text");
+        try {
+          const payload = await api("/api/health");
+          dot.classList.add("ok");
+          text.textContent = `${payload.service} online`;
+        } catch (error) {
+          dot.classList.remove("ok");
+          text.textContent = "API offline";
+        }
+      }
+
+      async function refreshProfiles() {
+        const payload = await api("/api/profiles");
+        state.profiles = payload.profiles;
+        if (!state.selected && state.profiles.length) {
+          state.selected = state.profiles[0].slug;
+        }
+        if (
+          state.selected &&
+          !state.profiles.some((profile) => profile.slug === state.selected)
+        ) {
+          state.selected = state.profiles[0]?.slug || null;
+        }
+        renderProfiles();
+        renderProfile();
+        if (state.selected) {
+          await Promise.allSettled([refreshCapacity(), refreshTokens()]);
+        }
+      }
+
+      async function selectProfile(slug) {
+        state.selected = slug;
+        renderProfiles();
+        renderProfile();
+        await Promise.allSettled([refreshCapacity(), refreshTokens()]);
+      }
+
+      async function createProfile(event) {
+        event.preventDefault();
+        const slug = el("new-profile-slug").value.trim();
+        if (!slug) return;
+        await api("/api/profiles", {
+          method: "POST",
+          json: true,
+          body: JSON.stringify({ slug }),
+        });
+        el("new-profile-slug").value = "";
+        state.selected = slug;
+        await refreshProfiles();
+        setMessage(`created ${slug}`, "ok-text");
+      }
+
+      async function refreshCapacity() {
+        if (!state.selected) return;
+        const payload = await api(
+          `/api/capacity?profile=${slugPath(state.selected)}`,
+        );
+        renderCapacity(payload);
+      }
+
+      async function generate() {
+        if (!state.selected) return;
+        const count = el("generate-count").value || "1";
+        const payload = await api(
+          `/api/generate?format=json&profile=${slugPath(state.selected)}&count=${encodeURIComponent(count)}`,
+          { method: "POST" },
+        );
+        renderResults(payload.hostnames);
+        await refreshProfiles();
+        setMessage("generated", "ok-text");
+      }
+
+      async function regenerate() {
+        if (!state.selected) return;
+        const value = el("regenerate-value").value || "1";
+        const payload = await api(
+          `/api/regenerate?format=json&profile=${slugPath(state.selected)}&atomic_value=${encodeURIComponent(value)}`,
+        );
+        renderResults(payload.hostnames);
+        setMessage("regenerated", "ok-text");
+      }
+
+      async function saveAccess() {
+        if (!state.selected) return;
+        const access = el("profile-access").value;
+        await api(`/api/profiles/${slugPath(state.selected)}/access`, {
+          method: "PATCH",
+          json: true,
+          body: JSON.stringify({ access }),
+        });
+        await refreshProfiles();
+        setMessage("access updated", "ok-text");
+      }
+
+      async function saveConfig() {
+        if (!state.selected) return;
+        const slug = state.selected;
+        const body = {
+          word1_enabled: el("word1-enabled").value === "true",
+          word1_lengths: parseLengthsInput(el("word1-lengths").value),
+          word1_categories: el("word1-categories")
+            .value.split(",")
+            .map((value) => value.trim())
+            .filter(Boolean),
+          word2_enabled: el("word2-enabled").value === "true",
+          word2_lengths: parseLengthsInput(el("word2-lengths").value),
+          word2_categories: el("word2-categories")
+            .value.split(",")
+            .map((value) => value.trim())
+            .filter(Boolean),
+          suffix_enabled: el("suffix-enabled").value === "true",
+          suffix_min_length: Number(el("suffix-min-length").value),
+          confirmation: { profile: slug, action: "replace" },
+        };
+        await api(`/api/profiles/${slugPath(slug)}/config`, {
+          method: "PATCH",
+          json: true,
+          body: JSON.stringify(body),
+        });
+        await refreshProfiles();
+        setMessage("config replaced", "ok-text");
+      }
+
+      async function resetAtomic() {
+        if (!state.selected) return;
+        const slug = state.selected;
+        const atomicValue = Number(el("reset-value").value || "0");
+        await api(`/api/profiles/${slugPath(slug)}/reset-atomic-value`, {
+          method: "POST",
+          json: true,
+          body: JSON.stringify({
+            atomic_value: atomicValue,
+            confirmation: { profile: slug, action: "reset" },
+          }),
+        });
+        await refreshProfiles();
+        setMessage("atomic value reset", "ok-text");
+      }
+
+      async function refreshTokens() {
+        if (!state.selected) return;
+        const payload = await api(`/api/profiles/${slugPath(state.selected)}/tokens`);
+        renderTokens(payload.tokens);
+      }
+
+      async function createToken(event) {
+        event.preventDefault();
+        if (!state.selected) return;
+        const name = el("token-name").value.trim();
+        if (!name) return;
+        const payload = await api(`/api/profiles/${slugPath(state.selected)}/tokens`, {
+          method: "POST",
+          json: true,
+          body: JSON.stringify({ name }),
+        });
+        el("token-name").value = "";
+        el("created-token").textContent = payload.profile_token;
+        await refreshTokens();
+      }
+
+      async function revokeToken(tokenId) {
+        if (!state.selected) return;
+        await api(
+          `/api/profiles/${slugPath(state.selected)}/tokens/${encodeURIComponent(tokenId)}`,
+          { method: "DELETE" },
+        );
+        await refreshTokens();
+      }
+
+      function wire(id, event, handler) {
+        el(id).addEventListener(event, async (ev) => {
+          try {
+            await handler(ev);
+          } catch (error) {
+            setMessage(error.message, "error");
+          }
+        });
+      }
+
+      el("admin-token").value = state.adminToken;
+      wire("save-token", "click", async () => {
+        state.adminToken = el("admin-token").value.trim();
+        localStorage.setItem("hoststamp.adminToken", state.adminToken);
+        await refreshProfiles();
+        setMessage("token saved", "ok-text");
+      });
+      wire("refresh-profiles", "click", refreshProfiles);
+      wire("refresh-capacity", "click", refreshCapacity);
+      wire("create-profile", "submit", createProfile);
+      wire("generate", "click", generate);
+      wire("regenerate", "click", regenerate);
+      wire("save-access", "click", saveAccess);
+      wire("save-config", "click", saveConfig);
+      wire("reset-atomic", "click", resetAtomic);
+      wire("refresh-tokens", "click", refreshTokens);
+      wire("create-token", "submit", createToken);
+
       refreshHealth();
       setInterval(refreshHealth, 5000);
+      refreshProfiles().catch((error) => setMessage(error.message, "error"));
     </script>
   </body>
 </html>

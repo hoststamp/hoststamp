@@ -390,6 +390,96 @@ async fn generate_endpoint_supports_profile_backed_suffix_context() {
 }
 
 #[tokio::test]
+async fn generate_endpoint_accepts_profile_query() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let default_slug = ProfileSlug::default_profile();
+    let other_slug = "team-a".parse::<ProfileSlug>().expect("slug");
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&default_slug, &ProfileConfig::default())
+        .expect("default profile");
+    store
+        .create_profile(&other_slug, &ProfileConfig::default())
+        .expect("other profile");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, default_slug.clone())),
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/api/generate?format=json&profile=team-a")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.headers()["x-hoststamp-profile"], "team-a");
+    assert_eq!(response.headers()["x-hoststamp-atomic-values"], "1");
+    let body = response_json(response).await;
+    assert_eq!(body["hostnames"][0]["profile"], "team-a");
+    assert_eq!(body["hostnames"][0]["atomic_value"], 1);
+
+    let store = ProfileStore::open(&database_url).expect("store");
+    assert_eq!(
+        store
+            .load_profile(&default_slug)
+            .expect("default profile")
+            .last_atomic_value,
+        0
+    );
+    assert_eq!(
+        store
+            .load_profile(&other_slug)
+            .expect("other profile")
+            .last_atomic_value,
+        1
+    );
+}
+
+#[tokio::test]
+async fn capacity_endpoint_reports_selected_profile_space() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let default_slug = ProfileSlug::default_profile();
+    let other_slug = "team-a".parse::<ProfileSlug>().expect("slug");
+    let config = ProfileConfig::from(&GenerateOptions {
+        word1_lengths: Some(vec![4]),
+        ..GenerateOptions::default()
+    });
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&default_slug, &ProfileConfig::default())
+        .expect("default profile");
+    store
+        .create_profile(&other_slug, &config)
+        .expect("other profile");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, default_slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/capacity?profile=team-a")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["word1_count"], 65);
+    assert_eq!(body["suffix_min_length"], 5);
+    assert_eq!(body["suffix_enabled"], true);
+}
+
+#[tokio::test]
 async fn generate_endpoint_requires_auth_for_private_profiles() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));

@@ -145,7 +145,7 @@ pub struct GenerateOverrides {
     pub count: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CapacityReport {
     pub word1_count: Option<usize>,
     pub word2_count: Option<usize>,

@@ -20,7 +20,7 @@ use hoststamp_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fmt, net::SocketAddr, sync::Arc};
+use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::{net::TcpListener, signal, sync::Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +94,14 @@ impl GeneratedHostname {
 #[serde(deny_unknown_fields)]
 pub struct GenerateQuery {
     pub format: Option<GenerateFormat>,
+    pub profile: Option<String>,
     pub count: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityQuery {
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,6 +291,7 @@ pub fn app_with_mode(
                 "/api/generate",
                 post(generate_one).get(generate_method_not_allowed),
             )
+            .route("/api/capacity", get(capacity_one))
             .route("/api/regenerate", get(regenerate_one))
             .route("/api/random", get(random_one))
             .route(
@@ -355,7 +363,13 @@ async fn generate_one(
         count: query.count,
         ..GenerateOverrides::default()
     };
-    let hostnames = generate_with_state(overrides, &state, &headers)
+    let profile = query
+        .profile
+        .as_deref()
+        .map(ProfileSlug::from_str)
+        .transpose()
+        .map_err(bad_request_response)?;
+    let hostnames = generate_with_state(overrides, profile.as_ref(), &state, &headers)
         .await
         .map_err(generate_error_response)?;
 
@@ -363,6 +377,25 @@ async fn generate_one(
         query.format.unwrap_or(GenerateFormat::Plain),
         hostnames,
     ))
+}
+
+async fn capacity_one(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<CapacityQuery>,
+) -> Result<Json<generator::CapacityReport>, Response> {
+    let profile = query
+        .profile
+        .as_deref()
+        .map(ProfileSlug::from_str)
+        .transpose()
+        .map_err(bad_request_response)?;
+    let options = capacity_options(profile.as_ref(), &state, &headers)
+        .await
+        .map_err(generate_error_response)?;
+    let report = generator::capacity_report(&options)
+        .map_err(|error| bad_request_response(error.to_string()))?;
+    Ok(Json(report))
 }
 
 async fn random_one(Query(query): Query<RandomQuery>) -> Result<Response, Response> {
@@ -882,19 +915,21 @@ fn shared_profile(hostnames: &[GeneratedHostname]) -> Option<&str> {
 
 async fn generate_with_state(
     overrides: GenerateOverrides,
+    profile_override: Option<&ProfileSlug>,
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Vec<GeneratedHostname>, GenerateError> {
     let options = match &state.atomic {
         Some(atomic) => {
             let mut store = atomic.store.lock().await;
-            let profile = if state.auth.required {
+            let profile_slug = profile_override.unwrap_or(&atomic.profile_slug);
+            let profile = if state.auth.required || profile_override.is_some() {
                 store
-                    .load_profile(&atomic.profile_slug)
+                    .load_profile(profile_slug)
                     .map_err(|error| GenerateError::BadRequest(error.to_string()))?
             } else {
                 store
-                    .load_or_seed_profile(&atomic.profile_slug, &ProfileConfig::default())
+                    .load_or_seed_profile(profile_slug, &ProfileConfig::default())
                     .map_err(GenerateError::Internal)?
             };
             authorize_profile_request(headers, &state.auth, &store, &profile)?;
@@ -945,6 +980,30 @@ async fn generate_with_state(
                 .collect()
         })
         .map_err(|error| GenerateError::BadRequest(error.to_string()))
+}
+
+async fn capacity_options(
+    profile_override: Option<&ProfileSlug>,
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<GenerateOptions, GenerateError> {
+    let Some(atomic) = &state.atomic else {
+        return Ok(state.generate.clone());
+    };
+
+    let mut store = atomic.store.lock().await;
+    let profile_slug = profile_override.unwrap_or(&atomic.profile_slug);
+    let profile = if state.auth.required || profile_override.is_some() {
+        store
+            .load_profile(profile_slug)
+            .map_err(|error| GenerateError::BadRequest(error.to_string()))?
+    } else {
+        store
+            .load_or_seed_profile(profile_slug, &ProfileConfig::default())
+            .map_err(GenerateError::Internal)?
+    };
+    authorize_profile_request(headers, &state.auth, &store, &profile)?;
+    Ok(profile.config.to_generate_options(state.generate.count))
 }
 
 fn authorize_profile_request(
