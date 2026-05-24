@@ -34,47 +34,46 @@ Generate hostnames:
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- generate --count 10
 cargo run -p hoststamp -- generate --count 10 --json
-cargo run -p hoststamp -- generate --word1-categories adjective --word2-categories animal
-cargo run -p hoststamp -- generate --word1-categories adjective,noun --word2-categories animal,name
-cargo run -p hoststamp -- generate --word1-lengths 4,5,6 --word2-lengths 4,5,6
-cargo run -p hoststamp -- generate --word1-lengths any --word2-lengths any
-cargo run -p hoststamp -- generate --suffix-min-length 10
-cargo run -p hoststamp -- generate --no-suffix
-cargo run -p hoststamp -- generate --no-word2 --no-suffix
 cargo run -p hoststamp -- --profile team-a generate
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --json
 cargo run -p hoststamp -- --profile team-a profile new
+cargo run -p hoststamp -- --profile team-a config set --word1-lengths 4,5,6 --word2-lengths 4,5,6
+cargo run -p hoststamp -- --profile team-a config set --word1-categories adjective,noun --word2-categories animal,name
+cargo run -p hoststamp -- --profile team-a config set --suffix-min-length 10
+cargo run -p hoststamp -- --profile team-a config set --word2-enabled false --suffix-enabled false
 cargo run -p hoststamp -- --profile team-a profile reset-atomic-value --atomic-value 999
-cargo run -p hoststamp -- --capacity --word1-lengths 5 --word2-lengths 5
+cargo run -p hoststamp -- --profile team-a --capacity
 ```
 
 Hostnames are assembled from three positions: `word1`, `word2`, and `suffix`.
 The selected profile supplies the default generator settings. The built-in
 profile seed is `word1-word2-suffix` (e.g. `5/5/5`) with `adjective,adverb`
 for `word1` and all non-`adjective`, non-`adverb`, non-`diceware` categories
-for `word2`. Each word position has independent
-disable, lengths, and categories controls (`--no-word1`, `--word1-lengths`,
-`--word1-categories`, and the matching `word2` flags). The suffix has
-`--no-suffix` and `--suffix-min-length`. Words never repeat within a single
-hostname. `--count` is capped at 50.
+for `word2`. Each word position has independent enable, lengths, and
+categories controls stored on the selected profile with `hoststamp config set`
+(`--word1-enabled`, `--word1-lengths`, `--word1-categories`, and the matching
+`word2` flags). The suffix has `--suffix-enabled` and `--suffix-min-length`.
+Words never repeat within a single hostname. `--count` is a request option and
+is capped at 50.
 
-`--wordN-categories` accepts a comma-separated category list. `--wordN-lengths`
-accepts a comma-separated list of exact lengths or the literal `any` for no
-length filter. Selection across selected categories and length buckets is
-weighted by available word count so every candidate word has an even chance.
-If the selected categories do not contain enough matching words, generation
-fails loudly.
+`config set --wordN-categories` accepts a comma-separated category list.
+`config set --wordN-lengths` accepts a comma-separated list of exact lengths or
+the literal `any` for no length filter. Selection across selected categories
+and length buckets is weighted by available word count so every candidate word
+has an even chance. If the selected categories do not contain enough matching
+words, configuration fails loudly before it is stored.
 
-Use `--capacity` with any generator option set to report the available name
-space without generating or modifying a profile. The report includes the
+Use `--capacity` to report the available name space for the selected profile
+without generating or modifying that profile. The report includes the
 candidate count for each word position, overlap removed by the no-repeat rule,
 unique word combinations, suffix variants, suffix bits, and total variants.
 Suffixes are Sqids-encoded lowercase base36 (`0-9a-z`) values with a pinned
-Sqids blocklist. `--suffix-min-length` is bounded to `[4, 13]` and is a minimum:
-suffixes can grow longer as the encoded number passes the fixed-length space
-for that minimum. The fixed-length suffix space is `36^suffix_min_length`; with
-the default minimum length of `5`, that space is `60,466,176`.
+Sqids blocklist. `config set --suffix-min-length` is bounded to `[4, 13]` and
+is a minimum: suffixes can grow longer as the encoded number passes the
+fixed-length space for that minimum. The fixed-length suffix space is
+`36^suffix_min_length`; with the default minimum length of `5`, that space is
+`60,466,176`.
 
 With profile storage, Hoststamp increments the selected profile's database
 counter and derives the full hostname from the profile UUID, profile config
@@ -242,17 +241,25 @@ and raising it skips part of the deterministic sequence.
 
 Use `hoststamp config show` to print the resolved bootstrap settings, selected
 profile metadata, stored profile config, and effective generator config after
-CLI request options are applied. Database URLs that could contain secrets are
-redacted.
+request options such as `--count` are applied. Database URLs that could contain
+secrets are redacted.
 
 Profile-backed suffix generation treats the selected profile config as part of
-the identity used for deterministic suffixes. If suffixes are enabled and CLI
-options differ from the stored profile config, Hoststamp asks for two
-confirmations before replacing the active profile row. Replacement creates a
-new profile UUID and resets that profile's atomic counter. `--count` is a
-request option only and does not trigger profile replacement. API requests
-cannot provide interactive confirmation, so profile config overrides are
-rejected; use the CLI to confirm a profile replacement first.
+the identity used for deterministic suffixes. Persistent generator settings are
+changed with `hoststamp config set`, which asks for two confirmations before
+replacing the active profile row. Replacement creates a new profile UUID and
+resets that profile's atomic counter. `--count` is a request option only and
+does not trigger profile replacement. API requests cannot provide interactive
+confirmation, so profile config overrides are rejected; use the CLI to confirm
+a profile replacement first.
+
+Stored profiles include the embedded dictionary artifact fingerprint. If a
+newer Hoststamp binary embeds a different dictionary artifact, profile-backed
+`generate`, `serve`, and `regenerate` fail closed for the stale profile so they
+do not emit names that cannot later be regenerated under the recorded profile
+state. Create a new profile, delete and recreate the existing profile, or use
+`config set` to replace the active profile row with the current dictionary
+artifact.
 
 SQLite storage is implemented for local profiles. `postgres://` and
 `postgresql://` URLs are recognized as planned remote storage backends, but

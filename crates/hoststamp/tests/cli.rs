@@ -4,9 +4,10 @@ use assert_cmd::Command;
 use hoststamp::{
     generator::{GenerateOptions, is_base36_suffix},
     profile::{ProfileConfig, ProfileSlug},
-    storage::{ProfileStore, StorageUrl},
+    storage::{ProfileStore, StorageUrl, config_hash},
 };
 use predicates::prelude::*;
+use rusqlite::{Connection, params};
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -24,6 +25,16 @@ fn command_for_database(database: &Path) -> Command {
         format!("sqlite://{}", database.display()),
     );
     cmd
+}
+
+fn set_default_config(database: &Path, args: &[&str]) {
+    let mut cmd = command_for_database(database);
+    cmd.arg("config")
+        .arg("set")
+        .args(args)
+        .write_stdin("_\nreplace\n")
+        .assert()
+        .success();
 }
 
 #[test]
@@ -51,13 +62,7 @@ fn help_prints_generation_flags() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
     cmd.arg("--help").assert().success().stdout(
-        predicate::str::contains("--word1-lengths")
-            .and(predicate::str::contains("--word1-categories"))
-            .and(predicate::str::contains("--word2-lengths"))
-            .and(predicate::str::contains("--word2-categories"))
-            .and(predicate::str::contains("--no-suffix"))
-            .and(predicate::str::contains("--suffix-min-length"))
-            .and(predicate::str::contains("--capacity"))
+        predicate::str::contains("--capacity")
             .and(predicate::str::contains("--json"))
             .and(predicate::str::contains("--profile"))
             .and(predicate::str::contains("--database-url"))
@@ -65,6 +70,25 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("profile"))
             .and(predicate::str::contains("config")),
     );
+}
+
+#[test]
+fn config_set_help_prints_profile_config_flags() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.args(["config", "set", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--word1-lengths")
+                .and(predicate::str::contains("--word1-categories"))
+                .and(predicate::str::contains("--word1-enabled"))
+                .and(predicate::str::contains("--word2-lengths"))
+                .and(predicate::str::contains("--word2-categories"))
+                .and(predicate::str::contains("--word2-enabled"))
+                .and(predicate::str::contains("--suffix-enabled"))
+                .and(predicate::str::contains("--suffix-min-length")),
+        );
 }
 
 #[test]
@@ -135,80 +159,49 @@ fn generate_is_the_default_command() {
 #[test]
 fn default_generate_accepts_top_level_flags() {
     let (mut cmd, _tempdir) = command_with_database();
-    let assert = cmd
-        .args([
-            "--count",
-            "2",
-            "--word1-lengths",
-            "4",
-            "--word2-lengths",
-            "4",
-            "--no-suffix",
-        ])
-        .assert()
-        .success();
+    let assert = cmd.args(["--count", "2"]).assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let hostnames = output.lines().collect::<Vec<_>>();
 
     assert_eq!(hostnames.len(), 2);
     assert!(hostnames.iter().all(|hostname| {
         let parts = hostname.split('-').collect::<Vec<_>>();
-        parts.len() == 2 && parts.iter().all(|part| part.chars().count() == 4)
+        parts.len() == 3 && parts[..2].iter().all(|part| part.chars().count() == 5)
     }));
-}
-
-#[test]
-fn serve_rejects_invalid_suffix_min_length() {
-    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
-
-    cmd.args(["serve", "--addr", "127.0.0.1:0", "--suffix-min-length", "3"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "suffix minimum length must be between",
-        ));
 }
 
 #[test]
 fn generate_supports_multiple_hostnames() {
     let (mut cmd, _tempdir) = command_with_database();
-    let assert = cmd
-        .args([
-            "generate",
-            "--count",
-            "3",
-            "--word1-categories",
-            "diceware",
-            "--word2-categories",
-            "diceware",
-            "--no-suffix",
-        ])
-        .assert()
-        .success();
+    let assert = cmd.args(["generate", "--count", "3"]).assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let hostnames = output.lines().collect::<Vec<_>>();
 
     assert_eq!(hostnames.len(), 3);
     assert!(hostnames.iter().all(|hostname| {
         let parts = hostname.split('-').collect::<Vec<_>>();
-        parts.len() == 2 && parts[0] != parts[1]
+        parts.len() == 3 && parts[0] != parts[1]
     }));
 }
 
 #[test]
 fn generate_filters_words_by_single_length() {
-    let (mut cmd, _tempdir) = command_with_database();
-    let assert = cmd
-        .args([
-            "generate",
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    set_default_config(
+        &database,
+        &[
             "--word1-lengths",
             "4",
             "--word2-lengths",
             "4",
-            "--no-suffix",
-        ])
-        .assert()
-        .success();
+            "--suffix-enabled",
+            "false",
+        ],
+    );
+
+    let mut cmd = command_for_database(&database);
+    let assert = cmd.arg("generate").assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let parts = output.trim().split('-').collect::<Vec<_>>();
 
@@ -218,18 +211,22 @@ fn generate_filters_words_by_single_length() {
 
 #[test]
 fn generate_accepts_length_set() {
-    let (mut cmd, _tempdir) = command_with_database();
-    let assert = cmd
-        .args([
-            "generate",
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    set_default_config(
+        &database,
+        &[
             "--word1-lengths",
             "4,5,6",
             "--word2-lengths",
             "4,5,6",
-            "--no-suffix",
-        ])
-        .assert()
-        .success();
+            "--suffix-enabled",
+            "false",
+        ],
+    );
+
+    let mut cmd = command_for_database(&database);
+    let assert = cmd.arg("generate").assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let parts = output.trim().split('-').collect::<Vec<_>>();
 
@@ -242,18 +239,22 @@ fn generate_accepts_length_set() {
 
 #[test]
 fn generate_accepts_any_length() {
-    let (mut cmd, _tempdir) = command_with_database();
-    let assert = cmd
-        .args([
-            "generate",
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    set_default_config(
+        &database,
+        &[
             "--word1-lengths",
             "any",
             "--word2-lengths",
             "any",
-            "--no-suffix",
-        ])
-        .assert()
-        .success();
+            "--suffix-enabled",
+            "false",
+        ],
+    );
+
+    let mut cmd = command_for_database(&database);
+    let assert = cmd.arg("generate").assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let parts = output.trim().split('-').collect::<Vec<_>>();
 
@@ -261,10 +262,10 @@ fn generate_accepts_any_length() {
 }
 
 #[test]
-fn generate_errors_when_word_filter_has_no_matches() {
+fn config_set_errors_when_word_filter_has_no_matches() {
     let (mut cmd, _tempdir) = command_with_database();
 
-    cmd.args(["generate", "--word1-lengths", "100"])
+    cmd.args(["config", "set", "--word1-lengths", "100"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("do not contain"));
@@ -282,24 +283,26 @@ fn generate_rejects_count_above_cap() {
 
 #[test]
 fn capacity_reports_word_and_suffix_space() {
-    let (mut cmd, _tempdir) = command_with_database();
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    set_default_config(
+        &database,
+        &[
+            "--word1-categories",
+            "diceware",
+            "--word2-categories",
+            "diceware",
+            "--word1-lengths",
+            "5",
+            "--word2-lengths",
+            "5",
+            "--suffix-min-length",
+            "5",
+        ],
+    );
 
-    cmd.args([
-        "--capacity",
-        "--word1-categories",
-        "diceware",
-        "--word2-categories",
-        "diceware",
-        "--word1-lengths",
-        "5",
-        "--word2-lengths",
-        "5",
-        "--suffix-min-length",
-        "5",
-    ])
-    .assert()
-    .success()
-    .stdout(
+    let mut cmd = command_for_database(&database);
+    cmd.arg("--capacity").assert().success().stdout(
         predicate::str::contains("word1_words\t")
             .and(predicate::str::contains("word2_words\t"))
             .and(predicate::str::contains("overlapping_words\t"))
@@ -322,28 +325,28 @@ fn capacity_reports_word_and_suffix_space() {
 fn capacity_reports_suffix_number_bounds() {
     let (mut cmd, _tempdir) = command_with_database();
 
-    cmd.args(["--capacity", "--suffix-min-length", "5"])
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("fixed_suffix_variants\t60,466,176")
-                .and(predicate::str::contains("suffix_bits\t25"))
-                .and(predicate::str::contains("random_fallback_min_value\t1"))
-                .and(predicate::str::contains(
-                    "random_fallback_max_value\t30,233,088",
-                ))
-                .and(predicate::str::contains("atomic_min_value\t1"))
-                .and(predicate::str::contains(
-                    "atomic_storage_max_value\t9,223,372,036,854,775,807",
-                )),
-        );
+    cmd.arg("--capacity").assert().success().stdout(
+        predicate::str::contains("fixed_suffix_variants\t60,466,176")
+            .and(predicate::str::contains("suffix_bits\t25"))
+            .and(predicate::str::contains("random_fallback_min_value\t1"))
+            .and(predicate::str::contains(
+                "random_fallback_max_value\t30,233,088",
+            ))
+            .and(predicate::str::contains("atomic_min_value\t1"))
+            .and(predicate::str::contains(
+                "atomic_storage_max_value\t9,223,372,036,854,775,807",
+            )),
+    );
 }
 
 #[test]
 fn config_show_prints_bootstrap_profile_and_effective_generate_config() {
-    let (mut cmd, _tempdir) = command_with_database();
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    set_default_config(&database, &["--word1-lengths", "4"]);
 
-    cmd.args(["config", "show", "--word1-lengths", "4", "--count", "2"])
+    let mut cmd = command_for_database(&database);
+    cmd.args(["config", "show", "--count", "2"])
         .assert()
         .success()
         .stdout(
@@ -435,20 +438,20 @@ fn profile_reset_atomic_value_sets_the_stored_counter() {
 }
 
 #[test]
-fn generate_rejects_empty_category_list() {
+fn config_set_rejects_empty_category_list() {
     let (mut cmd, _tempdir) = command_with_database();
 
-    cmd.args(["generate", "--word1-categories", ","])
+    cmd.args(["config", "set", "--word1-categories", ","])
         .assert()
         .failure()
         .stderr(predicate::str::contains("category list must not be empty"));
 }
 
 #[test]
-fn generate_rejects_unknown_category() {
+fn config_set_rejects_unknown_category() {
     let (mut cmd, _tempdir) = command_with_database();
 
-    cmd.args(["generate", "--word1-categories", "missing"])
+    cmd.args(["config", "set", "--word1-categories", "missing"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown category"));
@@ -613,29 +616,43 @@ fn regenerate_requires_profile_backed_suffixes() {
 }
 
 #[test]
-fn atomic_profile_config_replacement_requires_confirmation() {
+fn config_set_replacement_requires_confirmation() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");
     let mut cancelled = command_for_database(&database);
 
     cancelled
-        .args(["generate", "--word1-lengths", "4"])
-        .write_stdin("_\nno\n")
+        .args([
+            "config",
+            "set",
+            "--profile",
+            "team-a",
+            "--word1-lengths",
+            "4",
+        ])
+        .write_stdin("team-a\nno\n")
         .assert()
         .failure()
         .stderr(predicate::str::contains("profile replacement cancelled"));
 
     let mut confirmed = command_for_database(&database);
     confirmed
-        .args(["generate", "--word1-lengths", "4"])
-        .write_stdin("_\nreplace\n")
+        .args([
+            "config",
+            "set",
+            "--profile",
+            "team-a",
+            "--word1-lengths",
+            "4",
+        ])
+        .write_stdin("team-a\nreplace\n")
         .assert()
         .success()
         .stderr(predicate::str::contains("reset the atomic counter"));
 
     let mut reused = command_for_database(&database);
     let assert = reused
-        .args(["generate", "--word1-lengths", "4"])
+        .args(["--profile", "team-a", "generate"])
         .assert()
         .success()
         .stderr(predicate::str::is_empty());
@@ -648,10 +665,46 @@ fn atomic_profile_config_replacement_requires_confirmation() {
 }
 
 #[test]
-fn generate_rejects_suffix_min_length_below_floor() {
+fn generate_rejects_stale_dictionary_fingerprint() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let slug = ProfileSlug::default_profile();
+    let stale_config = ProfileConfig {
+        dictionary_fingerprint: "old".to_owned(),
+        ..ProfileConfig::default()
+    };
+    let mut store = ProfileStore::open(&StorageUrl::Sqlite(database.clone())).expect("store");
+    store
+        .load_or_seed_profile(&slug, &stale_config)
+        .expect("profile");
+    drop(store);
+
+    let stale_json = serde_json::to_string(&stale_config).expect("json");
+    let stale_hash = config_hash(&stale_config).expect("hash");
+    Connection::open(&database)
+        .expect("connection")
+        .execute(
+            "UPDATE hoststamp_profiles
+             SET config_json = ?1, config_hash = ?2
+             WHERE slug = ?3 AND replaced_at_ms IS NULL",
+            params![stale_json, stale_hash.as_slice(), slug.as_str()],
+        )
+        .expect("stale profile");
+
+    let mut cmd = command_for_database(&database);
+    cmd.arg("generate")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "profile-backed generation cannot run safely across dictionary changes",
+        ));
+}
+
+#[test]
+fn config_set_rejects_suffix_min_length_below_floor() {
     let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
 
-    cmd.args(["generate", "--suffix-min-length", "3"])
+    cmd.args(["config", "set", "--suffix-min-length", "3"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -661,11 +714,15 @@ fn generate_rejects_suffix_min_length_below_floor() {
 
 #[test]
 fn generate_can_disable_word2() {
-    let (mut cmd, _tempdir) = command_with_database();
-    let assert = cmd
-        .args(["generate", "--no-word2", "--no-suffix"])
-        .assert()
-        .success();
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    set_default_config(
+        &database,
+        &["--word2-enabled", "false", "--suffix-enabled", "false"],
+    );
+
+    let mut cmd = command_for_database(&database);
+    let assert = cmd.arg("generate").assert().success();
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let parts = output.trim().split('-').collect::<Vec<_>>();
 
@@ -674,11 +731,20 @@ fn generate_can_disable_word2() {
 }
 
 #[test]
-fn generate_rejects_all_positions_disabled() {
+fn config_set_rejects_all_positions_disabled() {
     let (mut cmd, _tempdir) = command_with_database();
 
-    cmd.args(["generate", "--no-word1", "--no-word2", "--no-suffix"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("at least one position"));
+    cmd.args([
+        "config",
+        "set",
+        "--word1-enabled",
+        "false",
+        "--word2-enabled",
+        "false",
+        "--suffix-enabled",
+        "false",
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("at least one position"));
 }

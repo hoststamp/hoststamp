@@ -55,41 +55,9 @@ struct GenerateArgs {
     #[arg(long, global = true)]
     list_categories: bool,
 
-    /// Print capacity for the selected generation options.
+    /// Print capacity for the selected profile configuration.
     #[arg(long, global = true)]
     capacity: bool,
-
-    /// Disable the first word position.
-    #[arg(long = "no-word1", global = true, action = clap::ArgAction::SetTrue)]
-    no_word1: bool,
-
-    /// Allowed lengths for the first word (comma list or "any").
-    #[arg(long, global = true, value_name = "LENGTHS")]
-    word1_lengths: Option<String>,
-
-    /// Comma-separated categories for the first word position.
-    #[arg(long, global = true, value_name = "CATEGORIES")]
-    word1_categories: Option<String>,
-
-    /// Disable the second word position.
-    #[arg(long = "no-word2", global = true, action = clap::ArgAction::SetTrue)]
-    no_word2: bool,
-
-    /// Allowed lengths for the second word (comma list or "any").
-    #[arg(long, global = true, value_name = "LENGTHS")]
-    word2_lengths: Option<String>,
-
-    /// Comma-separated categories for the second word position.
-    #[arg(long, global = true, value_name = "CATEGORIES")]
-    word2_categories: Option<String>,
-
-    /// Disable the suffix segment.
-    #[arg(long = "no-suffix", global = true, action = clap::ArgAction::SetTrue)]
-    no_suffix: bool,
-
-    /// Minimum number of lowercase alphanumeric characters in the suffix.
-    #[arg(long, global = true, value_parser = generator::parse_suffix_min_length)]
-    suffix_min_length: Option<usize>,
 
     /// Number of hostnames to generate.
     #[arg(long, global = true, value_parser = generator::parse_count)]
@@ -102,59 +70,92 @@ struct GenerateArgs {
 
 impl GenerateArgs {
     fn has_generation_request_options(&self) -> bool {
-        self.capacity
-            || self.no_word1
-            || self.word1_lengths.is_some()
-            || self.word1_categories.is_some()
-            || self.no_word2
-            || self.word2_lengths.is_some()
-            || self.word2_categories.is_some()
-            || self.no_suffix
-            || self.suffix_min_length.is_some()
-            || self.count.is_some()
+        self.capacity || self.count.is_some()
     }
 
-    fn options(&self, base: GenerateOptions) -> anyhow::Result<GenerateOptions> {
-        let word1_categories = match self.word1_categories.as_deref() {
-            Some(value) => generator::parse_categories(value).map_err(anyhow::Error::msg)?,
-            None => base.word1_categories.clone(),
-        };
-        let word2_categories = match self.word2_categories.as_deref() {
-            Some(value) => generator::parse_categories(value).map_err(anyhow::Error::msg)?,
-            None => base.word2_categories.clone(),
-        };
-        let word1_lengths = match self.word1_lengths.as_deref() {
-            Some(value) => generator::parse_lengths(value).map_err(anyhow::Error::msg)?,
-            None => base.word1_lengths.clone(),
-        };
-        let word2_lengths = match self.word2_lengths.as_deref() {
-            Some(value) => generator::parse_lengths(value).map_err(anyhow::Error::msg)?,
-            None => base.word2_lengths.clone(),
-        };
-
-        Ok(GenerateOptions {
-            word1_enabled: if self.no_word1 {
-                false
-            } else {
-                base.word1_enabled
-            },
-            word1_lengths,
-            word1_categories,
-            word2_enabled: if self.no_word2 {
-                false
-            } else {
-                base.word2_enabled
-            },
-            word2_lengths,
-            word2_categories,
-            suffix_enabled: if self.no_suffix {
-                false
-            } else {
-                base.suffix_enabled
-            },
-            suffix_min_length: self.suffix_min_length.unwrap_or(base.suffix_min_length),
+    fn options(&self, base: GenerateOptions) -> GenerateOptions {
+        GenerateOptions {
             count: self.count.unwrap_or(base.count),
-        })
+            ..base
+        }
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+struct ConfigSetArgs {
+    /// Enable or disable the first word position.
+    #[arg(long)]
+    word1_enabled: Option<bool>,
+
+    /// Allowed lengths for the first word (comma list or "any").
+    #[arg(long, value_name = "LENGTHS")]
+    word1_lengths: Option<String>,
+
+    /// Comma-separated categories for the first word position.
+    #[arg(long, value_name = "CATEGORIES")]
+    word1_categories: Option<String>,
+
+    /// Enable or disable the second word position.
+    #[arg(long)]
+    word2_enabled: Option<bool>,
+
+    /// Allowed lengths for the second word (comma list or "any").
+    #[arg(long, value_name = "LENGTHS")]
+    word2_lengths: Option<String>,
+
+    /// Comma-separated categories for the second word position.
+    #[arg(long, value_name = "CATEGORIES")]
+    word2_categories: Option<String>,
+
+    /// Enable or disable the suffix segment.
+    #[arg(long)]
+    suffix_enabled: Option<bool>,
+
+    /// Minimum number of lowercase alphanumeric characters in the suffix.
+    #[arg(long, value_parser = generator::parse_suffix_min_length)]
+    suffix_min_length: Option<usize>,
+}
+
+impl ConfigSetArgs {
+    fn is_empty(&self) -> bool {
+        self.word1_enabled.is_none()
+            && self.word1_lengths.is_none()
+            && self.word1_categories.is_none()
+            && self.word2_enabled.is_none()
+            && self.word2_lengths.is_none()
+            && self.word2_categories.is_none()
+            && self.suffix_enabled.is_none()
+            && self.suffix_min_length.is_none()
+    }
+
+    fn apply(&self, mut config: ProfileConfig) -> anyhow::Result<ProfileConfig> {
+        if let Some(enabled) = self.word1_enabled {
+            config.word1.enabled = enabled;
+        }
+        if let Some(value) = self.word1_lengths.as_deref() {
+            config.word1.lengths = generator::parse_lengths(value).map_err(anyhow::Error::msg)?;
+        }
+        if let Some(value) = self.word1_categories.as_deref() {
+            config.word1.categories =
+                generator::parse_categories(value).map_err(anyhow::Error::msg)?;
+        }
+        if let Some(enabled) = self.word2_enabled {
+            config.word2.enabled = enabled;
+        }
+        if let Some(value) = self.word2_lengths.as_deref() {
+            config.word2.lengths = generator::parse_lengths(value).map_err(anyhow::Error::msg)?;
+        }
+        if let Some(value) = self.word2_categories.as_deref() {
+            config.word2.categories =
+                generator::parse_categories(value).map_err(anyhow::Error::msg)?;
+        }
+        if let Some(enabled) = self.suffix_enabled {
+            config.suffix.enabled = enabled;
+        }
+        if let Some(min_length) = self.suffix_min_length {
+            config.suffix.min_length = min_length;
+        }
+        Ok(config)
     }
 }
 
@@ -195,6 +196,8 @@ enum Command {
 enum ConfigCommand {
     /// Print the resolved bootstrap and profile configuration.
     Show,
+    /// Persist selected generator settings on the active profile.
+    Set(ConfigSetArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -249,20 +252,41 @@ async fn main() -> anyhow::Result<()> {
             print!("{}", notices::text());
             Ok(())
         }
-        Command::Config {
-            command: ConfigCommand::Show,
-        } => {
+        Command::Config { command } => {
             let settings = config::load(Overrides {
                 config_path: cli.config.clone(),
                 addr: None,
                 database_url: cli.database_url.clone(),
             })?;
             let mut store = ProfileStore::open(&settings.database_url)?;
-            let profile = store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
-            let base = profile.config.to_generate_options(generator::DEFAULT_COUNT);
-            let options = cli.generate.options(base)?;
-            print_config_show(&settings, &profile, &options);
-            Ok(())
+            match command {
+                ConfigCommand::Show => {
+                    let profile =
+                        store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+                    let base = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+                    let options = cli.generate.options(base);
+                    print_config_show(&settings, &profile, &options);
+                    Ok(())
+                }
+                ConfigCommand::Set(args) => {
+                    if args.is_empty() {
+                        anyhow::bail!("config set requires at least one setting");
+                    }
+                    let profile =
+                        store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+                    let desired_config = args.apply(profile.config.clone())?;
+                    let options = desired_config.to_generate_options(generator::DEFAULT_COUNT);
+                    generator::validate_generate_options(&options)?;
+                    if desired_config == profile.config {
+                        print_profile_show(&profile);
+                        return Ok(());
+                    }
+                    confirm_profile_config_replacement(&profile)?;
+                    let profile = store.replace_profile_config(&profile.slug, &desired_config)?;
+                    print_profile_show(&profile);
+                    Ok(())
+                }
+            }
         }
         Command::Profile { command } => {
             let settings = config::load(Overrides {
@@ -311,13 +335,13 @@ async fn main() -> anyhow::Result<()> {
             let mut store = ProfileStore::open(&settings.database_url)?;
             let profile = store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
             let base = profile.config.to_generate_options(generator::DEFAULT_COUNT);
-            let options = cli.generate.options(base)?;
+            let options = cli.generate.options(base);
             if cli.generate.capacity {
                 print_capacity_report(&options)?;
                 return Ok(());
             }
+            ensure_profile_dictionary_is_current(&profile)?;
             generator::validate_generate_options(&options)?;
-            let profile = reconcile_atomic_profile(&mut store, profile, &options)?;
             let hostnames = generate_with_profile(options, &mut store, &profile)?;
             if cli.generate.json {
                 println!(
@@ -400,13 +424,13 @@ async fn main() -> anyhow::Result<()> {
             let mut store = ProfileStore::open(&settings.database_url)?;
             let profile = store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
             let base = profile.config.to_generate_options(generator::DEFAULT_COUNT);
-            let options = cli.generate.options(base)?;
+            let options = cli.generate.options(base);
             if cli.generate.capacity {
                 print_capacity_report(&options)?;
                 return Ok(());
             }
+            ensure_profile_dictionary_is_current(&profile)?;
             generator::validate_generate_options(&options)?;
-            let profile = reconcile_atomic_profile(&mut store, profile, &options)?;
             let atomic = server::AtomicContext::new(store, profile.slug);
             server::serve_with_atomic(settings.addr, options, atomic)
                 .await
@@ -659,31 +683,13 @@ fn hex_string(bytes: &[u8]) -> String {
     hex
 }
 
-fn reconcile_atomic_profile(
-    store: &mut ProfileStore,
-    profile: StoredProfile,
-    options: &GenerateOptions,
-) -> anyhow::Result<StoredProfile> {
-    if !options.suffix_enabled {
-        return Ok(profile);
-    }
-
-    let desired_config = ProfileConfig::from(options);
-    if desired_config == profile.config {
-        return Ok(profile);
-    }
-
-    confirm_atomic_profile_replacement(&profile)?;
-    store.replace_profile_config(&profile.slug, &desired_config)
-}
-
 fn ensure_profile_dictionary_is_current(profile: &StoredProfile) -> anyhow::Result<()> {
     if profile.config.uses_current_dictionary() {
         return Ok(());
     }
 
     anyhow::bail!(
-        "profile {:?} was created with dictionary artifact {}, but this binary uses {}; regenerate cannot run safely across dictionary changes",
+        "profile {:?} was created with dictionary artifact {}, but this binary uses {}; profile-backed generation cannot run safely across dictionary changes",
         profile.slug.as_str(),
         profile.config.dictionary_fingerprint,
         dictionary::artifact_sha256()
@@ -807,7 +813,7 @@ fn confirm_atomic_value_reset(profile: &StoredProfile, atomic_value: i64) -> any
     Ok(())
 }
 
-fn confirm_atomic_profile_replacement(profile: &StoredProfile) -> anyhow::Result<()> {
+fn confirm_profile_config_replacement(profile: &StoredProfile) -> anyhow::Result<()> {
     let mut stderr = io::stderr();
     writeln!(
         stderr,
@@ -815,7 +821,7 @@ fn confirm_atomic_profile_replacement(profile: &StoredProfile) -> anyhow::Result
     )?;
     writeln!(
         stderr,
-        "Profile {:?} differs from the requested generator options.",
+        "Profile {:?} differs from the requested profile configuration.",
         profile.slug.as_str()
     )?;
     writeln!(
@@ -832,7 +838,7 @@ fn confirm_atomic_profile_replacement(profile: &StoredProfile) -> anyhow::Result
     let mut first = String::new();
     if io::stdin().read_line(&mut first)? == 0 {
         anyhow::bail!(
-            "profile replacement requires interactive confirmation; re-run interactively, use matching profile options, or pass --no-suffix"
+            "profile replacement requires interactive confirmation; re-run interactively or use matching profile config settings"
         );
     }
     if first.trim() != profile.slug.as_str() {
@@ -845,7 +851,7 @@ fn confirm_atomic_profile_replacement(profile: &StoredProfile) -> anyhow::Result
     let mut second = String::new();
     if io::stdin().read_line(&mut second)? == 0 {
         anyhow::bail!(
-            "profile replacement requires interactive confirmation; re-run interactively, use matching profile options, or pass --no-suffix"
+            "profile replacement requires interactive confirmation; re-run interactively or use matching profile config settings"
         );
     }
     if !second.trim().eq_ignore_ascii_case("replace") {
