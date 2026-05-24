@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use assert_cmd::Command;
-use hoststamp::{
+use hoststamp_core::{
     generator::{GenerateOptions, is_base36_suffix},
     profile::{ProfileConfig, ProfileSlug},
     storage::{ProfileStore, StorageUrl, config_hash},
@@ -90,6 +90,16 @@ fn config_set_help_prints_profile_config_flags() {
                 .and(predicate::str::contains("--suffix-enabled"))
                 .and(predicate::str::contains("--suffix-min-length")),
         );
+}
+
+#[test]
+fn serve_help_prints_mode_option() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.args(["serve", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--mode"));
 }
 
 #[test]
@@ -816,7 +826,7 @@ fn generate_rejects_stale_dictionary_pool_hash() {
     let database = tempdir.path().join("hoststamp.db");
     let slug = ProfileSlug::default_profile();
     let stale_config = ProfileConfig {
-        word1: hoststamp::profile::WordProfileConfig {
+        word1: hoststamp_core::profile::WordProfileConfig {
             pool_hash: Some("old".to_owned()),
             ..ProfileConfig::default().word1
         },

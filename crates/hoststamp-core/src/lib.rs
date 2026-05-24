@@ -7,8 +7,6 @@ pub mod dictionary;
 pub mod generator;
 pub mod notices;
 pub mod profile;
-pub mod server;
 pub mod storage;
-pub mod ux;
 
 pub const SERVICE_NAME: &str = "hoststamp";

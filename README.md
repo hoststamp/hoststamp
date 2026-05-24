@@ -12,10 +12,13 @@ cargo run -p hoststamp -- serve
 ```
 
 The server binds to `127.0.0.1:8080` by default. Set `HOSTSTAMP_ADDR`
-or pass `--addr` to choose another bind address.
+or pass `--addr` to choose another bind address. `serve` exposes the API and
+local UX by default; use `--mode api` or `--mode ux` to run only one surface.
 
 ```sh
 cargo run -p hoststamp -- serve --addr 0.0.0.0:8080
+cargo run -p hoststamp -- serve --mode api
+cargo run -p hoststamp -- serve --mode ux
 cargo run -p hoststamp -- health
 cargo run -p hoststamp -- --version
 cargo run -p hoststamp -- --credits
@@ -389,6 +392,18 @@ mise run ci
 
 Run individual `mise` tasks when you only need one check. Tool versions are
 pinned in `mise.toml` and locked in `mise.lock`.
+
+### Crate layout
+
+The workspace is split so applications can reuse Hoststamp without running it
+as a microservice:
+
+| Crate | Purpose |
+| --- | --- |
+| `hoststamp-core` | reusable generator, dictionary, profile, storage, config, auth, and notices code |
+| `hoststamp-api` | Axum API server routes and serving helpers |
+| `hoststamp-ux` | local UX shell assets and route handler |
+| `hoststamp` | CLI binary that composes the core, API, and UX crates |
 
 ### Docker
 

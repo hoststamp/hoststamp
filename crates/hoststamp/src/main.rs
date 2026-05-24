@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use anyhow::Context;
-use clap::{Args, Parser, Subcommand};
-use hoststamp::{
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use hoststamp_api as server;
+use hoststamp_core::{
     SERVICE_NAME, auth,
     config::{self, Overrides},
     credits, dictionary,
     generator::{self, GenerateOptions, ProfileGeneratedHostname},
     notices,
     profile::{self, ProfileAccess, ProfileConfig, ProfileSlug},
-    server,
     storage::{self, ProfileStore, StoredProfile, StoredProfileToken},
 };
 use std::{
@@ -193,6 +193,10 @@ enum Command {
         /// Address the server should bind to.
         #[arg(long)]
         addr: Option<SocketAddr>,
+
+        /// Server surfaces to expose.
+        #[arg(long, value_enum, default_value_t = ServeMode::All)]
+        mode: ServeMode,
     },
     /// Print generated third-party notices.
     #[command(hide = true)]
@@ -236,6 +240,26 @@ enum ProfileCommand {
         #[arg(long, value_parser = parse_stored_atomic_value)]
         atomic_value: i64,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ServeMode {
+    /// Serve API routes and the local UX.
+    All,
+    /// Serve API routes without the local UX.
+    Api,
+    /// Serve the local UX without API routes.
+    Ux,
+}
+
+impl From<ServeMode> for server::AppMode {
+    fn from(mode: ServeMode) -> Self {
+        match mode {
+            ServeMode::All => Self::All,
+            ServeMode::Api => Self::Api,
+            ServeMode::Ux => Self::Ux,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -517,7 +541,7 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Serve { addr } => {
+        Command::Serve { addr, mode } => {
             let settings = config::load(Overrides {
                 config_path: cli.config.clone(),
                 addr,
@@ -539,9 +563,15 @@ async fn main() -> anyhow::Result<()> {
             ensure_profile_dictionary_is_current(&profile)?;
             generator::validate_generate_options(&options)?;
             let atomic = server::AtomicContext::new(store, profile.slug);
-            server::serve_with_atomic(settings.addr, options, atomic, settings.auth)
-                .await
-                .context("server failed")
+            server::serve_with_atomic_and_mode(
+                settings.addr,
+                options,
+                atomic,
+                settings.auth,
+                mode.into(),
+            )
+            .await
+            .context("server failed")
         }
     }
 }

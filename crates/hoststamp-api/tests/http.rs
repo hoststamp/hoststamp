@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use axum::{body::Body, http};
-use hoststamp::{
+use hoststamp_api as server;
+use hoststamp_core::{
     auth::{self, ApiAuthConfig, SecretString},
     generator::{GenerateOptions, is_base36_suffix},
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
-    server,
     storage::{ProfileStore, StorageUrl},
 };
 use http_body_util::BodyExt;
@@ -126,6 +126,59 @@ async fn root_serves_local_ux() {
 
     assert!(html.contains("Hoststamp"));
     assert!(html.contains("/api/health"));
+}
+
+#[tokio::test]
+async fn api_mode_does_not_serve_local_ux() {
+    let response = server::app_with_mode(
+        GenerateOptions::default(),
+        None,
+        ApiAuthConfig::default(),
+        server::AppMode::Api,
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn ux_mode_does_not_serve_api_routes() {
+    let app = server::app_with_mode(
+        GenerateOptions::default(),
+        None,
+        ApiAuthConfig::default(),
+        server::AppMode::Ux,
+    );
+
+    let root = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(root.status(), http::StatusCode::OK);
+
+    let api = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/health")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(api.status(), http::StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

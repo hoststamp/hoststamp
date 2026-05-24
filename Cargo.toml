@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
 [workspace]
-members = ["crates/hoststamp"]
+members = [
+    "crates/hoststamp",
+    "crates/hoststamp-api",
+    "crates/hoststamp-core",
+    "crates/hoststamp-ux",
+]
 resolver = "3"
 
 [workspace.package]

@@ -584,24 +584,58 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
- "axum",
  "clap",
- "hmac",
- "http-body-util",
+ "hoststamp-api",
+ "hoststamp-core",
  "predicates",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "hoststamp-api"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "hoststamp-core",
+ "hoststamp-ux",
+ "http-body-util",
  "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "hoststamp-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hmac",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "sqids",
  "tempfile",
- "tokio",
  "toml",
- "tower",
- "tracing",
- "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "hoststamp-ux"
+version = "0.0.0"
+dependencies = [
+ "axum",
 ]
 
 [[package]]

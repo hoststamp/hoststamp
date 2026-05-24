@@ -1,16 +1,5 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-use crate::{
-    SERVICE_NAME,
-    auth::{
-        ApiAuthConfig, constant_time_eq, generate_profile_token, parse_profile_token,
-        profile_token_hash, verify_profile_token_hash,
-    },
-    generator::{self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname},
-    profile::{ProfileAccess, ProfileConfig, ProfileSlug},
-    storage::{ProfileStore, StoredProfile, StoredProfileToken},
-    ux,
-};
 use anyhow::anyhow;
 use axum::{
     Json, Router,
@@ -19,10 +8,27 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
+use hoststamp_core::{
+    SERVICE_NAME,
+    auth::{
+        ApiAuthConfig, constant_time_eq, generate_profile_token, parse_profile_token,
+        profile_token_hash, verify_profile_token_hash,
+    },
+    generator::{self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname},
+    profile::{ProfileAccess, ProfileConfig, ProfileSlug},
+    storage::{ProfileStore, StoredProfile, StoredProfileToken},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fmt, net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, signal, sync::Mutex};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMode {
+    All,
+    Api,
+    Ux,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -258,50 +264,63 @@ pub fn app_with_auth(
     atomic: Option<AtomicContext>,
     auth: ApiAuthConfig,
 ) -> Router {
-    Router::new()
-        .route("/", get(ux::index))
-        .route("/healthz", get(healthz))
-        .route("/api/health", get(healthz))
-        .route(
-            "/api/generate",
-            post(generate_one).get(generate_method_not_allowed),
-        )
-        .route("/api/regenerate", get(regenerate_one))
-        .route("/api/random", get(random_one))
-        .route(
-            "/api/profiles",
-            get(admin_list_profiles).post(admin_create_profile),
-        )
-        .route(
-            "/api/profiles/{slug}",
-            get(admin_show_profile).delete(admin_delete_profile),
-        )
-        .route(
-            "/api/profiles/{slug}/config",
-            patch(admin_update_profile_config),
-        )
-        .route(
-            "/api/profiles/{slug}/access",
-            patch(admin_update_profile_access),
-        )
-        .route(
-            "/api/profiles/{slug}/tokens",
-            get(admin_list_profile_tokens).post(admin_create_profile_token),
-        )
-        .route(
-            "/api/profiles/{slug}/tokens/{token_id}",
-            delete(admin_revoke_profile_token),
-        )
-        .route(
-            "/api/profiles/{slug}/reset-atomic-value",
-            post(admin_reset_atomic_value),
-        )
-        .fallback(not_found)
-        .with_state(AppState {
-            generate: generate_options,
-            atomic,
-            auth,
-        })
+    app_with_mode(generate_options, atomic, auth, AppMode::All)
+}
+
+pub fn app_with_mode(
+    generate_options: GenerateOptions,
+    atomic: Option<AtomicContext>,
+    auth: ApiAuthConfig,
+    mode: AppMode,
+) -> Router {
+    let mut router = Router::new().route("/healthz", get(healthz));
+    if matches!(mode, AppMode::All | AppMode::Ux) {
+        router = router.route("/", get(hoststamp_ux::index));
+    }
+    if matches!(mode, AppMode::All | AppMode::Api) {
+        router = router
+            .route("/api/health", get(healthz))
+            .route(
+                "/api/generate",
+                post(generate_one).get(generate_method_not_allowed),
+            )
+            .route("/api/regenerate", get(regenerate_one))
+            .route("/api/random", get(random_one))
+            .route(
+                "/api/profiles",
+                get(admin_list_profiles).post(admin_create_profile),
+            )
+            .route(
+                "/api/profiles/{slug}",
+                get(admin_show_profile).delete(admin_delete_profile),
+            )
+            .route(
+                "/api/profiles/{slug}/config",
+                patch(admin_update_profile_config),
+            )
+            .route(
+                "/api/profiles/{slug}/access",
+                patch(admin_update_profile_access),
+            )
+            .route(
+                "/api/profiles/{slug}/tokens",
+                get(admin_list_profile_tokens).post(admin_create_profile_token),
+            )
+            .route(
+                "/api/profiles/{slug}/tokens/{token_id}",
+                delete(admin_revoke_profile_token),
+            )
+            .route(
+                "/api/profiles/{slug}/reset-atomic-value",
+                post(admin_reset_atomic_value),
+            );
+    }
+
+    router.fallback(not_found).with_state(AppState {
+        generate: generate_options,
+        atomic,
+        auth,
+    })
 }
 
 pub fn health_payload() -> Health {
@@ -551,7 +570,7 @@ async fn admin_create_profile_token(
     let hash_key = state.auth.token_hash_key.as_ref().ok_or_else(|| {
         admin_bad_request_response(format!(
             "{} is required to create profile tokens",
-            crate::auth::PROFILE_TOKEN_HASH_KEY_ENV
+            hoststamp_core::auth::PROFILE_TOKEN_HASH_KEY_ENV
         ))
     })?;
     let profile = store
@@ -1184,12 +1203,23 @@ pub async fn serve_with_atomic(
     atomic: AtomicContext,
     auth: ApiAuthConfig,
 ) -> std::io::Result<()> {
+    serve_with_atomic_and_mode(addr, generate, atomic, auth, AppMode::All).await
+}
+
+pub async fn serve_with_atomic_and_mode(
+    addr: SocketAddr,
+    generate: GenerateOptions,
+    atomic: AtomicContext,
+    auth: ApiAuthConfig,
+    mode: AppMode,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     serve_with_shutdown_with_options_and_atomic(
         listener,
         generate,
         Some(atomic),
         auth,
+        mode,
         shutdown_signal(),
     )
     .await
@@ -1215,6 +1245,7 @@ where
         generate,
         None,
         ApiAuthConfig::default(),
+        AppMode::All,
         shutdown,
     )
     .await
@@ -1225,6 +1256,7 @@ pub async fn serve_with_shutdown_with_options_and_atomic<F>(
     generate: GenerateOptions,
     atomic: Option<AtomicContext>,
     auth: ApiAuthConfig,
+    mode: AppMode,
     shutdown: F,
 ) -> std::io::Result<()>
 where
@@ -1232,7 +1264,7 @@ where
 {
     let bound = listener.local_addr()?;
     tracing::info!(%bound, "hoststamp listening");
-    axum::serve(listener, app_with_auth(generate, atomic, auth))
+    axum::serve(listener, app_with_mode(generate, atomic, auth, mode))
         .with_graceful_shutdown(shutdown)
         .await
 }
