@@ -21,6 +21,7 @@ cargo run -p hoststamp -- --version
 cargo run -p hoststamp -- --credits
 cargo run -p hoststamp -- --list-categories
 cargo run -p hoststamp -- generate
+cargo run -p hoststamp -- regenerate --atomic-value 42
 cargo run -p hoststamp -- config show
 cargo run -p hoststamp -- --profile staging generate
 ```
@@ -38,6 +39,7 @@ cargo run -p hoststamp -- generate --suffix-min-length 10
 cargo run -p hoststamp -- generate --no-suffix
 cargo run -p hoststamp -- generate --no-word2 --no-suffix
 cargo run -p hoststamp -- --profile team-a generate
+cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
 cargo run -p hoststamp -- --capacity --word1-lengths 5 --word2-lengths 5
 ```
 
@@ -69,13 +71,16 @@ for that minimum. The fixed-length suffix space is `36^suffix_min_length`; with
 the default minimum length of `5`, that space is `60,466,176`.
 
 With profile storage, Hoststamp increments the selected profile's database
-counter and encodes that atomic value with Sqids. The profile UUID is used to
-derive a deterministic profile-specific alphabet, so each profile gets a
-different-looking sequence while keeping the uniqueness guarantee scoped to the
-active profile row. Without profile storage, Hoststamp encodes a random number
-from `1..=(36^suffix_min_length / 2)`. That fallback keeps the suffix inside
-the requested minimum length range, but it is not uniqueness-tracked or
-reproducible.
+counter and derives the full hostname from the profile UUID, profile config
+hash, and atomic value. Word choices walk a deterministic permutation of the
+valid word space, so each valid word pair is used once before that profile
+cycle repeats. The suffix encodes the same atomic value with Sqids. The profile
+UUID also derives a deterministic profile-specific suffix alphabet, so each
+profile gets a different-looking sequence while keeping the uniqueness
+guarantee scoped to the active profile row. Without profile storage, Hoststamp
+encodes a random number from `1..=(36^suffix_min_length / 2)`. That fallback
+keeps the suffix inside the requested minimum length range, but it is not
+uniqueness-tracked or reproducible.
 
 Sqids can expand past the configured minimum length. For example,
 `--suffix-min-length 5` keeps profile-backed atomic values `1..=60,466,176`
@@ -129,6 +134,16 @@ Category stats from the generated artifact:
 
 Run `hoststamp --list-categories` for the category names and total counts
 compiled into the binary.
+
+Use `hoststamp regenerate --atomic-value <n>` to reproduce the hostname for a
+stored profile atomic value. Regeneration uses only the selected profile
+(`--profile`, default `_`) and the atomic value; it does not increment the
+counter, and generation option flags are rejected by design. The requested
+atomic value must already have been issued by the active profile generation.
+It requires suffixes to be enabled for the stored profile because atomic values
+are tracked only for profile-backed suffix generation. Stored profiles include
+the embedded dictionary artifact fingerprint, and Hoststamp will not regenerate
+across dictionary artifact changes.
 
 Local endpoints:
 

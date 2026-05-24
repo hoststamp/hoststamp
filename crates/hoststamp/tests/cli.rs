@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use assert_cmd::Command;
-use hoststamp::generator::is_base36_suffix;
+use hoststamp::{
+    generator::{GenerateOptions, is_base36_suffix},
+    profile::{ProfileConfig, ProfileSlug},
+    storage::{ProfileStore, StorageUrl},
+};
 use predicates::prelude::*;
 use std::path::Path;
 use tempfile::TempDir;
@@ -56,6 +60,7 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("--capacity"))
             .and(predicate::str::contains("--profile"))
             .and(predicate::str::contains("--database-url"))
+            .and(predicate::str::contains("regenerate"))
             .and(predicate::str::contains("config")),
     );
 }
@@ -383,6 +388,99 @@ fn generate_uses_profile_backed_suffix_by_default() {
         let parts = hostname.split('-').collect::<Vec<_>>();
         parts.len() == 3 && parts[2].len() >= 5 && is_base36_suffix(parts[2])
     }));
+}
+
+#[test]
+fn regenerate_recreates_profile_hostname_without_incrementing_counter() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate
+        .args(["generate", "--count", "2"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.lines().collect::<Vec<_>>();
+    assert_eq!(generated.len(), 2);
+
+    let mut regenerate_first = command_for_database(&database);
+    regenerate_first
+        .args(["regenerate", "--atomic-value", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(generated[0]));
+
+    let mut regenerate_second = command_for_database(&database);
+    regenerate_second
+        .args(["regenerate", "--atomic-value", "2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(generated[1]));
+
+    let mut show = command_for_database(&database);
+    show.args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("last_atomic_value = 2"));
+}
+
+#[test]
+fn regenerate_rejects_invalid_atomic_value() {
+    let (mut cmd, _tempdir) = command_with_database();
+
+    cmd.args(["regenerate", "--atomic-value", "0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("atomic value must be at least 1"));
+}
+
+#[test]
+fn regenerate_rejects_values_that_have_not_been_issued() {
+    let (mut generate, tempdir) = command_with_database();
+    generate.arg("generate").assert().success();
+
+    let database = tempdir.path().join("hoststamp.db");
+    let mut regenerate = command_for_database(&database);
+    regenerate
+        .args(["regenerate", "--atomic-value", "2"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("was never generated"));
+}
+
+#[test]
+fn regenerate_rejects_generation_options() {
+    let (mut cmd, _tempdir) = command_with_database();
+
+    cmd.args(["regenerate", "--atomic-value", "1", "--count", "2"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "regenerate only supports --profile and --atomic-value",
+        ));
+}
+
+#[test]
+fn regenerate_requires_profile_backed_suffixes() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut store = ProfileStore::open(&StorageUrl::Sqlite(database.clone())).expect("store");
+    let config = ProfileConfig::from(&GenerateOptions {
+        suffix_enabled: false,
+        ..GenerateOptions::default()
+    });
+    store
+        .load_or_seed_profile(&ProfileSlug::default_profile(), &config)
+        .expect("profile");
+
+    let mut cmd = command_for_database(&database);
+    cmd.args(["regenerate", "--atomic-value", "1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "atomic values are only tracked when suffixes are enabled",
+        ));
 }
 
 #[test]

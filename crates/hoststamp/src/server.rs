@@ -164,12 +164,12 @@ async fn generate_with_state(
 
                 let profile_id = profile.id;
                 let profile_slug = profile.slug;
-                let suffix_min_length = options.suffix_min_length;
-                return generator::generate_many_with_suffix(options, || {
-                    let atomic_value = store
+                let config_hash = profile.config_hash;
+                return generator::generate_profile_many(options, profile_id, &config_hash, || {
+                    store
                         .increment_atomic_value(&profile_slug)
-                        .map_err(AtomicStorageError)?;
-                    generator::compute_profile_suffix(profile_id, atomic_value, suffix_min_length)
+                        .map_err(AtomicStorageError)
+                        .map_err(Into::into)
                 })
                 .map_err(|error| {
                     if error.downcast_ref::<AtomicStorageError>().is_some() {

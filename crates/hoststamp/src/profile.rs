@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-use crate::generator::GenerateOptions;
+use crate::{dictionary, generator::GenerateOptions};
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
@@ -74,6 +74,7 @@ pub fn parse_profile_slug(value: &str) -> Result<ProfileSlug, String> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileConfig {
+    pub dictionary_fingerprint: String,
     pub word1: WordProfileConfig,
     pub word2: WordProfileConfig,
     pub suffix: SuffixProfileConfig,
@@ -88,6 +89,7 @@ impl Default for ProfileConfig {
 impl From<&GenerateOptions> for ProfileConfig {
     fn from(options: &GenerateOptions) -> Self {
         Self {
+            dictionary_fingerprint: dictionary::artifact_sha256().to_owned(),
             word1: WordProfileConfig {
                 enabled: options.word1_enabled,
                 lengths: options.word1_lengths.clone(),
@@ -107,6 +109,10 @@ impl From<&GenerateOptions> for ProfileConfig {
 }
 
 impl ProfileConfig {
+    pub fn uses_current_dictionary(&self) -> bool {
+        self.dictionary_fingerprint == dictionary::artifact_sha256()
+    }
+
     pub fn to_generate_options(&self, count: usize) -> GenerateOptions {
         GenerateOptions {
             word1_enabled: self.word1.enabled,
@@ -174,5 +180,16 @@ mod tests {
             options.word1_lengths,
             Some(vec![generator::DEFAULT_WORD_LENGTH])
         );
+        assert!(profile.uses_current_dictionary());
+    }
+
+    #[test]
+    fn detects_stale_dictionary_fingerprint() {
+        let profile = ProfileConfig {
+            dictionary_fingerprint: "old".to_owned(),
+            ..ProfileConfig::default()
+        };
+
+        assert!(!profile.uses_current_dictionary());
     }
 }

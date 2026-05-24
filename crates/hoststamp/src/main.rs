@@ -97,6 +97,19 @@ struct GenerateArgs {
 }
 
 impl GenerateArgs {
+    fn has_generation_request_options(&self) -> bool {
+        self.capacity
+            || self.no_word1
+            || self.word1_lengths.is_some()
+            || self.word1_categories.is_some()
+            || self.no_word2
+            || self.word2_lengths.is_some()
+            || self.word2_categories.is_some()
+            || self.no_suffix
+            || self.suffix_min_length.is_some()
+            || self.count.is_some()
+    }
+
     fn options(&self, base: GenerateOptions) -> anyhow::Result<GenerateOptions> {
         let word1_categories = match self.word1_categories.as_deref() {
             Some(value) => generator::parse_categories(value).map_err(anyhow::Error::msg)?,
@@ -143,8 +156,14 @@ impl GenerateArgs {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Generate random hostnames.
+    /// Generate hostnames.
     Generate,
+    /// Regenerate a profile-backed hostname from an atomic value.
+    Regenerate {
+        /// Atomic value to regenerate.
+        #[arg(long, value_parser = parse_atomic_value)]
+        atomic_value: i64,
+    },
     /// Inspect or manage Hoststamp configuration.
     Config {
         #[command(subcommand)]
@@ -239,6 +258,45 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Regenerate { atomic_value } => {
+            if cli.generate.has_generation_request_options() {
+                anyhow::bail!(
+                    "regenerate only supports --profile and --atomic-value; generation options are ignored by design"
+                );
+            }
+            let settings = config::load(Overrides {
+                config_path: cli.config.clone(),
+                addr: None,
+                database_url: cli.database_url.clone(),
+            })?;
+            let mut store = ProfileStore::open(&settings.database_url)?;
+            let profile = store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+            if !profile.config.suffix.enabled {
+                anyhow::bail!(
+                    "profile {:?} cannot regenerate hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
+                    profile.slug.as_str()
+                );
+            }
+            if atomic_value > profile.last_atomic_value {
+                anyhow::bail!(
+                    "profile {:?} has issued {} atomic values; {} was never generated",
+                    profile.slug.as_str(),
+                    profile.last_atomic_value,
+                    atomic_value
+                );
+            }
+            ensure_profile_dictionary_is_current(&profile)?;
+            let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+            generator::validate_generate_options(&options)?;
+            let hostname = generator::generate_profile_hostname(
+                &options,
+                profile.id,
+                &profile.config_hash,
+                atomic_value,
+            )?;
+            println!("{hostname}");
+            Ok(())
+        }
         Command::Serve { addr } => {
             let settings = config::load(Overrides {
                 config_path: cli.config.clone(),
@@ -276,10 +334,9 @@ fn generate_with_profile(
     if options.suffix_enabled {
         let profile_id = profile.id;
         let profile_slug = profile.slug.clone();
-        let suffix_min_length = options.suffix_min_length;
-        return generator::generate_many_with_suffix(options, || {
-            let atomic_value = store.increment_atomic_value(&profile_slug)?;
-            generator::compute_profile_suffix(profile_id, atomic_value, suffix_min_length)
+        let config_hash = profile.config_hash;
+        return generator::generate_profile_many(options, profile_id, &config_hash, || {
+            store.increment_atomic_value(&profile_slug)
         });
     }
 
@@ -403,6 +460,13 @@ fn print_config_show(
 }
 
 fn print_profile_config(prefix: &str, config: &ProfileConfig) {
+    println!("[{prefix}]");
+    println!(
+        "dictionary_fingerprint = {:?}",
+        config.dictionary_fingerprint
+    );
+    println!();
+
     println!("[{prefix}.word1]");
     println!("enabled = {}", config.word1.enabled);
     print_lengths("lengths", config.word1.lengths.as_deref());
@@ -496,6 +560,32 @@ fn reconcile_atomic_profile(
 
     confirm_atomic_profile_replacement(&profile)?;
     store.replace_profile_config(&profile.slug, &desired_config)
+}
+
+fn ensure_profile_dictionary_is_current(profile: &StoredProfile) -> anyhow::Result<()> {
+    if profile.config.uses_current_dictionary() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "profile {:?} was created with dictionary artifact {}, but this binary uses {}; regenerate cannot run safely across dictionary changes",
+        profile.slug.as_str(),
+        profile.config.dictionary_fingerprint,
+        dictionary::artifact_sha256()
+    )
+}
+
+fn parse_atomic_value(value: &str) -> Result<i64, String> {
+    let atomic_value = value
+        .parse::<i64>()
+        .map_err(|source| format!("invalid atomic value {value:?}: {source}"))?;
+    if atomic_value < generator::ATOMIC_MIN_VALUE {
+        return Err(format!(
+            "atomic value must be at least {}",
+            generator::ATOMIC_MIN_VALUE
+        ));
+    }
+    Ok(atomic_value)
 }
 
 fn confirm_atomic_profile_replacement(profile: &StoredProfile) -> anyhow::Result<()> {

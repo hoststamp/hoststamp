@@ -37,6 +37,10 @@ pub fn sources() -> &'static [SourceMeta] {
     SOURCES
 }
 
+pub fn artifact_sha256() -> &'static str {
+    ARTIFACT_SHA256
+}
+
 pub fn source_by_id(id: &str) -> Option<&'static SourceMeta> {
     SOURCES.iter().find(|source| source.id == id)
 }
@@ -55,6 +59,7 @@ mod tests {
     fn exposes_generated_metadata() {
         assert_eq!(SCHEMA_VERSION, 1);
         assert!(!GENERATED_AT.is_empty());
+        assert_eq!(artifact_sha256().len(), 64);
         assert!(category_names().contains(&"adjective"));
         assert!(category_names().contains(&"animal"));
         assert!(!sources().is_empty());

@@ -4,7 +4,7 @@ use crate::dictionary;
 use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 use sqids::Sqids;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub const DEFAULT_WORD_LENGTH: usize = 5;
@@ -129,12 +129,19 @@ pub struct CapacityReport {
 
 struct SelectionPlan {
     cells: Vec<SelectionCell>,
+    words: Vec<&'static str>,
+    word_indexes: HashMap<&'static str, usize>,
     total: usize,
 }
 
 struct SelectionCell {
     upper_bound: usize,
     words: Vec<&'static str>,
+}
+
+struct ProfileWordSelection<'a> {
+    plans: &'a [SelectionPlan],
+    pair_count: Option<usize>,
 }
 
 pub fn generate_hostname(options: GenerateOptions) -> Result<String> {
@@ -162,6 +169,76 @@ where
     (0..options.count)
         .map(|_| generate_hostname_with_plans_and_suffix(&options, &plans, &mut next_suffix))
         .collect::<Result<Vec<_>>>()
+}
+
+pub fn generate_profile_hostname(
+    options: &GenerateOptions,
+    profile_id: Uuid,
+    config_hash: &[u8; 32],
+    atomic_value: i64,
+) -> Result<String> {
+    let plans = build_word_plans(options)?;
+    let word_selection = ProfileWordSelection::new(&plans)?;
+    generate_profile_hostname_with_plans(
+        options,
+        &word_selection,
+        profile_id,
+        config_hash,
+        atomic_value,
+    )
+}
+
+pub fn generate_profile_many<F>(
+    options: GenerateOptions,
+    profile_id: Uuid,
+    config_hash: &[u8; 32],
+    mut next_atomic_value: F,
+) -> Result<Vec<String>>
+where
+    F: FnMut() -> Result<i64>,
+{
+    validate_count(options.count)?;
+    let plans = build_word_plans(&options)?;
+    let word_selection = ProfileWordSelection::new(&plans)?;
+    (0..options.count)
+        .map(|_| {
+            let atomic_value = next_atomic_value()?;
+            generate_profile_hostname_with_plans(
+                &options,
+                &word_selection,
+                profile_id,
+                config_hash,
+                atomic_value,
+            )
+        })
+        .collect()
+}
+
+fn generate_profile_hostname_with_plans(
+    options: &GenerateOptions,
+    word_selection: &ProfileWordSelection<'_>,
+    profile_id: Uuid,
+    config_hash: &[u8; 32],
+    atomic_value: i64,
+) -> Result<String> {
+    if atomic_value < ATOMIC_MIN_VALUE {
+        bail!("atomic value must be at least {ATOMIC_MIN_VALUE}");
+    }
+
+    let mut parts = word_selection.profile_words(profile_id, config_hash, atomic_value)?;
+    if options.suffix_enabled {
+        parts.push(compute_profile_suffix(
+            profile_id,
+            atomic_value,
+            options.suffix_min_length,
+        )?);
+    }
+
+    if parts.is_empty() {
+        bail!("nothing to generate: all positions are disabled");
+    }
+
+    Ok(parts.join("-"))
 }
 
 pub fn capacity_report(options: &GenerateOptions) -> Result<CapacityReport> {
@@ -332,6 +409,7 @@ impl SelectionPlan {
         let mut seen = HashSet::new();
         let mut total = 0usize;
         let mut cells = Vec::new();
+        let mut plan_words = Vec::new();
 
         for category in categories {
             let buckets = dictionary::category_lengths(category)
@@ -351,6 +429,7 @@ impl SelectionPlan {
                 }
 
                 total += cell_words.len();
+                plan_words.extend(cell_words.iter().copied());
                 cells.push(SelectionCell {
                     upper_bound: total,
                     words: cell_words,
@@ -362,7 +441,18 @@ impl SelectionPlan {
             bail!("{position} categories do not contain words matching the requested filters");
         }
 
-        Ok(Self { cells, total })
+        let word_indexes = plan_words
+            .iter()
+            .enumerate()
+            .map(|(index, word)| (*word, index))
+            .collect();
+
+        Ok(Self {
+            cells,
+            words: plan_words,
+            word_indexes,
+            total,
+        })
     }
 
     fn random_word(&self) -> &'static str {
@@ -376,10 +466,16 @@ impl SelectionPlan {
         cell.words[index - lower_bound]
     }
 
+    fn word_at(&self, index: usize) -> &'static str {
+        self.words[index]
+    }
+
+    fn position_of(&self, word: &str) -> Option<usize> {
+        self.word_indexes.get(word).copied()
+    }
+
     fn all_words(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.cells
-            .iter()
-            .flat_map(|cell| cell.words.iter().copied())
+        self.words.iter().copied()
     }
 }
 
@@ -399,6 +495,157 @@ fn validate_options(options: &GenerateOptions) -> Result<()> {
     validate_count(options.count)?;
 
     Ok(())
+}
+
+impl<'a> ProfileWordSelection<'a> {
+    fn new(plans: &'a [SelectionPlan]) -> Result<Self> {
+        let pair_count = match plans {
+            [word1, word2] => {
+                let count = distinct_pair_count(word1, word2)?;
+                if count == 0 {
+                    bail!("selected word positions cannot produce a distinct word pair");
+                }
+                Some(count)
+            }
+            _ => None,
+        };
+
+        Ok(Self { plans, pair_count })
+    }
+
+    fn profile_words(
+        &self,
+        profile_id: Uuid,
+        config_hash: &[u8; 32],
+        atomic_value: i64,
+    ) -> Result<Vec<String>> {
+        match self.plans {
+            [] => Ok(Vec::new()),
+            [plan] => {
+                let index = permuted_index(
+                    profile_id,
+                    config_hash,
+                    b"word-single",
+                    atomic_value,
+                    plan.total,
+                )?;
+                Ok(vec![plan.word_at(index).to_owned()])
+            }
+            [word1, word2] => {
+                let pair_index = permuted_index(
+                    profile_id,
+                    config_hash,
+                    b"word-pair",
+                    atomic_value,
+                    self.pair_count.expect("pair count was prepared"),
+                )?;
+                let (first, second) = distinct_pair_at(word1, word2, pair_index);
+                Ok(vec![first.to_owned(), second.to_owned()])
+            }
+            _ => bail!("profile word generation supports at most two word positions"),
+        }
+    }
+}
+
+fn distinct_pair_count(word1: &SelectionPlan, word2: &SelectionPlan) -> Result<usize> {
+    let overlap = word1
+        .all_words()
+        .filter(|word| word2.position_of(word).is_some())
+        .count();
+    let total = (word1.total as u128) * (word2.total as u128) - (overlap as u128);
+    usize::try_from(total).context("word pair space exceeds usize")
+}
+
+fn distinct_pair_at(
+    word1: &SelectionPlan,
+    word2: &SelectionPlan,
+    mut index: usize,
+) -> (&'static str, &'static str) {
+    for first_index in 0..word1.total {
+        let first = word1.word_at(first_index);
+        let second_overlap = word2.position_of(first);
+        let available_second_words = word2.total - usize::from(second_overlap.is_some());
+        if index >= available_second_words {
+            index -= available_second_words;
+            continue;
+        }
+
+        let second_index = match second_overlap {
+            Some(overlap_index) if index >= overlap_index => index + 1,
+            _ => index,
+        };
+        return (first, word2.word_at(second_index));
+    }
+
+    unreachable!("pair index is within distinct pair count")
+}
+
+fn permuted_index(
+    profile_id: Uuid,
+    config_hash: &[u8; 32],
+    label: &[u8],
+    atomic_value: i64,
+    size: usize,
+) -> Result<usize> {
+    if size == 0 {
+        bail!("cannot select from an empty word space");
+    }
+    if size == 1 {
+        return Ok(0);
+    }
+
+    let ordinal = usize::try_from((atomic_value - ATOMIC_MIN_VALUE) as u128 % (size as u128))
+        .expect("ordinal is less than size");
+    let offset = seeded_number(profile_id, config_hash, label, b"offset", size);
+    let step = coprime_step(
+        seeded_number(profile_id, config_hash, label, b"step", size),
+        size,
+    );
+
+    let size = size as u128;
+    let index = ((offset as u128) + (((step as u128) * (ordinal as u128)) % size)) % size;
+    usize::try_from(index).context("permuted index exceeds usize")
+}
+
+fn seeded_number(
+    profile_id: Uuid,
+    config_hash: &[u8; 32],
+    label: &[u8],
+    purpose: &[u8],
+    size: usize,
+) -> usize {
+    let mut hasher = Sha256::new();
+    hasher.update(profile_id.as_bytes());
+    hasher.update(config_hash);
+    hasher.update(label);
+    hasher.update(purpose);
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    usize::try_from(u128::from_be_bytes(bytes) % (size as u128)).expect("bounded by size")
+}
+
+fn coprime_step(seed: usize, size: usize) -> usize {
+    let mut step = seed % size;
+    if step == 0 {
+        step = 1;
+    }
+    while gcd(step, size) != 1 {
+        step += 1;
+        if step == size {
+            step = 1;
+        }
+    }
+    step
+}
+
+fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        let remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    a
 }
 
 pub fn compute_profile_suffix(
@@ -956,6 +1203,57 @@ mod tests {
             assert!(is_base36_suffix(&suffix));
             assert!(seen.insert(suffix));
         }
+    }
+
+    #[test]
+    fn profile_hostname_is_stable_for_profile_and_atomic_value() {
+        let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+        let config_hash = [7u8; 32];
+        let options = GenerateOptions::default();
+
+        let first =
+            generate_profile_hostname(&options, profile_id, &config_hash, 42).expect("hostname");
+        let second =
+            generate_profile_hostname(&options, profile_id, &config_hash, 42).expect("hostname");
+        let next =
+            generate_profile_hostname(&options, profile_id, &config_hash, 43).expect("hostname");
+
+        assert_eq!(first, second);
+        assert_ne!(first, next);
+        ensure_no_repeated_words(&first, 2).expect("distinct words");
+    }
+
+    #[test]
+    fn profile_word_pairs_walk_full_space_before_repeating() {
+        let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+        let config_hash = [9u8; 32];
+        let options = GenerateOptions {
+            word1_categories: vec!["planet".to_owned()],
+            word2_categories: vec!["planet".to_owned()],
+            word1_lengths: None,
+            word2_lengths: None,
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        };
+        let report = capacity_report(&options).expect("report");
+        let pair_count =
+            i64::try_from(report.unique_word_combinations).expect("pair count fits i64");
+        let mut seen = HashSet::new();
+
+        for atomic_value in 1..=pair_count {
+            let hostname =
+                generate_profile_hostname(&options, profile_id, &config_hash, atomic_value)
+                    .expect("hostname");
+            ensure_no_repeated_words(&hostname, 2).expect("distinct words");
+            assert!(seen.insert(hostname));
+        }
+
+        let first =
+            generate_profile_hostname(&options, profile_id, &config_hash, 1).expect("hostname");
+        let repeated =
+            generate_profile_hostname(&options, profile_id, &config_hash, pair_count + 1)
+                .expect("hostname");
+        assert_eq!(first, repeated);
     }
 
     #[test]
