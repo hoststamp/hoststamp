@@ -19,6 +19,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 #[derive(Parser, Debug)]
 #[command(version, about = "Hoststamp CLI, API server, and local UX.")]
 struct Cli {
@@ -726,7 +729,13 @@ const INITIAL_CONFIG_TEMPLATE: &str = r#"# Hoststamp bootstrap configuration.
 # API beyond a trusted local environment.
 required = false
 
-# Hoststamp reads secret values from environment variables instead of this file.
+# For local single-user setups, uncomment and set direct secret values here.
+# For shared systems, keep secrets in environment variables or a secret manager.
+# If secrets are stored here, keep this file private with chmod 600.
+# admin_token = "replace-with-openssl-output"
+# token_hash_key = "replace-with-openssl-output"
+
+# Environment variables override direct secret values when both are present.
 admin_token_env = "HOSTSTAMP_ADMIN_TOKEN"
 token_hash_key_env = "HOSTSTAMP_TOKEN_HASH_KEY"
 
@@ -766,9 +775,11 @@ fn write_initial_config(path: &Path) -> anyhow::Result<()> {
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
         .open(path)
         .with_context(|| format!("failed to create config file {}", path.display()))?;
     file.write_all(INITIAL_CONFIG_TEMPLATE.as_bytes())

@@ -242,9 +242,9 @@ hoststamp config init
 hoststamp --config /etc/hoststamp/config.toml config init
 ```
 
-`config init` creates parent directories as needed and refuses to overwrite an
-existing file. The generated file keeps secret values in environment variables,
-not in TOML. Use OpenSSL to create 32-character secret values:
+`config init` creates parent directories as needed, refuses to overwrite an
+existing file, and creates the config as owner-readable only on Unix. Use
+OpenSSL to create 32-character secret values:
 
 ```sh
 openssl rand -base64 24
@@ -261,6 +261,14 @@ openssl rand -base64 24
 [api.auth]
 # Disabled by default for local development.
 required = false
+
+# For local single-user setups, uncomment and set direct secret values here.
+# For shared systems, keep secrets in environment variables or a secret manager.
+# If secrets are stored here, keep this file private with chmod 600.
+# admin_token = "replace-with-openssl-output"
+# token_hash_key = "replace-with-openssl-output"
+
+# Environment variables override direct secret values when both are present.
 admin_token_env = "HOSTSTAMP_ADMIN_TOKEN"
 token_hash_key_env = "HOSTSTAMP_TOKEN_HASH_KEY"
 
@@ -307,7 +315,11 @@ For example, resetting to `999` makes the next generated hostname use atomic
 value `1000`. Lowering the stored value can duplicate previously issued names,
 and raising it skips part of the deterministic sequence.
 
-API token auth is disabled by default for local development. When
+API token auth is disabled by default for local development. Admin and profile
+token secrets can be loaded from `api.auth.admin_token` and
+`api.auth.token_hash_key` for local single-user setups. Keep the config file
+private, for example with `chmod 600`, when storing secrets there. Environment
+variables take precedence and are preferred for shared systems. When
 `api.auth.required` or `HOSTSTAMP_API_AUTH_REQUIRED=true` is set, private
 profiles require either the admin bearer token or a matching profile bearer
 token for `POST /api/generate` and `GET /api/regenerate`. Health and random

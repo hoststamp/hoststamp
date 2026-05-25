@@ -9,6 +9,10 @@ use hoststamp_core::{
 use predicates::prelude::*;
 use rusqlite::{Connection, params};
 use std::{fs, path::Path};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use tempfile::TempDir;
 
 fn command_with_database() -> (Command, TempDir) {
@@ -113,8 +117,19 @@ fn config_init_writes_bootstrap_template() {
     assert!(contents.contains("[storage]"));
     assert!(contents.contains("[api.auth]"));
     assert!(contents.contains("openssl rand -base64 24"));
+    assert!(contents.contains("chmod 600"));
     assert!(contents.contains("HOSTSTAMP_ADMIN_TOKEN"));
     assert!(contents.contains("HOSTSTAMP_TOKEN_HASH_KEY"));
+
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(&config_path)
+            .expect("config metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
 }
 
 #[test]

@@ -92,6 +92,7 @@
 
       table {
         width: 100%;
+        table-layout: fixed;
         border-collapse: collapse;
         font-size: 0.875rem;
       }
@@ -102,6 +103,7 @@
         border-bottom: 1px solid var(--line);
         text-align: left;
         vertical-align: middle;
+        overflow-wrap: anywhere;
       }
 
       th {
@@ -160,6 +162,27 @@
         white-space: nowrap;
       }
 
+      .auth-gate {
+        margin-bottom: 1rem;
+        border: 1px solid #f4c16d;
+        border-radius: 0.5rem;
+        background: #fff8eb;
+      }
+
+      .auth-gate[hidden] {
+        display: none;
+      }
+
+      .auth-gate h1 {
+        margin: 0;
+        font-size: 1rem;
+      }
+
+      .auth-gate p {
+        margin: 0.375rem 0 0;
+        color: var(--muted);
+      }
+
       .dot {
         width: 0.625rem;
         height: 0.625rem;
@@ -177,9 +200,13 @@
         padding: 1rem;
       }
 
+      .locked .layout {
+        opacity: 0.48;
+      }
+
       .layout {
         display: grid;
-        grid-template-columns: minmax(16rem, 22rem) 1fr;
+        grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
         gap: 1rem;
         align-items: start;
       }
@@ -221,6 +248,22 @@
         gap: 0.75rem;
       }
 
+      .command-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+        align-items: end;
+      }
+
+      .command-control {
+        display: grid;
+        gap: 0.625rem;
+      }
+
+      .command-control button {
+        width: 100%;
+      }
+
       .actions {
         display: flex;
         flex-wrap: wrap;
@@ -247,6 +290,7 @@
         font-family:
           "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace,
           monospace;
+        overflow-wrap: anywhere;
       }
 
       .profile-row {
@@ -359,6 +403,15 @@
       </header>
 
       <main>
+        <section id="auth-gate" class="auth-gate">
+          <div class="panel-body">
+            <h1 id="auth-gate-title">Auth required</h1>
+            <p id="auth-gate-detail">
+              Enter the admin bearer token to unlock profile management.
+            </p>
+          </div>
+        </section>
+
         <div class="layout">
           <aside class="stack">
             <section class="panel">
@@ -418,24 +471,28 @@
                 <h3>Generate</h3>
               </div>
               <div class="panel-body stack">
-                <div class="form-grid">
-                  <label>
-                    Count
-                    <input id="generate-count" type="number" min="1" max="50" value="1" />
-                  </label>
-                  <label>
-                    Atomic value
-                    <input id="regenerate-value" type="number" min="1" value="1" />
-                  </label>
-                  <label>
-                    Reset counter
-                    <input id="reset-value" type="number" min="0" value="0" />
-                  </label>
-                </div>
-                <div class="actions">
-                  <button id="generate" class="primary" type="button">Generate</button>
-                  <button id="regenerate" type="button">Regenerate</button>
-                  <button id="reset-atomic" class="danger" type="button">Reset Atomic</button>
+                <div class="command-grid">
+                  <div class="command-control">
+                    <label>
+                      Count
+                      <input id="generate-count" type="number" min="1" max="50" value="1" />
+                    </label>
+                    <button id="generate" class="primary" type="button">Generate</button>
+                  </div>
+                  <div class="command-control">
+                    <label>
+                      Atomic value
+                      <input id="regenerate-value" type="number" min="1" value="1" />
+                    </label>
+                    <button id="regenerate" type="button">Regenerate</button>
+                  </div>
+                  <div class="command-control">
+                    <label>
+                      Reset counter
+                      <input id="reset-value" type="number" min="0" value="0" />
+                    </label>
+                    <button id="reset-atomic" class="danger" type="button">Reset Atomic</button>
+                  </div>
                 </div>
                 <ul id="results" class="result-list"></ul>
               </div>
@@ -554,6 +611,7 @@
         profiles: [],
         selected: null,
         adminToken: localStorage.getItem("hoststamp.adminToken") || "",
+        unlocked: false,
       };
 
       const el = (id) => document.getElementById(id);
@@ -582,13 +640,77 @@
         });
         if (!response.ok) {
           const text = await response.text();
-          throw new Error(text || `HTTP ${response.status}`);
+          const error = new Error(text || `HTTP ${response.status}`);
+          error.status = response.status;
+          throw error;
         }
         if (response.status === 204) return null;
         const type = response.headers.get("content-type") || "";
         return type.includes("application/json")
           ? response.json()
           : response.text();
+      }
+
+      function setManagementEnabled(enabled) {
+        state.unlocked = enabled;
+        document.body.classList.toggle("locked", !enabled);
+        el("auth-gate").hidden = enabled;
+        for (const control of document.querySelectorAll(
+          "main .layout button, main .layout input, main .layout select",
+        )) {
+          control.disabled = !enabled;
+        }
+      }
+
+      function clearProfileState() {
+        state.profiles = [];
+        state.selected = null;
+        renderProfiles();
+        renderProfile();
+        resetProfileForms();
+        renderCapacity(null);
+        renderTokens(null);
+        el("created-token").textContent = "";
+      }
+
+      function resetProfileForms() {
+        el("generate-count").value = "1";
+        el("regenerate-value").value = "1";
+        el("reset-value").value = "0";
+        el("results").replaceChildren();
+        el("created-token").textContent = "";
+      }
+
+      function showAuthGate(title, detail) {
+        el("auth-gate-title").textContent = title;
+        el("auth-gate-detail").textContent = detail;
+      }
+
+      function lockManagement(title, detail) {
+        setManagementEnabled(false);
+        showAuthGate(title, detail);
+        clearProfileState();
+      }
+
+      function unlockManagement() {
+        setManagementEnabled(true);
+        showAuthGate("Unlocked", "Profile management is available.");
+      }
+
+      function authErrorMessage(error) {
+        if (error.status === 503) {
+          return [
+            "Server admin token is not configured.",
+            "Restart Hoststamp with HOSTSTAMP_ADMIN_TOKEN set, then enter it here.",
+          ];
+        }
+        if (error.status === 401 || error.status === 403) {
+          return [
+            "Auth required",
+            "Enter a valid admin bearer token to unlock profile management.",
+          ];
+        }
+        return ["Admin API unavailable", error.message];
       }
 
       function slugPath(slug) {
@@ -699,6 +821,10 @@
       }
 
       function renderCapacity(report) {
+        if (!report) {
+          el("capacity-body").replaceChildren(emptyRow("No profile selected", 2));
+          return;
+        }
         const rows = [
           ["word1_words", report.word1_count ?? "disabled"],
           ["word2_words", report.word2_count ?? "disabled"],
@@ -721,6 +847,10 @@
       function renderTokens(tokens) {
         const body = el("tokens-body");
         body.replaceChildren();
+        if (!tokens) {
+          body.appendChild(emptyRow("No profile selected", 3));
+          return;
+        }
         if (!tokens.length) {
           body.appendChild(emptyRow("No tokens", 3));
           return;
@@ -755,6 +885,7 @@
       async function refreshProfiles() {
         const payload = await api("/api/profiles");
         state.profiles = payload.profiles;
+        unlockManagement();
         if (!state.selected && state.profiles.length) {
           state.selected = state.profiles[0].slug;
         }
@@ -771,8 +902,21 @@
         }
       }
 
+      async function validateAdminToken() {
+        try {
+          await refreshProfiles();
+          setMessage("admin token accepted", "ok-text");
+        } catch (error) {
+          const [title, detail] = authErrorMessage(error);
+          lockManagement(title, detail);
+          setMessage(detail, "error");
+        }
+      }
+
       async function selectProfile(slug) {
+        if (!state.unlocked) return;
         state.selected = slug;
+        resetProfileForms();
         renderProfiles();
         renderProfile();
         await Promise.allSettled([refreshCapacity(), refreshTokens()]);
@@ -780,6 +924,7 @@
 
       async function createProfile(event) {
         event.preventDefault();
+        if (!state.unlocked) return;
         const slug = el("new-profile-slug").value.trim();
         if (!slug) return;
         await api("/api/profiles", {
@@ -794,7 +939,7 @@
       }
 
       async function refreshCapacity() {
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         const payload = await api(
           `/api/capacity?profile=${slugPath(state.selected)}`,
         );
@@ -802,7 +947,7 @@
       }
 
       async function generate() {
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         const count = el("generate-count").value || "1";
         const payload = await api(
           `/api/generate?format=json&profile=${slugPath(state.selected)}&count=${encodeURIComponent(count)}`,
@@ -814,7 +959,7 @@
       }
 
       async function regenerate() {
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         const value = el("regenerate-value").value || "1";
         const payload = await api(
           `/api/regenerate?format=json&profile=${slugPath(state.selected)}&atomic_value=${encodeURIComponent(value)}`,
@@ -824,7 +969,7 @@
       }
 
       async function saveAccess() {
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         const access = el("profile-access").value;
         await api(`/api/profiles/${slugPath(state.selected)}/access`, {
           method: "PATCH",
@@ -836,7 +981,7 @@
       }
 
       async function saveConfig() {
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         const slug = state.selected;
         const body = {
           word1_enabled: el("word1-enabled").value === "true",
@@ -865,9 +1010,19 @@
       }
 
       async function resetAtomic() {
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         const slug = state.selected;
         const atomicValue = Number(el("reset-value").value || "0");
+        const accepted = window.confirm(
+          [
+            `Reset atomic counter for ${slug}?`,
+            "",
+            `The next generated hostname will use atomic value ${atomicValue + 1}.`,
+            "Lowering this value can duplicate names that were already issued.",
+            "Raising it skips part of the deterministic sequence.",
+          ].join("\n"),
+        );
+        if (!accepted) return;
         await api(`/api/profiles/${slugPath(slug)}/reset-atomic-value`, {
           method: "POST",
           json: true,
@@ -881,14 +1036,14 @@
       }
 
       async function refreshTokens() {
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         const payload = await api(`/api/profiles/${slugPath(state.selected)}/tokens`);
         renderTokens(payload.tokens);
       }
 
       async function createToken(event) {
         event.preventDefault();
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         const name = el("token-name").value.trim();
         if (!name) return;
         const payload = await api(`/api/profiles/${slugPath(state.selected)}/tokens`, {
@@ -902,7 +1057,7 @@
       }
 
       async function revokeToken(tokenId) {
-        if (!state.selected) return;
+        if (!state.unlocked || !state.selected) return;
         await api(
           `/api/profiles/${slugPath(state.selected)}/tokens/${encodeURIComponent(tokenId)}`,
           { method: "DELETE" },
@@ -923,9 +1078,17 @@
       el("admin-token").value = state.adminToken;
       wire("save-token", "click", async () => {
         state.adminToken = el("admin-token").value.trim();
+        if (!state.adminToken) {
+          localStorage.removeItem("hoststamp.adminToken");
+          lockManagement(
+            "Auth required",
+            "Enter the admin bearer token to unlock profile management.",
+          );
+          setMessage("admin token required", "error");
+          return;
+        }
         localStorage.setItem("hoststamp.adminToken", state.adminToken);
-        await refreshProfiles();
-        setMessage("token saved", "ok-text");
+        await validateAdminToken();
       });
       wire("refresh-profiles", "click", refreshProfiles);
       wire("refresh-capacity", "click", refreshCapacity);
@@ -940,7 +1103,16 @@
 
       refreshHealth();
       setInterval(refreshHealth, 5000);
-      refreshProfiles().catch((error) => setMessage(error.message, "error"));
+      setManagementEnabled(false);
+      clearProfileState();
+      if (state.adminToken) {
+        validateAdminToken();
+      } else {
+        lockManagement(
+          "Auth required",
+          "Enter the admin bearer token to unlock profile management.",
+        );
+      }
     </script>
   </body>
 </html>

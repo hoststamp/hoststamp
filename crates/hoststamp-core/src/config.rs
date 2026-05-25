@@ -176,6 +176,8 @@ struct ApiConfig {
 #[serde(deny_unknown_fields)]
 struct ApiAuthFileConfig {
     required: Option<bool>,
+    admin_token: Option<String>,
+    token_hash_key: Option<String>,
     admin_token_env: Option<String>,
     token_hash_key_env: Option<String>,
 }
@@ -256,16 +258,27 @@ fn resolve_auth(file: &FileConfig, env: &ConfigEnv) -> Result<ApiAuthConfig, Loa
         .and_then(|auth| auth.token_hash_key_env.as_deref())
         .unwrap_or(PROFILE_TOKEN_HASH_KEY_ENV);
 
-    let admin_token = env
+    let file_admin_token = file_auth
+        .and_then(|auth| auth.admin_token.as_deref())
+        .map(|value| parse_secret(value, "api.auth.admin_token"))
+        .transpose()?;
+    let file_token_hash_key = file_auth
+        .and_then(|auth| auth.token_hash_key.as_deref())
+        .map(|value| parse_secret(value, "api.auth.token_hash_key"))
+        .transpose()?;
+
+    let env_admin_token = env
         .admin_token
         .as_deref()
         .map(|value| parse_secret(value, admin_env))
         .transpose()?;
-    let token_hash_key = env
+    let env_token_hash_key = env
         .token_hash_key
         .as_deref()
         .map(|value| parse_secret(value, hash_key_env))
         .transpose()?;
+    let admin_token = env_admin_token.or(file_admin_token);
+    let token_hash_key = env_token_hash_key.or(file_token_hash_key);
 
     if required && admin_token.is_none() {
         return Err(LoadError::MissingSecret {
@@ -554,6 +567,95 @@ mod tests {
         assert!(settings.auth.required);
         assert!(settings.auth.admin_token.is_some());
         assert!(settings.auth.token_hash_key.is_some());
+    }
+
+    #[test]
+    fn reads_api_auth_secrets_from_config_file() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [api.auth]
+                required = true
+                admin_token = "admin-from-file"
+                token_hash_key = "hash-key-from-file"
+            "#,
+        )
+        .expect("config");
+
+        let settings = load_with_env(
+            Overrides {
+                config_path: Some(config_path),
+                ..Overrides::default()
+            },
+            ConfigEnv::default(),
+        )
+        .expect("settings");
+
+        assert!(settings.auth.required);
+        assert_eq!(
+            settings
+                .auth
+                .admin_token
+                .as_ref()
+                .map(|secret| secret.expose()),
+            Some("admin-from-file")
+        );
+        assert_eq!(
+            settings
+                .auth
+                .token_hash_key
+                .as_ref()
+                .map(|secret| secret.expose()),
+            Some("hash-key-from-file")
+        );
+    }
+
+    #[test]
+    fn env_api_auth_secrets_override_config_file() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [api.auth]
+                required = true
+                admin_token = "admin-from-file"
+                token_hash_key = "hash-key-from-file"
+            "#,
+        )
+        .expect("config");
+
+        let settings = load_with_env(
+            Overrides {
+                config_path: Some(config_path),
+                ..Overrides::default()
+            },
+            ConfigEnv {
+                admin_token: Some("admin-from-env".to_owned()),
+                token_hash_key: Some("hash-key-from-env".to_owned()),
+                ..ConfigEnv::default()
+            },
+        )
+        .expect("settings");
+
+        assert_eq!(
+            settings
+                .auth
+                .admin_token
+                .as_ref()
+                .map(|secret| secret.expose()),
+            Some("admin-from-env")
+        );
+        assert_eq!(
+            settings
+                .auth
+                .token_hash_key
+                .as_ref()
+                .map(|secret| secret.expose()),
+            Some("hash-key-from-env")
+        );
     }
 
     #[test]
