@@ -175,6 +175,89 @@ impl ProfileStore {
         Ok(profile)
     }
 
+    pub fn import_profile(
+        &mut self,
+        slug: &ProfileSlug,
+        id: Uuid,
+        access: ProfileAccess,
+        config: &ProfileConfig,
+        last_atomic_value: i64,
+    ) -> Result<StoredProfile> {
+        if last_atomic_value < 0 {
+            bail!("last atomic value must be at least 0");
+        }
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = unix_epoch_millis()?;
+        let config_json = serde_json::to_string(config)?;
+        let config_hash = config_hash(config)?;
+        if let Some((owner_slug, owner_active)) = profile_id_owner(&tx, id)?
+            && (owner_slug != slug.as_str() || !owner_active)
+        {
+            bail!("profile id {id} already exists");
+        }
+
+        if active_profile_exists(&tx, slug)? {
+            let current = select_profile(&tx, slug)?;
+            if current.id == id {
+                tx.execute(
+                    "UPDATE hoststamp_profiles
+                     SET access = ?1,
+                         config_json = ?2,
+                         config_hash = ?3,
+                         last_atomic_value = ?4,
+                         updated_at_ms = ?5
+                     WHERE id = ?6 AND replaced_at_ms IS NULL",
+                    params![
+                        access.to_string(),
+                        config_json,
+                        config_hash.as_slice(),
+                        last_atomic_value,
+                        now,
+                        id.as_bytes().as_slice(),
+                    ],
+                )?;
+                let profile = select_profile(&tx, slug)?;
+                tx.commit()?;
+                return Ok(profile);
+            }
+
+            tx.execute(
+                "UPDATE hoststamp_profiles
+                 SET replaced_at_ms = ?1,
+                     replaced_by_id = ?2,
+                     updated_at_ms = ?1
+                 WHERE id = ?3",
+                params![
+                    now,
+                    id.as_bytes().as_slice(),
+                    current.id.as_bytes().as_slice(),
+                ],
+            )?;
+        }
+
+        tx.execute(
+            "INSERT INTO hoststamp_profiles (
+                id, slug, access, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![
+                id.as_bytes().as_slice(),
+                slug.as_str(),
+                access.to_string(),
+                config_json,
+                config_hash.as_slice(),
+                last_atomic_value,
+                now,
+            ],
+        )?;
+
+        let profile = select_profile(&tx, slug)?;
+        tx.commit()?;
+        Ok(profile)
+    }
+
     pub fn delete_profile(&mut self, slug: &ProfileSlug) -> Result<()> {
         let tx = self
             .connection
@@ -556,6 +639,18 @@ fn select_profile(connection: &Connection, slug: &ProfileSlug) -> Result<StoredP
         .with_context(|| format!("profile {:?} does not exist", slug.as_str()))
 }
 
+fn profile_id_owner(connection: &Connection, id: Uuid) -> Result<Option<(String, bool)>> {
+    Ok(connection
+        .query_row(
+            "SELECT slug, replaced_at_ms IS NULL
+             FROM hoststamp_profiles
+             WHERE id = ?1",
+            params![id.as_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
 fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProfile> {
     let id_blob: Vec<u8> = row.get(0)?;
     let slug_value: String = row.get(1)?;
@@ -860,6 +955,31 @@ mod tests {
         let recreated = store.create_profile(&slug, &seed).expect("recreated");
         assert_ne!(recreated.id, created.id);
         assert_eq!(recreated.last_atomic_value, 0);
+    }
+
+    #[test]
+    fn import_profile_rejects_id_owned_by_another_profile() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let original_slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let imported_slug = "team-b".parse::<ProfileSlug>().expect("slug");
+        let seed = ProfileConfig::default();
+        let original = store
+            .create_profile(&original_slug, &seed)
+            .expect("created");
+
+        let error = store
+            .import_profile(
+                &imported_slug,
+                original.id,
+                ProfileAccess::Private,
+                &seed,
+                0,
+            )
+            .expect_err("duplicate id should be rejected");
+
+        assert!(error.to_string().contains("already exists"));
     }
 
     #[test]

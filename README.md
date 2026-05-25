@@ -25,7 +25,7 @@ cargo run -p hoststamp -- --credits
 cargo run -p hoststamp -- --list-categories
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- random
-cargo run -p hoststamp -- regenerate --atomic-value 42
+cargo run -p hoststamp -- regenerate --atomic-value 42 --count 3
 cargo run -p hoststamp -- config show
 cargo run -p hoststamp -- profile list
 cargo run -p hoststamp -- --profile staging profile show
@@ -47,7 +47,7 @@ cargo run -p hoststamp -- random --json
 cargo run -p hoststamp -- config init
 cargo run -p hoststamp -- --profile team-a generate
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
-cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --json
+cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --count 3 --json
 cargo run -p hoststamp -- --profile team-a profile new
 cargo run -p hoststamp -- --profile team-a config set --word1-lengths 4,5,6 --word2-lengths 4,5,6
 cargo run -p hoststamp -- --profile team-a config set --word1-categories adjective,noun --word2-categories animal,name
@@ -161,13 +161,16 @@ compiled into the binary.
 
 Use `hoststamp regenerate --atomic-value <n>` to reproduce the hostname for a
 stored profile atomic value. Regeneration uses only the selected profile
-(`--profile`, default `_`) and the atomic value; it does not increment the
-counter, and generation option flags are rejected by design. Pass `--json` to
-return the hostname with `profile` and `atomic_value` metadata. The requested
-atomic value must already have been issued by the active profile generation. It
-requires suffixes to be enabled for the stored profile because atomic values are
-tracked only for profile-backed suffix generation. Stored profiles include the
-generation engine, selected dictionary and blocklist versions, those version
+(`--profile`, default `_`) and an atomic range; it does not increment the
+counter. Pass `--count <n>` to regenerate a contiguous range starting at
+`--atomic-value`. Plain output is one hostname per line, and `--json` returns
+each hostname with `profile` and `atomic_value` metadata. The requested atomic
+range must already have been issued by the active profile generation; for
+example, a profile with `last_atomic_value = 10` rejects
+`--atomic-value 10 --count 2` because that includes value `11`. Regeneration
+requires suffixes to be enabled for the stored profile because atomic values
+are tracked only for profile-backed suffix generation. Stored profiles include
+the generation engine, selected dictionary and blocklist versions, those version
 hashes, and resolved word-pool hashes. Hoststamp will not regenerate if the
 engine, selected version content, or resolved pools drift from what this binary
 supports.
@@ -179,8 +182,8 @@ Local endpoints:
 - API generate: `POST http://127.0.0.1:8080/api/generate?count=3`
 - API generate JSON: `POST http://127.0.0.1:8080/api/generate?profile=_&count=3&format=json`
 - API capacity: `http://127.0.0.1:8080/api/capacity?profile=_`
-- API regenerate: `http://127.0.0.1:8080/api/regenerate?atomic_value=42`
-- API regenerate JSON: `http://127.0.0.1:8080/api/regenerate?profile=_&atomic_value=42&format=json`
+- API regenerate: `http://127.0.0.1:8080/api/regenerate?atomic_value=42&count=3`
+- API regenerate JSON: `http://127.0.0.1:8080/api/regenerate?profile=_&atomic_value=42&count=3&format=json`
 - API random: `http://127.0.0.1:8080/api/random?count=3&word1_lengths=4&word2_lengths=4`
 - API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
 - Admin profiles: `http://127.0.0.1:8080/api/profiles`
@@ -201,12 +204,12 @@ regeneration also include `profile` and `atomic_value`. `/api/generate`
 accepts `format`, `profile`, and `count`; `profile` defaults to the server's
 active profile. `/api/capacity` accepts `profile` and returns the selected
 profile's current name-space report without incrementing the counter.
-`/api/regenerate` accepts `format`, `profile`, and
-`atomic_value`; `profile` defaults to the server's active profile. It is
-read-only and does not increment the counter. `/api/random` accepts `format`,
-`count`, `word1_enabled`, `word1_lengths`, `word1_categories`, `word2_enabled`,
-`word2_lengths`, `word2_categories`, `suffix_enabled`, and
-`suffix_min_length`.
+`/api/regenerate` accepts `format`, `profile`, `atomic_value`, and `count`;
+`profile` defaults to the server's active profile. It is read-only, does not
+increment the counter, and rejects ranges beyond the selected profile's
+`last_atomic_value`. `/api/random` accepts `format`, `count`, `word1_enabled`,
+`word1_lengths`, `word1_categories`, `word2_enabled`, `word2_lengths`,
+`word2_categories`, `suffix_enabled`, and `suffix_min_length`.
 
 ```json
 {
@@ -353,6 +356,8 @@ Admin API endpoints mirror the profile/config CLI operations:
 | `POST` | `/api/profiles` | create a profile with default config |
 | `GET` | `/api/profiles/{slug}` | show one active profile |
 | `DELETE` | `/api/profiles/{slug}` | delete an active profile |
+| `GET` | `/api/profiles/{slug}/export` | export profile identity, counter, access, and config |
+| `POST` | `/api/profiles/import` | import an exported profile |
 | `PATCH` | `/api/profiles/{slug}/config` | replace profile config |
 | `PATCH` | `/api/profiles/{slug}/access` | set `public` or `private` |
 | `GET` | `/api/profiles/{slug}/tokens` | list profile tokens |
@@ -377,6 +382,10 @@ Config replacement uses action `replace`; atomic reset uses action `reset`.
 as `word1_lengths`, `word1_categories`, `word2_lengths`, `word2_categories`,
 `suffix_enabled`, and `suffix_min_length`. Length fields accept an integer
 array, `null`, `"any"`, or the same comma-separated form as the CLI.
+`GET /api/profiles/{slug}/export` returns a portable JSON profile containing
+the deterministic profile ID, access mode, last issued atomic value, config
+hash, and config. `POST /api/profiles/import` restores that identity on another
+instance; importing over an existing slug requires action `replace`.
 
 Use `hoststamp config show` to print the resolved bootstrap settings, selected
 profile metadata, stored profile config, and effective generator config after

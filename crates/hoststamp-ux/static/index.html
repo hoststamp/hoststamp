@@ -66,6 +66,11 @@
         color: var(--danger);
       }
 
+      button.compact {
+        min-height: 1.875rem;
+        padding: 0 0.625rem;
+      }
+
       button:disabled {
         cursor: not-allowed;
         opacity: 0.55;
@@ -334,7 +339,7 @@
 
       .result-list li {
         display: grid;
-        grid-template-columns: 1fr auto;
+        grid-template-columns: minmax(0, 1fr) auto auto;
         gap: 0.75rem;
         align-items: center;
         min-height: 2.5rem;
@@ -459,6 +464,9 @@
                     <option value="public">public</option>
                   </select>
                   <button id="save-access" type="button">Set Access</button>
+                  <button id="export-profile" type="button">Export</button>
+                  <button id="import-profile" type="button">Import</button>
+                  <input id="import-profile-file" type="file" accept="application/json" hidden />
                 </div>
               </div>
               <div class="panel-body">
@@ -483,6 +491,10 @@
                     <label>
                       Atomic value
                       <input id="regenerate-value" type="number" min="1" value="1" />
+                    </label>
+                    <label>
+                      Count
+                      <input id="regenerate-count" type="number" min="1" max="50" value="1" />
                     </label>
                     <button id="regenerate" type="button">Regenerate</button>
                   </div>
@@ -676,6 +688,7 @@
       function resetProfileForms() {
         el("generate-count").value = "1";
         el("regenerate-value").value = "1";
+        el("regenerate-count").value = "1";
         el("reset-value").value = "0";
         el("results").replaceChildren();
         el("created-token").textContent = "";
@@ -801,6 +814,23 @@
         el("suffix-min-length").value = config.suffix.min_length;
       }
 
+      async function copyResult(value) {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(value);
+        } else {
+          const input = document.createElement("textarea");
+          input.value = value;
+          input.setAttribute("readonly", "");
+          input.style.position = "fixed";
+          input.style.opacity = "0";
+          document.body.appendChild(input);
+          input.select();
+          document.execCommand("copy");
+          input.remove();
+        }
+        setMessage("copied", "ok-text");
+      }
+
       function renderResults(hostnames) {
         const root = el("results");
         root.replaceChildren();
@@ -816,6 +846,18 @@
             meta.textContent = `#${generated.atomic_value}`;
             item.appendChild(meta);
           }
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = "compact";
+          copy.textContent = "Copy";
+          copy.addEventListener("click", async () => {
+            try {
+              await copyResult(generated.hostname);
+            } catch (error) {
+              setMessage(error.message, "error");
+            }
+          });
+          item.appendChild(copy);
           root.appendChild(item);
         }
       }
@@ -961,8 +1003,9 @@
       async function regenerate() {
         if (!state.unlocked || !state.selected) return;
         const value = el("regenerate-value").value || "1";
+        const count = el("regenerate-count").value || "1";
         const payload = await api(
-          `/api/regenerate?format=json&profile=${slugPath(state.selected)}&atomic_value=${encodeURIComponent(value)}`,
+          `/api/regenerate?format=json&profile=${slugPath(state.selected)}&atomic_value=${encodeURIComponent(value)}&count=${encodeURIComponent(count)}`,
         );
         renderResults(payload.hostnames);
         setMessage("regenerated", "ok-text");
@@ -978,6 +1021,60 @@
         });
         await refreshProfiles();
         setMessage("access updated", "ok-text");
+      }
+
+      async function exportProfile() {
+        if (!state.unlocked || !state.selected) return;
+        const payload = await api(`/api/profiles/${slugPath(state.selected)}/export`);
+        const data = JSON.stringify(payload, null, 2);
+        const blob = new Blob([data], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `hoststamp-${payload.slug}.profile.json`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setMessage(`exported ${payload.slug}`, "ok-text");
+      }
+
+      function startImportProfile() {
+        if (!state.unlocked) return;
+        const input = el("import-profile-file");
+        input.value = "";
+        input.click();
+      }
+
+      async function importProfile(event) {
+        if (!state.unlocked) return;
+        const file = event.target.files[0];
+        if (!file) return;
+        const payload = JSON.parse(await file.text());
+        if (!payload.slug) {
+          throw new Error("profile import file is missing a slug");
+        }
+        const exists = state.profiles.some((profile) => profile.slug === payload.slug);
+        if (exists) {
+          const accepted = window.confirm(
+            [
+              `Import over existing profile ${payload.slug}?`,
+              "",
+              "This preserves the imported profile ID and atomic counter.",
+              "If the config differs, existing profile tokens and deterministic history may no longer match the active profile.",
+            ].join("\n"),
+          );
+          if (!accepted) return;
+          payload.confirmation = { profile: payload.slug, action: "replace" };
+        }
+        const imported = await api("/api/profiles/import", {
+          method: "POST",
+          json: true,
+          body: JSON.stringify(payload),
+        });
+        state.selected = imported.profile.slug;
+        await refreshProfiles();
+        setMessage(`imported ${imported.profile.slug}`, "ok-text");
       }
 
       async function saveConfig() {
@@ -1096,6 +1193,9 @@
       wire("generate", "click", generate);
       wire("regenerate", "click", regenerate);
       wire("save-access", "click", saveAccess);
+      wire("export-profile", "click", exportProfile);
+      wire("import-profile", "click", startImportProfile);
+      wire("import-profile-file", "change", importProfile);
       wire("save-config", "click", saveConfig);
       wire("reset-atomic", "click", resetAtomic);
       wire("refresh-tokens", "click", refreshTokens);

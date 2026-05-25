@@ -73,8 +73,8 @@ struct GenerateArgs {
 }
 
 impl GenerateArgs {
-    fn has_generation_request_options(&self) -> bool {
-        self.capacity || self.count.is_some()
+    fn has_unsupported_regenerate_options(&self) -> bool {
+        self.capacity
     }
 
     fn options(&self, base: GenerateOptions) -> GenerateOptions {
@@ -491,9 +491,9 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Regenerate { atomic_value } => {
-            if cli.generate.has_generation_request_options() {
+            if cli.generate.has_unsupported_regenerate_options() {
                 anyhow::bail!(
-                    "regenerate only supports --profile and --atomic-value; generation options are ignored by design"
+                    "regenerate only supports --profile, --atomic-value, --count, and --json"
                 );
             }
             let settings = config::load(Overrides {
@@ -509,39 +509,50 @@ async fn main() -> anyhow::Result<()> {
                     profile.slug.as_str()
                 );
             }
-            if atomic_value > profile.last_atomic_value {
+            let count = cli.generate.count.unwrap_or(generator::DEFAULT_COUNT);
+            generator::validate_count(count)?;
+            let count_offset = i64::try_from(count - 1)?;
+            let final_atomic_value = atomic_value
+                .checked_add(count_offset)
+                .ok_or_else(|| anyhow::anyhow!("atomic value range is too large"))?;
+            if final_atomic_value > profile.last_atomic_value {
                 anyhow::bail!(
-                    "profile {:?} has issued {} atomic values; {} was never generated",
+                    "profile {:?} has issued {} atomic values; requested range {}..={} includes values that were never generated",
                     profile.slug.as_str(),
                     profile.last_atomic_value,
-                    atomic_value
+                    atomic_value,
+                    final_atomic_value
                 );
             }
             ensure_profile_generation_contract_is_current(&profile)?;
-            let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+            let options = profile.config.to_generate_options(count);
             generator::validate_generate_options(&options)?;
-            let hostname = generator::generate_profile_hostname(
-                &options,
-                profile.id,
-                &profile.config_hash,
-                atomic_value,
-            )?;
-            if cli.generate.json {
-                let generated = server::GeneratedHostname::profile_backed(
-                    &profile.slug,
-                    ProfileGeneratedHostname {
-                        hostname,
+            let hostnames = (atomic_value..=final_atomic_value)
+                .map(|atomic_value| {
+                    let hostname = generator::generate_profile_hostname(
+                        &options,
+                        profile.id,
+                        &profile.config_hash,
                         atomic_value,
-                    },
-                );
+                    )?;
+                    Ok(server::GeneratedHostname::profile_backed(
+                        &profile.slug,
+                        ProfileGeneratedHostname {
+                            hostname,
+                            atomic_value,
+                        },
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if cli.generate.json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&server::GenerateResponse {
-                        hostnames: vec![generated],
-                    })?
+                    serde_json::to_string_pretty(&server::GenerateResponse { hostnames })?
                 );
             } else {
-                println!("{hostname}");
+                for generated in hostnames {
+                    println!("{}", generated.hostname);
+                }
             }
             Ok(())
         }

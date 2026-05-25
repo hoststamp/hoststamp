@@ -6,7 +6,7 @@ use hoststamp_core::{
     auth::{self, ApiAuthConfig, SecretString},
     generator::{GenerateOptions, is_base36_suffix},
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
-    storage::{ProfileStore, StorageUrl},
+    storage::{ProfileStore, StorageUrl, config_hash},
 };
 use http_body_util::BodyExt;
 use rusqlite::Connection;
@@ -16,6 +16,12 @@ use tower::ServiceExt;
 
 fn hostname_from_item(item: &serde_json::Value) -> &str {
     item["hostname"].as_str().expect("hostname")
+}
+
+fn hex_hash(hash: &[u8; 32]) -> String {
+    hash.iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 async fn response_text(response: http::Response<Body>) -> String {
@@ -722,7 +728,7 @@ async fn regenerate_endpoint_recreates_profile_hostname_without_incrementing_cou
     let regenerated_response = app
         .oneshot(
             http::Request::builder()
-                .uri("/api/regenerate?atomic_value=1&format=json")
+                .uri("/api/regenerate?atomic_value=1&count=2&format=json")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -733,7 +739,7 @@ async fn regenerate_endpoint_recreates_profile_hostname_without_incrementing_cou
     assert_eq!(regenerated_response.headers()["x-hoststamp-profile"], "_");
     assert_eq!(
         regenerated_response.headers()["x-hoststamp-atomic-values"],
-        "1"
+        "1,2"
     );
 
     let body = regenerated_response
@@ -744,9 +750,13 @@ async fn regenerate_endpoint_recreates_profile_hostname_without_incrementing_cou
         .to_bytes();
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
     let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    assert_eq!(hostnames.len(), 2);
     assert_eq!(hostname_from_item(&hostnames[0]), generated[0]);
     assert_eq!(hostnames[0]["profile"], "_");
     assert_eq!(hostnames[0]["atomic_value"], 1);
+    assert_eq!(hostname_from_item(&hostnames[1]), generated[1]);
+    assert_eq!(hostnames[1]["profile"], "_");
+    assert_eq!(hostnames[1]["atomic_value"], 2);
 
     let mut store = ProfileStore::open(&database_url).expect("store");
     assert_eq!(
@@ -792,7 +802,7 @@ async fn regenerate_endpoint_rejects_values_that_have_not_been_issued() {
     )
     .oneshot(
         http::Request::builder()
-            .uri("/api/regenerate?atomic_value=1")
+            .uri("/api/regenerate?atomic_value=1&count=2")
             .body(Body::empty())
             .expect("request"),
     )
@@ -801,7 +811,7 @@ async fn regenerate_endpoint_rejects_values_that_have_not_been_issued() {
 
     assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
     let body = response_text(response).await;
-    assert!(body.contains("was never generated"));
+    assert!(body.contains("never generated"));
 }
 
 #[tokio::test]
@@ -1169,6 +1179,21 @@ async fn admin_profile_endpoints_manage_profiles() {
     assert_eq!(config["profile"]["config"]["word1"]["lengths"], json!([4]));
     assert_eq!(config["profile"]["last_atomic_value"], 0);
 
+    let exported = app
+        .clone()
+        .oneshot(admin_get_request("/api/profiles/team-a/export"))
+        .await
+        .expect("response");
+    assert_eq!(exported.status(), http::StatusCode::OK);
+    let exported = response_json(exported).await;
+    assert_eq!(exported["format"], "hoststamp-profile-v1");
+    assert!(exported["id"].as_str().expect("id").contains('-'));
+    assert_eq!(exported["slug"], "team-a");
+    assert_eq!(exported["access"], "private");
+    assert_eq!(exported["last_atomic_value"], 0);
+    assert!(exported["config_hash"].as_str().expect("hash").len() == 64);
+    assert_eq!(exported["config"]["word1"]["lengths"], json!([4]));
+
     let reset = app
         .clone()
         .oneshot(admin_json_request(
@@ -1209,6 +1234,151 @@ async fn admin_profile_endpoints_manage_profiles() {
         .await
         .expect("response");
     assert_eq!(missing.status(), http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admin_profile_import_preserves_exported_identity() {
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_database = StorageUrl::Sqlite(source_dir.path().join("hoststamp.db"));
+    let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+    let mut source_store = ProfileStore::open(&source_database).expect("source store");
+    source_store
+        .create_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    source_store
+        .set_profile_access(&slug, ProfileAccess::Public)
+        .expect("access");
+    source_store
+        .increment_atomic_value(&slug)
+        .expect("atomic value 1");
+    source_store
+        .increment_atomic_value(&slug)
+        .expect("atomic value 2");
+    let source_app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(
+            source_store,
+            ProfileSlug::default_profile(),
+        )),
+        auth_config(),
+    );
+
+    let exported = source_app
+        .oneshot(admin_get_request("/api/profiles/team-a/export"))
+        .await
+        .expect("response");
+    assert_eq!(exported.status(), http::StatusCode::OK);
+    let mut exported = response_json(exported).await;
+    let exported_id = exported["id"].clone();
+    assert_eq!(exported["access"], "public");
+    assert_eq!(exported["last_atomic_value"], 2);
+
+    let target_dir = tempfile::tempdir().expect("target tempdir");
+    let target_database = StorageUrl::Sqlite(target_dir.path().join("hoststamp.db"));
+    let target_store = ProfileStore::open(&target_database).expect("target store");
+    let target_app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(
+            target_store,
+            ProfileSlug::default_profile(),
+        )),
+        auth_config(),
+    );
+
+    let imported = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            exported.clone(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(imported.status(), http::StatusCode::CREATED);
+    let imported = response_json(imported).await;
+    assert_eq!(imported["profile"]["id"], exported_id);
+    assert_eq!(imported["profile"]["slug"], "team-a");
+    assert_eq!(imported["profile"]["access"], "public");
+    assert_eq!(imported["profile"]["last_atomic_value"], 2);
+
+    exported["last_atomic_value"] = json!(3);
+    let unconfirmed = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            exported.clone(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(unconfirmed.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(unconfirmed).await;
+    assert!(message.contains("requires confirmation"));
+
+    exported["confirmation"] = json!({
+        "profile": "team-a",
+        "action": "replace"
+    });
+    let updated = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            exported,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(updated.status(), http::StatusCode::OK);
+    let updated = response_json(updated).await;
+    assert_eq!(updated["profile"]["id"], exported_id);
+    assert_eq!(updated["profile"]["last_atomic_value"], 3);
+
+    let duplicate_id = json!({
+        "format": "hoststamp-profile-v1",
+        "id": exported_id,
+        "slug": "team-b",
+        "access": "public",
+        "last_atomic_value": 3,
+        "config_hash": hex_hash(&config_hash(&ProfileConfig::default()).expect("hash")),
+        "config": ProfileConfig::default()
+    });
+    let rejected = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            duplicate_id,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(rejected.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(rejected).await;
+    assert!(message.contains("already exists"));
+
+    let stale_config = ProfileConfig::from(&GenerateOptions {
+        word1_lengths: Some(vec![4]),
+        ..GenerateOptions::default()
+    });
+    let mismatched = json!({
+        "format": "hoststamp-profile-v1",
+        "id": exported_id,
+        "slug": "team-a",
+        "access": "public",
+        "last_atomic_value": 3,
+        "config_hash": hex_hash(&config_hash(&stale_config).expect("hash")),
+        "config": ProfileConfig::default()
+    });
+    let rejected = target_app
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            mismatched,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(rejected.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(rejected).await;
+    assert!(message.contains("config_hash does not match"));
 }
 
 #[tokio::test]

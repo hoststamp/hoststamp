@@ -749,6 +749,43 @@ fn regenerate_recreates_profile_hostname_without_incrementing_counter() {
 }
 
 #[test]
+fn regenerate_supports_count() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate
+        .args(["generate", "--count", "3"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.lines().collect::<Vec<_>>();
+    assert_eq!(generated.len(), 3);
+
+    let mut regenerate = command_for_database(&database);
+    let assert = regenerate
+        .args([
+            "regenerate",
+            "--atomic-value",
+            "2",
+            "--count",
+            "2",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+
+    assert_eq!(hostnames.len(), 2);
+    assert_eq!(hostnames[0]["hostname"], generated[1]);
+    assert_eq!(hostnames[0]["atomic_value"], 2);
+    assert_eq!(hostnames[1]["hostname"], generated[2]);
+    assert_eq!(hostnames[1]["atomic_value"], 3);
+}
+
+#[test]
 fn regenerate_json_prints_atomic_metadata() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");
@@ -791,21 +828,21 @@ fn regenerate_rejects_values_that_have_not_been_issued() {
     let database = tempdir.path().join("hoststamp.db");
     let mut regenerate = command_for_database(&database);
     regenerate
-        .args(["regenerate", "--atomic-value", "2"])
+        .args(["regenerate", "--atomic-value", "1", "--count", "2"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("was never generated"));
+        .stderr(predicate::str::contains("never generated"));
 }
 
 #[test]
 fn regenerate_rejects_generation_options() {
     let (mut cmd, _tempdir) = command_with_database();
 
-    cmd.args(["regenerate", "--atomic-value", "1", "--count", "2"])
+    cmd.args(["regenerate", "--atomic-value", "1", "--capacity"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "regenerate only supports --profile and --atomic-value",
+            "regenerate only supports --profile, --atomic-value, --count, and --json",
         ));
 }
 

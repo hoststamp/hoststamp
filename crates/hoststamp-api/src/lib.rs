@@ -16,12 +16,15 @@ use hoststamp_core::{
     },
     generator::{self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname},
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
-    storage::{ProfileStore, StoredProfile, StoredProfileToken},
+    storage::{ProfileStore, StoredProfile, StoredProfileToken, config_hash},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::{net::TcpListener, signal, sync::Mutex};
+use uuid::Uuid;
+
+const PROFILE_EXPORT_FORMAT: &str = "hoststamp-profile-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -125,6 +128,7 @@ pub struct RegenerateQuery {
     pub format: Option<GenerateFormat>,
     pub profile: Option<String>,
     pub atomic_value: i64,
+    pub count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -204,6 +208,30 @@ impl From<StoredProfileToken> for ProfileTokenResponse {
             revoked_at_ms: token.revoked_at_ms,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileExport {
+    pub format: &'static str,
+    pub id: String,
+    pub slug: String,
+    pub access: ProfileAccess,
+    pub last_atomic_value: i64,
+    pub config_hash: String,
+    pub config: ProfileConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportProfileRequest {
+    pub format: String,
+    pub id: String,
+    pub slug: String,
+    pub access: ProfileAccess,
+    pub last_atomic_value: i64,
+    pub config_hash: String,
+    pub config: ProfileConfig,
+    pub confirmation: Option<AdminConfirmation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,6 +330,8 @@ pub fn app_with_mode(
                 "/api/profiles/{slug}",
                 get(admin_show_profile).delete(admin_delete_profile),
             )
+            .route("/api/profiles/{slug}/export", get(admin_export_profile))
+            .route("/api/profiles/import", post(admin_import_profile))
             .route(
                 "/api/profiles/{slug}/config",
                 patch(admin_update_profile_config),
@@ -429,13 +459,13 @@ async fn regenerate_one(
         )));
     }
 
-    let hostname = regenerate_with_state(&query, &state, &headers)
+    let hostnames = regenerate_with_state(&query, &state, &headers)
         .await
         .map_err(generate_error_response)?;
 
     Ok(generate_response(
         query.format.unwrap_or(GenerateFormat::Plain),
-        vec![hostname],
+        hostnames,
     ))
 }
 
@@ -489,6 +519,104 @@ async fn admin_create_profile(
 
     Ok((
         StatusCode::CREATED,
+        Json(ProfileEnvelope {
+            profile: profile.into(),
+        }),
+    ))
+}
+
+async fn admin_export_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+) -> Result<Json<ProfileExport>, Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let store = store.lock().await;
+    let profile = store
+        .load_profile(&slug)
+        .map_err(admin_bad_request_response)?;
+
+    Ok(Json(ProfileExport {
+        format: PROFILE_EXPORT_FORMAT,
+        id: profile.id.to_string(),
+        slug: profile.slug.as_str().to_owned(),
+        access: profile.access,
+        last_atomic_value: profile.last_atomic_value,
+        config_hash: hex_string(&profile.config_hash),
+        config: profile.config,
+    }))
+}
+
+async fn admin_import_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ImportProfileRequest>,
+) -> Result<(StatusCode, Json<ProfileEnvelope>), Response> {
+    authorize_admin_request(&headers, &state.auth)?;
+    if request.format != PROFILE_EXPORT_FORMAT {
+        return Err(admin_bad_request_response(format!(
+            "profile import format must be {PROFILE_EXPORT_FORMAT:?}"
+        )));
+    }
+    let id = Uuid::parse_str(&request.id).map_err(|error| {
+        admin_bad_request_response(format!("profile import id is invalid: {error}"))
+    })?;
+    let slug = parse_slug(&request.slug)?;
+    if request.last_atomic_value < 0 {
+        return Err(admin_bad_request_response(
+            "profile import last_atomic_value must be at least 0",
+        ));
+    }
+    let options = request.config.to_generate_options(generator::DEFAULT_COUNT);
+    generator::validate_generate_options(&options).map_err(admin_bad_request_response)?;
+    let expected_config_hash = hex_string(
+        &config_hash(&request.config)
+            .map_err(|error| admin_bad_request_response(error.to_string()))?,
+    );
+    if request.config_hash != expected_config_hash {
+        return Err(admin_bad_request_response(
+            "profile import config_hash does not match config",
+        ));
+    }
+    if !request.config.uses_current_generation_contract() {
+        return Err(admin_bad_request_response(
+            "profile import config was created with a generation engine, dictionary/blocklist versions, or resolved word pools that do not match this binary",
+        ));
+    }
+
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let existing = store.load_profile(&slug).ok();
+    if existing.as_ref().is_some_and(|profile| {
+        profile.id != id
+            || profile.access != request.access
+            || profile.config != request.config
+            || profile.last_atomic_value != request.last_atomic_value
+    }) {
+        let confirmation = request.confirmation.as_ref().ok_or_else(|| {
+            AdminError::BadRequest("profile import replacement requires confirmation".to_owned())
+        })?;
+        confirm_admin_action(confirmation, &slug, "replace")?;
+    }
+    let status = if existing.is_some() {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    let profile = store
+        .import_profile(
+            &slug,
+            id,
+            request.access,
+            &request.config,
+            request.last_atomic_value,
+        )
+        .map_err(admin_bad_request_response)?;
+
+    Ok((
+        status,
         Json(ProfileEnvelope {
             profile: profile.into(),
         }),
@@ -802,12 +930,21 @@ async fn regenerate_with_state(
     query: &RegenerateQuery,
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<GeneratedHostname, GenerateError> {
+) -> Result<Vec<GeneratedHostname>, GenerateError> {
     let Some(atomic) = &state.atomic else {
         return Err(GenerateError::BadRequest(
             "profile storage is required for API regeneration".to_owned(),
         ));
     };
+    let count = query.count.unwrap_or(generator::DEFAULT_COUNT);
+    generator::validate_count(count)
+        .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
+    let count_offset = i64::try_from(count - 1)
+        .map_err(|_| GenerateError::BadRequest("count is too large".to_owned()))?;
+    let final_atomic_value = query
+        .atomic_value
+        .checked_add(count_offset)
+        .ok_or_else(|| GenerateError::BadRequest("atomic value range is too large".to_owned()))?;
 
     let profile_slug = match query.profile.as_deref() {
         Some(profile) => profile.parse().map_err(GenerateError::BadRequest)?,
@@ -829,12 +966,13 @@ async fn regenerate_with_state(
             profile.slug.as_str()
         )));
     }
-    if query.atomic_value > profile.last_atomic_value {
+    if final_atomic_value > profile.last_atomic_value {
         return Err(GenerateError::BadRequest(format!(
-            "profile {:?} has issued {} atomic values; {} was never generated",
+            "profile {:?} has issued {} atomic values; requested range {}..={} includes values that were never generated",
             profile.slug.as_str(),
             profile.last_atomic_value,
-            query.atomic_value
+            query.atomic_value,
+            final_atomic_value
         )));
     }
     if !profile.config.uses_current_generation_contract() {
@@ -847,21 +985,24 @@ async fn regenerate_with_state(
     let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
     generator::validate_generate_options(&options)
         .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
-    let hostname = generator::generate_profile_hostname(
-        &options,
-        profile.id,
-        &profile.config_hash,
-        query.atomic_value,
-    )
-    .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
-
-    Ok(GeneratedHostname::profile_backed(
-        &profile.slug,
-        ProfileGeneratedHostname {
-            hostname,
-            atomic_value: query.atomic_value,
-        },
-    ))
+    (query.atomic_value..=final_atomic_value)
+        .map(|atomic_value| {
+            let hostname = generator::generate_profile_hostname(
+                &options,
+                profile.id,
+                &profile.config_hash,
+                atomic_value,
+            )
+            .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
+            Ok(GeneratedHostname::profile_backed(
+                &profile.slug,
+                ProfileGeneratedHostname {
+                    hostname,
+                    atomic_value,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn generate_response(format: GenerateFormat, hostnames: Vec<GeneratedHostname>) -> Response {
