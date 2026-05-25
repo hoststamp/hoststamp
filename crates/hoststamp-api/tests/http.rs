@@ -121,6 +121,15 @@ async fn root_serves_local_ux() {
         .expect("response");
 
     assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(response.headers()["x-frame-options"], "DENY");
+    assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+    assert!(
+        response.headers()["content-security-policy"]
+            .to_str()
+            .expect("csp")
+            .contains("frame-ancestors 'none'")
+    );
 
     let body = response
         .into_body()
@@ -219,6 +228,28 @@ async fn generate_endpoint_uses_server_defaults() {
 
     assert_eq!(parts.len(), 2);
     assert!(parts.iter().all(|part| part.chars().count() == 4));
+}
+
+#[tokio::test]
+async fn oversized_json_bodies_are_rejected() {
+    let body = format!(
+        "{{\"padding\":\"{}\"}}",
+        "x".repeat(server::MAX_REQUEST_BODY_BYTES)
+    );
+    let response = server::app_with_auth(GenerateOptions::default(), None, auth_config())
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/profiles/import")
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]

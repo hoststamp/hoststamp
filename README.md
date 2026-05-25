@@ -1,433 +1,107 @@
 Hoststamp
 ---
 
-Hoststamp is a Rust CLI, API server, and local UX.
+Hoststamp is a Rust CLI, API server, and local UX for generating deterministic
+hostnames from profile-backed word pools and atomic counters.
 
-## Development
+## Quick Start
 
-### Run locally
+Run the local API and UX:
 
 ```sh
 cargo run -p hoststamp -- serve
 ```
 
-The server binds to `127.0.0.1:8080` by default. Set `HOSTSTAMP_ADDR`
-or pass `--addr` to choose another bind address. `serve` exposes the API and
-local UX by default; use `--mode api` or `--mode ux` to run only one surface.
+The server binds to `127.0.0.1:8080` by default. Open:
 
-```sh
-cargo run -p hoststamp -- serve --addr 0.0.0.0:8080
-cargo run -p hoststamp -- serve --mode api
-cargo run -p hoststamp -- serve --mode ux
-cargo run -p hoststamp -- health
-cargo run -p hoststamp -- --version
-cargo run -p hoststamp -- --credits
-cargo run -p hoststamp -- --list-categories
-cargo run -p hoststamp -- generate
-cargo run -p hoststamp -- random
-cargo run -p hoststamp -- regenerate --atomic-value 42 --count 3
-cargo run -p hoststamp -- config show
-cargo run -p hoststamp -- profile list
-cargo run -p hoststamp -- --profile staging profile show
-cargo run -p hoststamp -- --profile staging generate
-```
+- UX: `http://127.0.0.1:8080/`
+- API health: `http://127.0.0.1:8080/api/health`
 
-Generate hostnames:
+Generate names from the default profile:
 
 ```sh
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- generate --count 10
 cargo run -p hoststamp -- generate --count 10 --json
+```
+
+Generate stateless random names without opening the profile database:
+
+```sh
 cargo run -p hoststamp -- random
 cargo run -p hoststamp -- random --count 10
 cargo run -p hoststamp -- random --word1-lengths 4 --word2-lengths 4
-cargo run -p hoststamp -- random --word1-categories adjective --word2-categories animal
-cargo run -p hoststamp -- random --suffix-min-length 8
-cargo run -p hoststamp -- random --json
-cargo run -p hoststamp -- config init
-cargo run -p hoststamp -- --profile team-a generate
-cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
-cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --count 3 --json
-cargo run -p hoststamp -- --profile team-a profile new
-cargo run -p hoststamp -- --profile team-a config set --word1-lengths 4,5,6 --word2-lengths 4,5,6
-cargo run -p hoststamp -- --profile team-a config set --word1-categories adjective,noun --word2-categories animal,name
-cargo run -p hoststamp -- --profile team-a config set --suffix-min-length 10
-cargo run -p hoststamp -- --profile team-a config set --word2-enabled false --suffix-enabled false
-cargo run -p hoststamp -- --profile team-a profile reset-atomic-value --atomic-value 999
-cargo run -p hoststamp -- --profile team-a --capacity
 ```
 
-Hostnames are assembled from three positions: `word1`, `word2`, and `suffix`.
-`generate` uses the selected profile's stored generator settings and atomic
-counter. `random` is stateless: it never opens or mutates the profile database,
-and it starts from the built-in `5/5/5` defaults unless ad hoc generation
-options are passed on the command line. The built-in profile seed is
-`word1-word2-suffix` (e.g. `5/5/5`) with `adjective,adverb` for `word1` and
-all non-`adjective`, non-`adverb`, non-`diceware` categories for `word2`. Each
-word position has independent enable, lengths, and categories controls stored
-on the selected profile with `hoststamp config set` (`--word1-enabled`,
-`--word1-lengths`, `--word1-categories`, and the matching `word2` flags). The
-same generation controls can be passed to `hoststamp random` without changing a
-profile. The suffix has `--suffix-enabled` and `--suffix-min-length`. Words
-never repeat within a single hostname. `--count` is a request option and is
-capped at 50.
+Manage and use a named profile:
 
-`config set --wordN-categories` accepts a comma-separated category list.
-`config set --wordN-lengths` accepts a comma-separated list of exact lengths or
-the literal `any` for no length filter. Selection across selected categories
-and length buckets is weighted by available word count so every candidate word
-has an even chance. If the selected categories do not contain enough matching
-words, configuration fails loudly before it is stored.
+```sh
+cargo run -p hoststamp -- --profile team-a profile new
+cargo run -p hoststamp -- --profile team-a config set --word1-lengths 4,5,6 --word2-lengths 4,5,6
+cargo run -p hoststamp -- --profile team-a generate
+cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --count 3 --json
+```
 
-Use `--capacity` to report the available name space for the selected profile
-without generating or modifying that profile. The report includes the
-candidate count for each word position, overlap removed by the no-repeat rule,
-unique word combinations, suffix variants, suffix bits, and total variants.
-Suffixes are Sqids-encoded lowercase base36 (`0-9a-z`) values with a pinned
-Sqids blocklist. `config set --suffix-min-length` is bounded to `[3, 13]` and
-is a minimum: suffixes can grow longer as the encoded number passes the
-fixed-length space for that minimum. The fixed-length suffix space is
-`36^suffix_min_length`; with the default minimum length of `5`, that space is
-`60,466,176`.
+Create the bootstrap config:
 
-With profile storage, Hoststamp increments the selected profile's database
-counter and derives the full hostname from the profile UUID, profile config
-hash, and atomic value. Stored profile configs include `engine = "atomic-v1"`.
-That engine freezes the deterministic generation contract: word-pair
-permutation, no-repeat word handling, suffix encoding, profile-specific suffix
-alphabet derivation, and `word1-word2-suffix` formatting. Word choices walk a
-deterministic permutation of the valid word space, so each valid word pair is
-used once before that profile cycle repeats. The suffix encodes the same
-atomic value with Sqids. The profile UUID also derives a deterministic
-profile-specific suffix alphabet, so each profile gets a different-looking
-sequence while keeping the uniqueness guarantee scoped to the active profile
-row. Future algorithm changes must use a new engine value instead of changing
-`atomic-v1`. For stateless random generation, Hoststamp encodes a random
-number from `1..=(36^suffix_min_length / 2)`. That fallback keeps the suffix
-inside the requested minimum length range, but it is not uniqueness-tracked or
-reproducible.
+```sh
+cargo run -p hoststamp -- config init
+cargo run -p hoststamp -- config show
+```
 
-Sqids can expand past the configured minimum length. For example,
-`--suffix-min-length 5` keeps profile-backed atomic values `1..=60,466,176`
-within at least five suffix characters; larger atomic values may require six or
-more suffix characters. Length `13` covers the full signed SQLite counter range
-used by Hoststamp profile storage (`1..=9,223,372,036,854,775,807`).
+## Core Model
 
-| Suffix min length | Approx fixed-length atomic values* | Approx random fallback range* |
-| ---: | ---: | ---: |
-| 3 | ~1-46,656 | ~1-23,328 |
-| 4 | ~1-1,679,616 | ~1-839,808 |
-| 5 | ~1-60,466,176 | ~1-30,233,088 |
-| 6 | ~1-2,176,782,336 | ~1-1,088,391,168 |
-| 7 | ~1-78,364,164,096 | ~1-39,182,082,048 |
-| 8 | ~1-2,821,109,907,456 | ~1-1,410,554,953,728 |
-| 9 | ~1-101,559,956,668,416 | ~1-50,779,978,334,208 |
-| 10 | ~1-3,656,158,440,062,976 | ~1-1,828,079,220,031,488 |
-| 11 | ~1-131,621,703,842,267,136 | ~1-65,810,851,921,133,568 |
-| 12 | ~1-4,738,381,338,321,616,896 | ~1-2,369,190,669,160,808,448 |
-| 13 | ~1-9,223,372,036,854,775,807 | ~1-4,611,686,018,427,387,903 |
+Hostnames are assembled from `word1`, `word2`, and `suffix`. Profile-backed
+generation stores configuration in SQLite, increments an atomic counter
+transactionally, and derives each hostname from the profile UUID, profile
+config hash, and atomic value.
 
-*Approximate base36 space before Sqids blocklist filtering. The pinned Sqids
-blocklist can skip some encoded values, so expansion may happen a few values
-earlier for a given profile alphabet.
+Stored profile configs include `engine = "atomic-v1"`. That engine freezes the
+deterministic generation contract: word-pair permutation, no-repeat word
+handling, suffix encoding, profile-specific suffix alphabet derivation, and
+`word1-word2-suffix` formatting. Future algorithm changes must use a new
+engine value instead of changing `atomic-v1`.
 
-Category stats from the generated artifact:
+The default profile seed is `5/5/5`: five-letter `word1`, five-letter `word2`,
+and a minimum five-character lowercase base36 Sqids suffix. The default
+profile slug is `_`.
 
-| Category | Available entries | Word lengths |
-| --- | ---: | --- |
-| `adjective` | 584 | 3-12 |
-| `adverb` | 257 | 4-10 |
-| `animal` | 448 | 3-8 |
-| `deity` | 151 | 3-11 |
-| `diceware` | 8,026 | 3-10 |
-| `element` | 117 | 3-12 |
-| `gemstone` | 312 | 3-12 |
-| `metal` | 91 | 3-12 |
-| `monster` | 20 | 5-11 |
-| `name` | 652 | 3-12 |
-| `noun` | 95 | 3-10 |
-| `ocean` | 5 | 6-8 |
-| `phonetic` | 26 | 4-8 |
-| `planet` | 13 | 4-8 |
-| `river` | 186 | 3-12 |
-| `scientist` | 241 | 4-12 |
-| `star` | 435 | 3-12 |
-| `stone` | 48 | 4-12 |
-| `tolkien` | 398 | 3-11 |
-| `wind` | 90 | 3-12 |
+## API And UX
 
-Run `hoststamp --list-categories` for the category names and total counts
-compiled into the binary.
+Common local endpoints:
 
-Use `hoststamp regenerate --atomic-value <n>` to reproduce the hostname for a
-stored profile atomic value. Regeneration uses only the selected profile
-(`--profile`, default `_`) and an atomic range; it does not increment the
-counter. Pass `--count <n>` to regenerate a contiguous range starting at
-`--atomic-value`. Plain output is one hostname per line, and `--json` returns
-each hostname with `profile` and `atomic_value` metadata. The requested atomic
-range must already have been issued by the active profile generation; for
-example, a profile with `last_atomic_value = 10` rejects
-`--atomic-value 10 --count 2` because that includes value `11`. Regeneration
-requires suffixes to be enabled for the stored profile because atomic values
-are tracked only for profile-backed suffix generation. Stored profiles include
-the generation engine, selected dictionary and blocklist versions, those version
-hashes, and resolved word-pool hashes. Hoststamp will not regenerate if the
-engine, selected version content, or resolved pools drift from what this binary
-supports.
+- `POST /api/generate?count=3`
+- `GET /api/regenerate?atomic_value=42&count=3`
+- `GET /api/random?count=3`
+- `GET /api/capacity?profile=_`
+- `GET /api/profiles`
 
-Local endpoints:
-
-- UX: `http://127.0.0.1:8080/`
-- API health: `http://127.0.0.1:8080/api/health`
-- API generate: `POST http://127.0.0.1:8080/api/generate?count=3`
-- API generate JSON: `POST http://127.0.0.1:8080/api/generate?profile=_&count=3&format=json`
-- API capacity: `http://127.0.0.1:8080/api/capacity?profile=_`
-- API regenerate: `http://127.0.0.1:8080/api/regenerate?atomic_value=42&count=3`
-- API regenerate JSON: `http://127.0.0.1:8080/api/regenerate?profile=_&atomic_value=42&count=3&format=json`
-- API random: `http://127.0.0.1:8080/api/random?count=3&word1_lengths=4&word2_lengths=4`
-- API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
-- Admin profiles: `http://127.0.0.1:8080/api/profiles`
-- Container health: `http://127.0.0.1:8080/healthz`
-
-`POST /api/generate` returns newline-delimited `text/plain` by default so
-command line clients can pipe the response directly. `GET /api/generate`
-returns `405 Method Not Allowed` because profile-backed generation can mutate
-the selected profile's atomic counter. Profile-backed atomic generation also
-returns metadata headers:
+`POST /api/generate` returns newline-delimited `text/plain` by default so shell
+clients can pipe the response directly. Pass `format=json` for structured
+output. Profile-backed generation and regeneration also return:
 
 - `x-hoststamp-profile`
 - `x-hoststamp-atomic-values`
 
-Pass `format=json` to return JSON with a `hostnames` array of generated items.
-Each item includes `hostname`; profile-backed atomic generation and
-regeneration also include `profile` and `atomic_value`. `/api/generate`
-accepts `format`, `profile`, and `count`; `profile` defaults to the server's
-active profile. `/api/capacity` accepts `profile` and returns the selected
-profile's current name-space report without incrementing the counter.
-`/api/regenerate` accepts `format`, `profile`, `atomic_value`, and `count`;
-`profile` defaults to the server's active profile. It is read-only, does not
-increment the counter, and rejects ranges beyond the selected profile's
-`last_atomic_value`. `/api/random` accepts `format`, `count`, `word1_enabled`,
-`word1_lengths`, `word1_categories`, `word2_enabled`, `word2_lengths`,
-`word2_categories`, `suffix_enabled`, and `suffix_min_length`.
+Admin endpoints require a configured admin bearer token. Profile-backed
+generation can also require admin or profile bearer tokens when
+`api.auth.required` or `HOSTSTAMP_API_AUTH_REQUIRED=true` is set.
 
-```json
-{
-  "hostnames": [
-    {
-      "hostname": "brief-cobra-db50d",
-      "profile": "_",
-      "atomic_value": 1
-    }
-  ]
-}
-```
+## Documentation
 
-### Configuration
+- [Generation](docs/generation.md): deterministic naming, random generation,
+  capacity math, and regeneration.
+- [Configuration](docs/configuration.md): config file, environment variables,
+  profiles, and storage.
+- [API](docs/api.md): API routes, admin endpoints, auth behavior, and local UX.
+- [Dictionaries](docs/dictionaries.md): embedded categories, version hashes,
+  and attribution.
+- [Deployment](docs/deployment.md): exposed-server guidance, request limits,
+  security headers, and Docker.
+- [Development](docs/development.md): checks, crate layout, CI, and commit
+  message conventions.
 
-Hoststamp reads bootstrap configuration from the first available source:
-
-1. `--config <path>`
-2. `HOSTSTAMP_CONFIG=<path>`
-3. `$XDG_CONFIG_HOME/hoststamp/config.toml`
-4. `~/.config/hoststamp/config.toml`
-5. Built-in defaults
-
-The bootstrap config handles server and storage settings. Generator profile
-defaults are stored in the profile database. The default database path is
-`$XDG_CONFIG_HOME/hoststamp/hoststamp.db`, falling back to
-`~/.config/hoststamp/hoststamp.db`; it sits next to the default config file.
-
-Create the bootstrap config with:
-
-```sh
-hoststamp config init
-hoststamp --config /etc/hoststamp/config.toml config init
-```
-
-`config init` creates parent directories as needed, refuses to overwrite an
-existing file, and creates the config as owner-readable only on Unix. Use
-OpenSSL to create 32-character secret values:
-
-```sh
-openssl rand -base64 24
-```
-
-```toml
-[server]
-# addr = "127.0.0.1:8080"
-
-[storage]
-# Defaults to hoststamp.db next to this config file.
-# url = "sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db"
-
-[api.auth]
-# Disabled by default for local development.
-required = false
-
-# For local single-user setups, uncomment and set direct secret values here.
-# For shared systems, keep secrets in environment variables or a secret manager.
-# If secrets are stored here, keep this file private with chmod 600.
-# admin_token = "replace-with-openssl-output"
-# token_hash_key = "replace-with-openssl-output"
-
-# Environment variables override direct secret values when both are present.
-admin_token_env = "HOSTSTAMP_ADMIN_TOKEN"
-token_hash_key_env = "HOSTSTAMP_TOKEN_HASH_KEY"
-
-# Example:
-#   export HOSTSTAMP_ADMIN_TOKEN="$(openssl rand -base64 24)"
-#   export HOSTSTAMP_TOKEN_HASH_KEY="$(openssl rand -base64 24)"
-```
-
-Environment variables (all `HOSTSTAMP_*`):
-
-| Env var | Maps to |
-| --- | --- |
-| `HOSTSTAMP_CONFIG` | path to the config file |
-| `HOSTSTAMP_ADDR` | `server.addr` |
-| `HOSTSTAMP_DATABASE_URL` | `storage.url` |
-| `HOSTSTAMP_API_AUTH_REQUIRED` | `api.auth.required` |
-| `HOSTSTAMP_ADMIN_TOKEN` | admin bearer token secret |
-| `HOSTSTAMP_TOKEN_HASH_KEY` | HMAC key for profile token hashes |
-
-Profiles are selected with `--profile <slug>`. The default profile slug is `_`,
-which is reserved and cannot be used as a normal user slug. User slugs use
-lowercase ASCII letters, digits, and hyphens, and must start and end with a
-letter or digit. Missing profiles are seeded from the built-in `5/5/5`
-generator defaults on first use.
-
-Profile management commands operate on active profile rows:
-
-```sh
-hoststamp profile list
-hoststamp --profile team-a profile show
-hoststamp --profile team-a profile new
-hoststamp --profile team-a profile delete
-hoststamp --profile team-a profile set-access --access public
-hoststamp --profile team-a profile token create --name deploy
-hoststamp --profile team-a profile token list
-hoststamp --profile team-a profile token revoke <token-id>
-hoststamp --profile team-a profile reset-atomic-value --atomic-value 999
-```
-
-`profile delete` and `profile reset-atomic-value` require two interactive
-confirmations. `reset-atomic-value` sets the stored `last_atomic_value`; the
-next profile-backed generation increments first and uses the following value.
-For example, resetting to `999` makes the next generated hostname use atomic
-value `1000`. Lowering the stored value can duplicate previously issued names,
-and raising it skips part of the deterministic sequence.
-
-API token auth is disabled by default for local development. Admin and profile
-token secrets can be loaded from `api.auth.admin_token` and
-`api.auth.token_hash_key` for local single-user setups. Keep the config file
-private, for example with `chmod 600`, when storing secrets there. Environment
-variables take precedence and are preferred for shared systems. When
-`api.auth.required` or `HOSTSTAMP_API_AUTH_REQUIRED=true` is set, private
-profiles require either the admin bearer token or a matching profile bearer
-token for `POST /api/generate` and `GET /api/regenerate`. Health and random
-generation stay public. Admin profile endpoints always require a configured
-admin bearer token, even when general API auth is disabled. Profile tokens are
-generated by Hoststamp, shown once, and stored only as an HMAC-SHA256 hash
-keyed by `HOSTSTAMP_TOKEN_HASH_KEY`. Profile tokens are tied to the immutable
-profile UUID, so replacing a profile config invalidates tokens for the old
-deterministic profile identity.
-
-In the default no-auth local mode, `?profile=<slug>` can select and increment
-any existing profile through `POST /api/generate`. That is intentional for the
-local UX and development workflows. Enable `api.auth.required` for shared or
-remote deployments that need profile access boundaries.
-
-```sh
-export HOSTSTAMP_API_AUTH_REQUIRED=true
-export HOSTSTAMP_ADMIN_TOKEN="$(openssl rand -hex 32)"
-export HOSTSTAMP_TOKEN_HASH_KEY="$(openssl rand -hex 32)"
-
-hoststamp --profile team-a profile token create --name deploy
-curl -H "Authorization: Bearer $HOSTSTAMP_ADMIN_TOKEN" \
-  -X POST "http://127.0.0.1:8080/api/generate"
-```
-
-Admin API endpoints mirror the profile/config CLI operations:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/profiles` | list active profiles |
-| `POST` | `/api/profiles` | create a profile with default config |
-| `GET` | `/api/profiles/{slug}` | show one active profile |
-| `DELETE` | `/api/profiles/{slug}` | delete an active profile |
-| `GET` | `/api/profiles/{slug}/export` | export profile identity, counter, access, and config |
-| `POST` | `/api/profiles/import` | import an exported profile |
-| `PATCH` | `/api/profiles/{slug}/config` | replace profile config |
-| `PATCH` | `/api/profiles/{slug}/access` | set `public` or `private` |
-| `GET` | `/api/profiles/{slug}/tokens` | list profile tokens |
-| `POST` | `/api/profiles/{slug}/tokens` | create a profile token |
-| `DELETE` | `/api/profiles/{slug}/tokens/{token_id}` | revoke a token |
-| `POST` | `/api/profiles/{slug}/reset-atomic-value` | reset the stored counter |
-
-Destructive admin endpoints use explicit JSON confirmation instead of
-interactive prompts:
-
-```json
-{
-  "confirmation": {
-    "profile": "team-a",
-    "action": "delete"
-  }
-}
-```
-
-Config replacement uses action `replace`; atomic reset uses action `reset`.
-`PATCH /api/profiles/{slug}/config` accepts structured generator settings such
-as `word1_lengths`, `word1_categories`, `word2_lengths`, `word2_categories`,
-`suffix_enabled`, and `suffix_min_length`. Length fields accept an integer
-array, `null`, `"any"`, or the same comma-separated form as the CLI.
-`GET /api/profiles/{slug}/export` returns a portable JSON profile containing
-the deterministic profile ID, access mode, last issued atomic value, config
-hash, and config. `POST /api/profiles/import` restores that identity on another
-instance; importing over an existing slug requires action `replace`.
-
-Use `hoststamp config show` to print the resolved bootstrap settings, selected
-profile metadata, stored profile config, and effective generator config after
-request options such as `--count` are applied. Database URLs that could contain
-secrets are redacted, and auth secrets are shown only as configured/not
-configured booleans.
-
-Profile-backed suffix generation treats the selected profile config as part of
-the identity used for deterministic suffixes. Persistent generator settings are
-changed with `hoststamp config set`, which asks for two confirmations before
-replacing the active profile row. Replacement creates a new profile UUID and
-resets that profile's atomic counter. `--count` is a request option only and
-does not trigger profile replacement. API generation requests cannot override
-stored profile config; use the admin config endpoint or CLI to replace profile
-config deliberately.
-
-Stored profiles include dictionary and blocklist version hashes plus resolved
-word-pool hashes. If a newer Hoststamp binary changes unrelated dictionary
-versions, old profiles can continue to run. If the selected dictionary version,
-selected blocklist version, or resolved pools for the profile change,
-profile-backed `generate`, `serve`, and `regenerate` fail closed so they do not
-emit names that cannot later be regenerated under the recorded profile state.
-Create a new profile, delete and recreate the existing profile, or use
-`config set` to replace the active profile row with the current dictionary and
-blocklist versions.
-
-SQLite storage is implemented for local profiles. `postgres://` and
-`postgresql://` URLs are recognized as planned remote storage backends, but
-Postgres execution is not implemented yet.
-
-For containers, mount a config file and set `HOSTSTAMP_CONFIG`:
-
-```sh
-docker run --rm -p 8080:8080 \
-  -e HOSTSTAMP_CONFIG=/etc/hoststamp/config.toml \
-  -e HOSTSTAMP_DATABASE_URL=sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db \
-  -v hoststamp-data:/home/hoststamp/.config/hoststamp \
-  -v "$PWD/config.example.toml:/etc/hoststamp/config.toml:ro" \
-  hoststamp:dev
-```
-
-### Project commands
+## Project Commands
 
 ```sh
 cargo fmt --all -- --check
@@ -445,51 +119,20 @@ mise install --locked
 mise run ci
 ```
 
-Run individual `mise` tasks when you only need one check. Tool versions are
-pinned in `mise.toml` and locked in `mise.lock`.
-
-### Crate layout
-
-The workspace is split so applications can reuse Hoststamp without running it
-as a microservice:
-
-| Crate | Purpose |
-| --- | --- |
-| `hoststamp-core` | reusable generator, dictionary, profile, storage, config, auth, and notices code |
-| `hoststamp-api` | Axum API server routes and serving helpers |
-| `hoststamp-ux` | local UX shell assets and route handler |
-| `hoststamp` | CLI binary that composes the core, API, and UX crates |
-
-### Docker
-
-```sh
-docker build -t hoststamp:dev .
-docker run --rm -p 8080:8080 hoststamp:dev
-```
-
-### Automation
-
-CI validates formatting, clippy, tests with coverage, release builds,
-third-party notice drift, workflow syntax, dependency advisories, secret
-leaks, filesystem vulnerability/misconfiguration scans, and the Docker image.
-Pull requests run a fast amd64 Docker smoke build. Pushes to `main` publish
-multi-arch nightly images to GHCR tagged as `nightly`, `sha-<short>`, and
-`vX.Y.Z-nightly.YYYYMMDD.N`. Cargo audit and Dependabot also run weekly.
-
 ## License
 
 Hoststamp source is licensed under the Functional Source License 1.1,
 ALv2 Future License (`FSL-1.1-ALv2`). See [LICENSE](./LICENSE).
 
 Third-party notices for bundled datasets are in
-[THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md) and are also available
-from the CLI:
+[THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md) and are also available from
+the CLI:
 
 ```sh
 cargo run -p hoststamp -- --credits
 ```
 
-### Commit messages
+## Commit Messages
 
 Use Conventional Commit-style subjects:
 

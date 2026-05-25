@@ -3,7 +3,7 @@
 use anyhow::anyhow;
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
@@ -25,6 +25,7 @@ use tokio::{net::TcpListener, signal, sync::Mutex};
 use uuid::Uuid;
 
 const PROFILE_EXPORT_FORMAT: &str = "hoststamp-profile-v1";
+pub const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -354,11 +355,14 @@ pub fn app_with_mode(
             );
     }
 
-    router.fallback(not_found).with_state(AppState {
-        generate: generate_options,
-        atomic,
-        auth,
-    })
+    router
+        .fallback(not_found)
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .with_state(AppState {
+            generate: generate_options,
+            atomic,
+            auth,
+        })
 }
 
 pub fn health_payload() -> Health {
