@@ -194,6 +194,7 @@ pub struct ProfileTokenResponse {
     pub profile_id: String,
     pub name: String,
     pub created_at_ms: i64,
+    pub expires_at_ms: Option<i64>,
     pub last_used_at_ms: Option<i64>,
     pub revoked_at_ms: Option<i64>,
 }
@@ -205,6 +206,7 @@ impl From<StoredProfileToken> for ProfileTokenResponse {
             profile_id: token.profile_id.to_string(),
             name: token.name,
             created_at_ms: token.created_at_ms,
+            expires_at_ms: token.expires_at_ms,
             last_used_at_ms: token.last_used_at_ms,
             revoked_at_ms: token.revoked_at_ms,
         }
@@ -251,6 +253,7 @@ pub struct UpdateProfileAccessRequest {
 #[serde(deny_unknown_fields)]
 pub struct CreateProfileTokenRequest {
     pub name: String,
+    pub expires_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -745,7 +748,13 @@ async fn admin_create_profile_token(
     let token_hash =
         profile_token_hash(hash_key, &generated.secret).map_err(admin_internal_response)?;
     let token = store
-        .create_profile_token(profile.id, &generated.token_id, &request.name, token_hash)
+        .create_profile_token(
+            profile.id,
+            &generated.token_id,
+            &request.name,
+            token_hash,
+            request.expires_at_ms,
+        )
         .map_err(admin_bad_request_response)?;
 
     Ok((

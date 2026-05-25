@@ -91,6 +91,7 @@ hoststamp --profile team-a profile new
 hoststamp --profile team-a profile delete
 hoststamp --profile team-a profile set-access --access public
 hoststamp --profile team-a profile token create --name deploy
+hoststamp --profile team-a profile token create --name deploy --expires-at-ms 1893456000000
 hoststamp --profile team-a profile token list
 hoststamp --profile team-a profile token revoke <token-id>
 hoststamp --profile team-a profile reset-atomic-value --atomic-value 999

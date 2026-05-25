@@ -8,7 +8,11 @@ use hoststamp_core::{
 };
 use predicates::prelude::*;
 use rusqlite::{Connection, params};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -29,6 +33,14 @@ fn command_for_database(database: &Path) -> Command {
         format!("sqlite://{}", database.display()),
     );
     cmd
+}
+
+fn future_timestamp_ms() -> i64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_millis();
+    i64::try_from(millis).expect("timestamp") + 60_000
 }
 
 fn set_default_config(database: &Path, args: &[&str]) {
@@ -608,6 +620,8 @@ fn profile_access_and_token_commands_manage_api_auth() {
 
     let mut create_token = command_for_database(&database);
     create_token.env("HOSTSTAMP_TOKEN_HASH_KEY", "hash-key");
+    let expires_at_ms = future_timestamp_ms();
+    let expires_at_ms_arg = expires_at_ms.to_string();
     let assert = create_token
         .args([
             "--profile",
@@ -617,10 +631,15 @@ fn profile_access_and_token_commands_manage_api_auth() {
             "create",
             "--name",
             "deploy",
+            "--expires-at-ms",
+            &expires_at_ms_arg,
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("token = \"hspt_"));
+        .stdout(predicate::str::contains("token = \"hspt_"))
+        .stdout(predicate::str::contains(format!(
+            "expires_at_ms = {expires_at_ms}"
+        )));
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let token_id = output
         .lines()
@@ -633,7 +652,8 @@ fn profile_access_and_token_commands_manage_api_auth() {
     list.args(["--profile", "team-a", "profile", "token", "list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("deploy"));
+        .stdout(predicate::str::contains("deploy"))
+        .stdout(predicate::str::contains(expires_at_ms.to_string()));
 
     let mut revoke = command_for_database(&database);
     revoke

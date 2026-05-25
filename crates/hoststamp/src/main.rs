@@ -275,6 +275,9 @@ enum ProfileTokenCommand {
         /// Human-readable token name.
         #[arg(long)]
         name: String,
+        /// Optional Unix timestamp in milliseconds when this token expires.
+        #[arg(long, value_parser = parse_token_expiration)]
+        expires_at_ms: Option<i64>,
     },
     /// List profile tokens.
     List,
@@ -392,7 +395,10 @@ async fn main() -> anyhow::Result<()> {
                     Ok(())
                 }
                 ProfileCommand::Token { command } => match command {
-                    ProfileTokenCommand::Create { name } => {
+                    ProfileTokenCommand::Create {
+                        name,
+                        expires_at_ms,
+                    } => {
                         let hash_key = settings.auth.token_hash_key.as_ref().ok_or_else(|| {
                             anyhow::anyhow!(
                                 "{} is required to create profile tokens",
@@ -408,6 +414,7 @@ async fn main() -> anyhow::Result<()> {
                             &generated.token_id,
                             &name,
                             token_hash,
+                            expires_at_ms,
                         )?;
                         print_profile_token(&token);
                         println!("token = {:?}", generated.token);
@@ -860,13 +867,17 @@ fn print_profile_show(profile: &StoredProfile) {
 }
 
 fn print_profile_token_list(tokens: &[StoredProfileToken]) {
-    println!("token_id\tname\tcreated_at_ms\tlast_used_at_ms\trevoked_at_ms");
+    println!("token_id\tname\tcreated_at_ms\texpires_at_ms\tlast_used_at_ms\trevoked_at_ms");
     for token in tokens {
         println!(
-            "{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}",
             token.token_id,
             token.name,
             token.created_at_ms,
+            token
+                .expires_at_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
             token
                 .last_used_at_ms
                 .map(|value| value.to_string())
@@ -885,6 +896,13 @@ fn print_profile_token(token: &StoredProfileToken) {
     println!("profile_id = {:?}", token.profile_id.to_string());
     println!("name = {:?}", token.name);
     println!("created_at_ms = {}", token.created_at_ms);
+    println!(
+        "expires_at_ms = {}",
+        token
+            .expires_at_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_owned())
+    );
     println!(
         "last_used_at_ms = {}",
         token
@@ -1033,6 +1051,18 @@ fn parse_stored_atomic_value(value: &str) -> Result<i64, String> {
         return Err("atomic value must be at least 0".to_owned());
     }
     Ok(atomic_value)
+}
+
+fn parse_token_expiration(value: &str) -> Result<i64, String> {
+    let expires_at_ms = value
+        .parse::<i64>()
+        .map_err(|source| format!("invalid token expiration {value:?}: {source}"))?;
+    if expires_at_ms <= 0 {
+        return Err(
+            "token expiration must be a positive Unix timestamp in milliseconds".to_owned(),
+        );
+    }
+    Ok(expires_at_ms)
 }
 
 fn parse_profile_access(value: &str) -> Result<ProfileAccess, String> {

@@ -66,6 +66,7 @@ pub struct StoredProfileToken {
     pub profile_id: Uuid,
     pub name: String,
     pub created_at_ms: i64,
+    pub expires_at_ms: Option<i64>,
     pub last_used_at_ms: Option<i64>,
     pub revoked_at_ms: Option<i64>,
 }
@@ -425,6 +426,7 @@ impl ProfileStore {
         token_id: &str,
         name: &str,
         token_hash: [u8; 32],
+        expires_at_ms: Option<i64>,
     ) -> Result<StoredProfileToken> {
         let name = name.trim();
         if name.is_empty() {
@@ -435,16 +437,20 @@ impl ProfileStore {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = unix_epoch_millis()?;
+        if expires_at_ms.is_some_and(|expires_at_ms| expires_at_ms <= now) {
+            bail!("profile token expiration must be in the future");
+        }
         tx.execute(
             "INSERT INTO hoststamp_profile_tokens (
-                token_id, profile_id, name, token_hash, created_at_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                token_id, profile_id, name, token_hash, created_at_ms, expires_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 token_id,
                 profile_id.as_bytes().as_slice(),
                 name,
                 token_hash.as_slice(),
                 now,
+                expires_at_ms,
             ],
         )?;
         let token = select_profile_token(&tx, profile_id, token_id)?;
@@ -454,7 +460,7 @@ impl ProfileStore {
 
     pub fn list_profile_tokens(&self, profile_id: Uuid) -> Result<Vec<StoredProfileToken>> {
         let mut statement = self.connection.prepare(
-            "SELECT token_id, profile_id, name, created_at_ms, last_used_at_ms, revoked_at_ms
+            "SELECT token_id, profile_id, name, created_at_ms, expires_at_ms, last_used_at_ms, revoked_at_ms
              FROM hoststamp_profile_tokens
              WHERE profile_id = ?1
              ORDER BY created_at_ms ASC",
@@ -495,12 +501,15 @@ impl ProfileStore {
         &self,
         token_id: &str,
     ) -> Result<Option<ProfileTokenAuthRecord>> {
+        let now = unix_epoch_millis()?;
         self.connection
             .query_row(
                 "SELECT profile_id, token_hash
                  FROM hoststamp_profile_tokens
-                 WHERE token_id = ?1 AND revoked_at_ms IS NULL",
-                params![token_id],
+                 WHERE token_id = ?1
+                   AND revoked_at_ms IS NULL
+                   AND (expires_at_ms IS NULL OR expires_at_ms > ?2)",
+                params![token_id, now],
                 |row| {
                     let profile_id_blob: Vec<u8> = row.get(0)?;
                     let profile_id = Uuid::from_slice(&profile_id_blob).map_err(|error| {
@@ -591,6 +600,7 @@ fn migrate(connection: &Connection) -> Result<()> {
             name TEXT NOT NULL,
             token_hash BLOB NOT NULL CHECK(length(token_hash) = 32),
             created_at_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER,
             last_used_at_ms INTEGER,
             revoked_at_ms INTEGER
         );
@@ -708,7 +718,7 @@ fn select_profile_token(
 ) -> Result<StoredProfileToken> {
     connection
         .query_row(
-            "SELECT token_id, profile_id, name, created_at_ms, last_used_at_ms, revoked_at_ms
+            "SELECT token_id, profile_id, name, created_at_ms, expires_at_ms, last_used_at_ms, revoked_at_ms
              FROM hoststamp_profile_tokens
              WHERE profile_id = ?1 AND token_id = ?2",
             params![profile_id.as_bytes().as_slice(), token_id],
@@ -730,8 +740,9 @@ fn profile_token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPro
         profile_id,
         name: row.get(2)?,
         created_at_ms: row.get(3)?,
-        last_used_at_ms: row.get(4)?,
-        revoked_at_ms: row.get(5)?,
+        expires_at_ms: row.get(4)?,
+        last_used_at_ms: row.get(5)?,
+        revoked_at_ms: row.get(6)?,
     })
 }
 
@@ -999,9 +1010,10 @@ mod tests {
 
         let hash = [7_u8; 32];
         let token = store
-            .create_profile_token(profile.id, "token-id", "deploy", hash)
+            .create_profile_token(profile.id, "token-id", "deploy", hash, None)
             .expect("token");
         assert_eq!(token.name, "deploy");
+        assert!(token.expires_at_ms.is_none());
         assert_eq!(
             store.list_profile_tokens(profile.id).expect("tokens").len(),
             1
@@ -1018,6 +1030,38 @@ mod tests {
             .revoke_profile_token(profile.id, "token-id")
             .expect("revoked");
         assert!(revoked.revoked_at_ms.is_some());
+        assert!(
+            store
+                .load_profile_token_auth("token-id")
+                .expect("auth")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn expired_profile_tokens_do_not_authorize() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let profile = store
+            .create_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+        let hash = [7_u8; 32];
+        let expires_at_ms = unix_epoch_millis().expect("now") + 60_000;
+        let token = store
+            .create_profile_token(profile.id, "token-id", "deploy", hash, Some(expires_at_ms))
+            .expect("token");
+        assert_eq!(token.expires_at_ms, Some(expires_at_ms));
+
+        store
+            .connection
+            .execute(
+                "UPDATE hoststamp_profile_tokens SET expires_at_ms = 1 WHERE token_id = ?1",
+                params!["token-id"],
+            )
+            .expect("expire token");
+
         assert!(
             store
                 .load_profile_token_auth("token-id")

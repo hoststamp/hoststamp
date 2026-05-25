@@ -85,7 +85,8 @@ output. Profile-backed generation and regeneration also return:
 
 Admin endpoints require a configured admin bearer token. Profile-backed
 generation can also require admin or profile bearer tokens when
-`api.auth.required` or `HOSTSTAMP_API_AUTH_REQUIRED=true` is set.
+`api.auth.required` or `HOSTSTAMP_API_AUTH_REQUIRED=true` is set. Profile
+tokens can optionally expire with `expires_at_ms`.
 
 ## Documentation
 

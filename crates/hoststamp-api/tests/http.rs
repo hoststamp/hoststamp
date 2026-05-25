@@ -11,6 +11,7 @@ use hoststamp_core::{
 use http_body_util::BodyExt;
 use rusqlite::Connection;
 use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::ServiceExt;
 
@@ -22,6 +23,14 @@ fn hex_hash(hash: &[u8; 32]) -> String {
     hash.iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+fn future_timestamp_ms() -> i64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_millis();
+    i64::try_from(millis).expect("timestamp") + 60_000
 }
 
 async fn response_text(response: http::Response<Body>) -> String {
@@ -616,7 +625,7 @@ async fn generate_endpoint_accepts_profile_token_for_matching_profile() {
     let hash_key = SecretString::new("hash-key".to_owned()).expect("key");
     let token_hash = auth::profile_token_hash(&hash_key, &generated.secret).expect("hash");
     store
-        .create_profile_token(profile.id, &generated.token_id, "deploy", token_hash)
+        .create_profile_token(profile.id, &generated.token_id, "deploy", token_hash, None)
         .expect("token");
 
     let response = server::app_with_auth(
@@ -646,6 +655,65 @@ async fn generate_endpoint_accepts_profile_token_for_matching_profile() {
 }
 
 #[tokio::test]
+async fn generate_endpoint_rejects_expired_profile_token() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_path = tempdir.path().join("hoststamp.db");
+    let database_url = StorageUrl::Sqlite(database_path.clone());
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    let profile = store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let generated = auth::generate_profile_token();
+    let hash_key = SecretString::new("hash-key".to_owned()).expect("key");
+    let token_hash = auth::profile_token_hash(&hash_key, &generated.secret).expect("hash");
+    store
+        .create_profile_token(
+            profile.id,
+            &generated.token_id,
+            "deploy",
+            token_hash,
+            Some(future_timestamp_ms()),
+        )
+        .expect("token");
+    drop(store);
+    let connection = Connection::open(&database_path).expect("connection");
+    connection
+        .execute(
+            "UPDATE hoststamp_profile_tokens SET expires_at_ms = 1 WHERE token_id = ?1",
+            [&generated.token_id],
+        )
+        .expect("expire token");
+    drop(connection);
+    let store = ProfileStore::open(&database_url).expect("store");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        ApiAuthConfig {
+            required: true,
+            admin_token: Some(SecretString::new("admin-secret".to_owned()).expect("admin")),
+            token_hash_key: Some(hash_key),
+        },
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .header(
+                http::header::AUTHORIZATION,
+                format!("Bearer {}", generated.token),
+            )
+            .uri("/api/generate")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn generate_endpoint_rejects_wrong_profile_token_with_generic_error() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
@@ -662,7 +730,13 @@ async fn generate_endpoint_rejects_wrong_profile_token_with_generic_error() {
     let hash_key = SecretString::new("hash-key".to_owned()).expect("key");
     let token_hash = auth::profile_token_hash(&hash_key, &generated.secret).expect("hash");
     store
-        .create_profile_token(other_profile.id, &generated.token_id, "deploy", token_hash)
+        .create_profile_token(
+            other_profile.id,
+            &generated.token_id,
+            "deploy",
+            token_hash,
+            None,
+        )
         .expect("token");
 
     let response = server::app_with_auth(
@@ -1425,7 +1499,7 @@ async fn admin_endpoints_require_admin_token_when_auth_is_required() {
     let hash_key = SecretString::new("hash-key".to_owned()).expect("key");
     let token_hash = auth::profile_token_hash(&hash_key, &generated.secret).expect("hash");
     store
-        .create_profile_token(profile.id, &generated.token_id, "deploy", token_hash)
+        .create_profile_token(profile.id, &generated.token_id, "deploy", token_hash, None)
         .expect("token");
 
     let app = server::app_with_auth(
@@ -1551,16 +1625,18 @@ async fn admin_profile_token_endpoints_manage_tokens() {
         auth_config(),
     );
 
+    let expires_at_ms = future_timestamp_ms();
     let request = admin_json_request(
         http::Method::POST,
         "/api/profiles/_/tokens",
-        json!({ "name": "deploy" }),
+        json!({ "name": "deploy", "expires_at_ms": expires_at_ms }),
     );
     let created = app.clone().oneshot(request).await.expect("response");
     assert_eq!(created.status(), http::StatusCode::CREATED);
     let created = response_json(created).await;
     let token_id = created["token"]["token_id"].as_str().expect("token id");
     assert_eq!(created["token"]["name"], "deploy");
+    assert_eq!(created["token"]["expires_at_ms"], expires_at_ms);
     assert!(
         created["profile_token"]
             .as_str()
@@ -1576,7 +1652,21 @@ async fn admin_profile_token_endpoints_manage_tokens() {
     assert_eq!(listed.status(), http::StatusCode::OK);
     let listed = response_json(listed).await;
     assert_eq!(listed["tokens"].as_array().expect("tokens").len(), 1);
+    assert_eq!(listed["tokens"][0]["expires_at_ms"], expires_at_ms);
     assert!(listed.get("profile_token").is_none());
+
+    let expired = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/_/tokens",
+            json!({ "name": "expired", "expires_at_ms": 1 }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(expired.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(expired).await;
+    assert!(message.contains("expiration must be in the future"));
 
     let revoked = app
         .oneshot(

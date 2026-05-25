@@ -585,6 +585,12 @@
               <div class="panel-body stack">
                 <form id="create-token" class="token">
                   <input id="token-name" autocomplete="off" placeholder="deploy" />
+                  <input
+                    id="token-expires-at-ms"
+                    type="number"
+                    min="1"
+                    placeholder="expires_at_ms"
+                  />
                   <button type="submit">Create</button>
                 </form>
                 <div id="created-token" class="mono ok-text"></div>
@@ -593,12 +599,13 @@
                     <tr>
                       <th>Name</th>
                       <th>Token ID</th>
+                      <th>Expires</th>
                       <th></th>
                     </tr>
                   </thead>
                   <tbody id="tokens-body">
                     <tr>
-                      <td class="empty" colspan="3">No profile selected</td>
+                      <td class="empty" colspan="4">No profile selected</td>
                     </tr>
                   </tbody>
                 </table>
@@ -890,11 +897,11 @@
         const body = el("tokens-body");
         body.replaceChildren();
         if (!tokens) {
-          body.appendChild(emptyRow("No profile selected", 3));
+          body.appendChild(emptyRow("No profile selected", 4));
           return;
         }
         if (!tokens.length) {
-          body.appendChild(emptyRow("No tokens", 3));
+          body.appendChild(emptyRow("No tokens", 4));
           return;
         }
         for (const token of tokens) {
@@ -906,7 +913,12 @@
           button.textContent = "Revoke";
           button.addEventListener("click", () => revokeToken(token.token_id));
           action.appendChild(button);
-          row.append(cell(token.name), cell(token.token_id, "mono"), action);
+          row.append(
+            cell(token.name),
+            cell(token.token_id, "mono"),
+            cell(token.expires_at_ms ?? "n/a", "mono"),
+            action,
+          );
           body.appendChild(row);
         }
       }
@@ -1143,12 +1155,22 @@
         if (!state.unlocked || !state.selected) return;
         const name = el("token-name").value.trim();
         if (!name) return;
+        const expiresAt = el("token-expires-at-ms").value.trim();
+        const body = { name };
+        if (expiresAt) {
+          const expiresAtMs = Number(expiresAt);
+          if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= 0) {
+            throw new Error("expires_at_ms must be a positive integer");
+          }
+          body.expires_at_ms = expiresAtMs;
+        }
         const payload = await api(`/api/profiles/${slugPath(state.selected)}/tokens`, {
           method: "POST",
           json: true,
-          body: JSON.stringify({ name }),
+          body: JSON.stringify(body),
         });
         el("token-name").value = "";
+        el("token-expires-at-ms").value = "";
         el("created-token").textContent = payload.profile_token;
         await refreshTokens();
       }
