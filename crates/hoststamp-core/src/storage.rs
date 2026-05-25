@@ -829,6 +829,10 @@ mod tests {
             StorageUrl::Sqlite(PathBuf::from("/tmp/hoststamp.db"))
         );
         assert_eq!(
+            StorageUrl::parse("sqlite:/tmp/hoststamp.db").expect("sqlite"),
+            StorageUrl::Sqlite(PathBuf::from("/tmp/hoststamp.db"))
+        );
+        assert_eq!(
             StorageUrl::parse("/tmp/hoststamp.db").expect("path"),
             StorageUrl::Sqlite(PathBuf::from("/tmp/hoststamp.db"))
         );
@@ -836,6 +840,13 @@ mod tests {
             StorageUrl::parse("postgres://localhost/hoststamp").expect("postgres"),
             StorageUrl::Postgres(_)
         ));
+        assert!(matches!(
+            StorageUrl::parse("postgresql://localhost/hoststamp").expect("postgres"),
+            StorageUrl::Postgres(_)
+        ));
+        assert!(StorageUrl::parse("").is_err());
+        assert!(StorageUrl::parse("sqlite://").is_err());
+        assert!(StorageUrl::parse("sqlite:").is_err());
         assert!(StorageUrl::parse("mysql://localhost/hoststamp").is_err());
     }
 
@@ -1005,6 +1016,10 @@ mod tests {
         let created = store.create_profile(&slug, &seed).expect("created");
         assert_eq!(created.slug, slug);
         assert_eq!(store.list_profiles().expect("profiles").len(), 1);
+        let duplicate = store
+            .create_profile(&slug, &seed)
+            .expect_err("duplicate active profile should fail");
+        assert!(duplicate.to_string().contains("already exists"));
 
         let reset = store
             .reset_atomic_value(&slug, 10)
@@ -1019,6 +1034,51 @@ mod tests {
         let recreated = store.create_profile(&slug, &seed).expect("recreated");
         assert_ne!(recreated.id, created.id);
         assert_eq!(recreated.last_atomic_value, 0);
+
+        let missing = "missing".parse::<ProfileSlug>().expect("slug");
+        assert!(store.delete_profile(&missing).is_err());
+        assert!(
+            store
+                .set_profile_access(&missing, ProfileAccess::Public)
+                .is_err()
+        );
+        assert!(store.reset_atomic_value(&missing, 1).is_err());
+    }
+
+    #[test]
+    fn import_profile_replaces_active_slug_when_id_changes() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let seed = ProfileConfig::default();
+        let original = store.create_profile(&slug, &seed).expect("created");
+        let imported_id = Uuid::now_v7();
+
+        let imported = store
+            .import_profile(&slug, imported_id, ProfileAccess::Public, &seed, 7)
+            .expect("imported");
+
+        assert_eq!(imported.id, imported_id);
+        assert_eq!(imported.slug, slug);
+        assert_eq!(imported.access, ProfileAccess::Public);
+        assert_eq!(imported.last_atomic_value, 7);
+        assert_eq!(store.load_profile(&slug).expect("active").id, imported_id);
+
+        let old_replaced: Option<i64> = store
+            .connection
+            .query_row(
+                "SELECT replaced_at_ms FROM hoststamp_profiles WHERE id = ?1",
+                params![original.id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .expect("old profile");
+        assert!(old_replaced.is_some());
+
+        let negative = store
+            .import_profile(&slug, Uuid::now_v7(), ProfileAccess::Private, &seed, -1)
+            .expect_err("negative atomic value should fail");
+        assert!(negative.to_string().contains("last atomic value"));
     }
 
     #[test]

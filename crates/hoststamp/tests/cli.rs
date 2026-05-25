@@ -145,6 +145,24 @@ fn config_init_writes_bootstrap_template() {
 }
 
 #[test]
+fn config_init_uses_env_config_path() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let config_path = tempdir.path().join("hoststamp").join("config.toml");
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.env("HOSTSTAMP_CONFIG", &config_path)
+        .args(["config", "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "created config file {}",
+            config_path.display()
+        )));
+
+    assert!(config_path.exists());
+}
+
+#[test]
 fn config_init_refuses_to_overwrite_existing_file() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let config_path = tempdir.path().join("config.toml");
@@ -482,6 +500,29 @@ fn capacity_reports_suffix_number_bounds() {
 }
 
 #[test]
+fn capacity_reports_disabled_suffix_bounds() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    set_default_config(&database, &["--suffix-enabled", "false"]);
+
+    let mut cmd = command_for_database(&database);
+    cmd.arg("--capacity").assert().success().stdout(
+        predicate::str::contains("fixed_suffix_variants\tdisabled")
+            .and(predicate::str::contains("suffix_bits\t0"))
+            .and(predicate::str::contains(
+                "random_fallback_min_value\tdisabled",
+            ))
+            .and(predicate::str::contains(
+                "random_fallback_max_value\tdisabled",
+            ))
+            .and(predicate::str::contains("atomic_min_value\tdisabled"))
+            .and(predicate::str::contains(
+                "atomic_storage_max_value\tdisabled",
+            )),
+    );
+}
+
+#[test]
 fn config_show_prints_bootstrap_profile_and_effective_generate_config() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");
@@ -668,6 +709,36 @@ fn profile_access_and_token_commands_manage_api_auth() {
         .assert()
         .success()
         .stdout(predicate::str::contains("revoked_at_ms = "));
+}
+
+#[test]
+fn profile_token_create_rejects_non_positive_expiration() {
+    let (mut create, tempdir) = command_with_database();
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let database = tempdir.path().join("hoststamp.db");
+    let mut create_token = command_for_database(&database);
+    create_token
+        .env("HOSTSTAMP_TOKEN_HASH_KEY", "hash-key")
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "token",
+            "create",
+            "--name",
+            "deploy",
+            "--expires-at-ms",
+            "0",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "token expiration must be a positive",
+        ));
 }
 
 #[test]

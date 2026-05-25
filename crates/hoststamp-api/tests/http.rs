@@ -526,6 +526,54 @@ async fn capacity_endpoint_reports_selected_profile_space() {
 }
 
 #[tokio::test]
+async fn capacity_endpoint_uses_server_defaults_without_profile_storage() {
+    let response = server::app(GenerateOptions {
+        word1_lengths: Some(vec![4]),
+        suffix_enabled: false,
+        ..GenerateOptions::default()
+    })
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/capacity")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["word1_count"], 65);
+    assert_eq!(body["suffix_enabled"], false);
+}
+
+#[tokio::test]
+async fn capacity_endpoint_seeds_default_profile_when_auth_is_optional() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let store = ProfileStore::open(&database_url).expect("store");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug.clone())),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/capacity")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+
+    let store = ProfileStore::open(&database_url).expect("store");
+    assert!(store.load_profile(&slug).is_ok());
+}
+
+#[tokio::test]
 async fn generate_endpoint_requires_auth_for_private_profiles() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
@@ -552,6 +600,49 @@ async fn generate_endpoint_requires_auth_for_private_profiles() {
 
     assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
     assert_eq!(response.headers()["www-authenticate"], "Bearer");
+}
+
+#[tokio::test]
+async fn generate_endpoint_rejects_malformed_bearer_tokens() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    );
+
+    let invalid_shape = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/generate")
+                .header(http::header::AUTHORIZATION, "Bearer not-a-profile-token")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(invalid_shape.status(), http::StatusCode::UNAUTHORIZED);
+
+    let extra_parts = app
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/generate")
+                .header(http::header::AUTHORIZATION, "Bearer one two")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(extra_parts.status(), http::StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -1239,6 +1330,15 @@ async fn admin_profile_endpoints_manage_profiles() {
     assert_eq!(created["profile"]["slug"], "team-a");
     assert_eq!(created["profile"]["access"], "private");
 
+    let shown = app
+        .clone()
+        .oneshot(admin_get_request("/api/profiles/team-a"))
+        .await
+        .expect("response");
+    assert_eq!(shown.status(), http::StatusCode::OK);
+    let shown = response_json(shown).await;
+    assert_eq!(shown["profile"]["slug"], "team-a");
+
     let listed = app
         .clone()
         .oneshot(admin_get_request("/api/profiles"))
@@ -1261,6 +1361,37 @@ async fn admin_profile_endpoints_manage_profiles() {
     let access = response_json(access).await;
     assert_eq!(access["profile"]["access"], "public");
 
+    let empty_config = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::PATCH,
+            "/api/profiles/team-a/config",
+            json!({}),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(empty_config.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(empty_config).await;
+    assert!(message.contains("requires at least one setting"));
+
+    let no_op_config = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::PATCH,
+            "/api/profiles/team-a/config",
+            json!({
+                "word1_enabled": true,
+                "word1_lengths": [5],
+                "word2_enabled": true,
+                "word2_lengths": "5",
+                "suffix_enabled": true,
+                "suffix_min_length": 5
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(no_op_config.status(), http::StatusCode::OK);
+
     let unconfirmed_config = app
         .clone()
         .oneshot(admin_json_request(
@@ -1274,6 +1405,25 @@ async fn admin_profile_endpoints_manage_profiles() {
     let message = response_text(unconfirmed_config).await;
     assert!(message.contains("requires confirmation"));
 
+    let wrong_confirmation = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::PATCH,
+            "/api/profiles/team-a/config",
+            json!({
+                "word1_lengths": [4],
+                "confirmation": {
+                    "profile": "team-a",
+                    "action": "delete"
+                }
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(wrong_confirmation.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(wrong_confirmation).await;
+    assert!(message.contains("confirmation must include"));
+
     let config = app
         .clone()
         .oneshot(admin_json_request(
@@ -1281,6 +1431,9 @@ async fn admin_profile_endpoints_manage_profiles() {
             "/api/profiles/team-a/config",
             json!({
                 "word1_lengths": [4],
+                "word1_categories": ["diceware"],
+                "word2_lengths": "any",
+                "word2_categories": ["diceware"],
                 "confirmation": {
                     "profile": "team-a",
                     "action": "replace"
@@ -1292,6 +1445,10 @@ async fn admin_profile_endpoints_manage_profiles() {
     assert_eq!(config.status(), http::StatusCode::OK);
     let config = response_json(config).await;
     assert_eq!(config["profile"]["config"]["word1"]["lengths"], json!([4]));
+    assert_eq!(
+        config["profile"]["config"]["word2"]["lengths"],
+        serde_json::Value::Null
+    );
     assert_eq!(config["profile"]["last_atomic_value"], 0);
 
     let exported = app
@@ -1308,6 +1465,23 @@ async fn admin_profile_endpoints_manage_profiles() {
     assert_eq!(exported["last_atomic_value"], 0);
     assert!(exported["config_hash"].as_str().expect("hash").len() == 64);
     assert_eq!(exported["config"]["word1"]["lengths"], json!([4]));
+
+    let negative_reset = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/team-a/reset-atomic-value",
+            json!({
+                "atomic_value": -1,
+                "confirmation": {
+                    "profile": "team-a",
+                    "action": "reset"
+                }
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(negative_reset.status(), http::StatusCode::BAD_REQUEST);
 
     let reset = app
         .clone()
@@ -1497,6 +1671,102 @@ async fn admin_profile_import_preserves_exported_identity() {
 }
 
 #[tokio::test]
+async fn admin_profile_import_rejects_invalid_envelopes() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let store = ProfileStore::open(&database_url).expect("store");
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(
+            store,
+            ProfileSlug::default_profile(),
+        )),
+        auth_config(),
+    );
+    let mut valid = json!({
+        "format": "hoststamp-profile-v1",
+        "id": "018ff2de-8cf0-71aa-9e9b-8554cc5f4fd7",
+        "slug": "team-a",
+        "access": "private",
+        "last_atomic_value": 0,
+        "config_hash": hex_hash(&config_hash(&ProfileConfig::default()).expect("hash")),
+        "config": ProfileConfig::default()
+    });
+
+    let mut wrong_format = valid.clone();
+    wrong_format["format"] = json!("hoststamp-profile-v0");
+    let rejected = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            wrong_format,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(rejected.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(rejected).await;
+    assert!(message.contains("profile import format"));
+
+    let mut invalid_id = valid.clone();
+    invalid_id["id"] = json!("not-a-uuid");
+    let rejected = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            invalid_id,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(rejected.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(rejected).await;
+    assert!(message.contains("profile import id is invalid"));
+
+    valid["last_atomic_value"] = json!(-1);
+    let rejected = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            valid,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(rejected.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(rejected).await;
+    assert!(message.contains("last_atomic_value"));
+
+    let stale_config = ProfileConfig {
+        word1: hoststamp_core::profile::WordProfileConfig {
+            pool_hash: Some("old".to_owned()),
+            ..ProfileConfig::default().word1
+        },
+        ..ProfileConfig::default()
+    };
+    let stale = json!({
+        "format": "hoststamp-profile-v1",
+        "id": "018ff2de-8cf0-71aa-9e9b-8554cc5f4fd8",
+        "slug": "team-a",
+        "access": "private",
+        "last_atomic_value": 0,
+        "config_hash": hex_hash(&config_hash(&stale_config).expect("hash")),
+        "config": stale_config
+    });
+    let rejected = app
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/import",
+            stale,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(rejected.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(rejected).await;
+    assert!(message.contains("generation engine"));
+}
+
+#[tokio::test]
 async fn admin_endpoints_require_admin_token_when_auth_is_required() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
@@ -1587,6 +1857,50 @@ async fn admin_endpoints_require_configured_admin_token() {
     assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
     let body = response_text(response).await;
     assert!(body.contains("configured admin token"));
+}
+
+#[tokio::test]
+async fn admin_endpoints_require_profile_storage() {
+    let response = server::app_with_auth(GenerateOptions::default(), None, auth_config())
+        .oneshot(admin_get_request("/api/profiles"))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("profile storage is required"));
+}
+
+#[tokio::test]
+async fn admin_profile_token_creation_requires_hash_key() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        ApiAuthConfig {
+            required: true,
+            admin_token: Some(SecretString::new("admin-secret".to_owned()).expect("admin")),
+            token_hash_key: None,
+        },
+    )
+    .oneshot(admin_json_request(
+        http::Method::POST,
+        "/api/profiles/_/tokens",
+        json!({ "name": "deploy" }),
+    ))
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains(auth::PROFILE_TOKEN_HASH_KEY_ENV));
 }
 
 #[tokio::test]

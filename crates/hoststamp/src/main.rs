@@ -1210,3 +1210,24 @@ fn confirm_profile_config_replacement(profile: &StoredProfile) -> anyhow::Result
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_mode_maps_to_api_app_mode() {
+        assert!(matches!(
+            server::AppMode::from(ServeMode::All),
+            server::AppMode::All
+        ));
+        assert!(matches!(
+            server::AppMode::from(ServeMode::Api),
+            server::AppMode::Api
+        ));
+        assert!(matches!(
+            server::AppMode::from(ServeMode::Ux),
+            server::AppMode::Ux
+        ));
+    }
+}

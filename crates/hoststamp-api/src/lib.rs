@@ -1508,3 +1508,170 @@ async fn shutdown_signal() {
         _ = terminate => tracing::info!("received SIGTERM, shutting down"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn parse_lengths_value_accepts_supported_shapes() {
+        assert_eq!(
+            parse_lengths_value(&Value::Null).unwrap_or_else(|_| panic!("null")),
+            None
+        );
+        assert_eq!(
+            parse_lengths_value(&Value::String("4,5".to_owned()))
+                .unwrap_or_else(|_| panic!("string")),
+            Some(vec![4, 5])
+        );
+        assert_eq!(
+            parse_lengths_value(&serde_json::json!([4, 5])).unwrap_or_else(|_| panic!("array")),
+            Some(vec![4, 5])
+        );
+    }
+
+    #[test]
+    fn parse_lengths_value_rejects_invalid_shapes() {
+        let non_integer = parse_lengths_value(&serde_json::json!([4, "5"]))
+            .expect_err("strings are invalid in arrays");
+        assert!(matches!(non_integer, AdminError::BadRequest(_)));
+
+        let zero = parse_lengths_value(&serde_json::json!([0])).expect_err("zero is invalid");
+        assert!(matches!(zero, AdminError::BadRequest(_)));
+
+        let empty = parse_lengths_value(&serde_json::json!([])).expect_err("empty is invalid");
+        assert!(matches!(empty, AdminError::BadRequest(_)));
+
+        let object = parse_lengths_value(&serde_json::json!({ "length": 4 }))
+            .expect_err("objects are invalid");
+        assert!(matches!(object, AdminError::BadRequest(_)));
+    }
+
+    #[test]
+    fn update_profile_config_request_can_clear_word_lengths() {
+        let config = UpdateProfileConfigRequest {
+            word1_enabled: None,
+            word1_lengths: Some(Value::Null),
+            word1_categories: None,
+            word2_enabled: None,
+            word2_lengths: None,
+            word2_categories: None,
+            suffix_enabled: None,
+            suffix_min_length: None,
+            confirmation: None,
+        }
+        .apply(ProfileConfig::default())
+        .unwrap_or_else(|_| panic!("profile config"));
+
+        assert_eq!(config.word1.lengths, None);
+    }
+
+    #[test]
+    fn generate_metadata_headers_skip_missing_atomic_values() {
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let mut headers = HeaderMap::new();
+        add_generate_metadata_headers(
+            &mut headers,
+            &[
+                GeneratedHostname {
+                    hostname: "alpha-bravo".to_owned(),
+                    profile: Some(slug.as_str().to_owned()),
+                    atomic_value: None,
+                },
+                GeneratedHostname {
+                    hostname: "charlie-delta".to_owned(),
+                    profile: Some(slug.as_str().to_owned()),
+                    atomic_value: None,
+                },
+            ],
+        );
+
+        assert_eq!(headers["x-hoststamp-profile"], "team-a");
+        assert!(!headers.contains_key("x-hoststamp-atomic-values"));
+    }
+
+    #[test]
+    fn response_helpers_map_internal_errors() {
+        let admin = admin_internal_response(anyhow!("database unavailable"));
+        assert_eq!(admin.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let generated = generate_error_response(GenerateError::Internal(anyhow!("database busy")));
+        assert_eq!(generated.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let error = AtomicStorageError(anyhow!("locked"));
+        assert_eq!(error.source().expect("source").to_string(), "locked");
+    }
+
+    #[test]
+    fn profile_authorization_rejects_unusable_profile_tokens() {
+        let mut store = ProfileStore::open(&hoststamp_core::storage::StorageUrl::Sqlite(
+            ":memory:".into(),
+        ))
+        .unwrap_or_else(|_| panic!("store"));
+        let slug = ProfileSlug::default_profile();
+        let profile = store
+            .load_or_seed_profile(&slug, &ProfileConfig::default())
+            .unwrap_or_else(|_| panic!("profile"));
+        let generated = generate_profile_token();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {}", generated.token)
+                .parse()
+                .expect("header"),
+        );
+
+        let missing_hash_key = authorize_profile_request(
+            &headers,
+            &ApiAuthConfig {
+                required: true,
+                admin_token: None,
+                token_hash_key: None,
+            },
+            &mut store,
+            &profile,
+        )
+        .expect_err("hash key should be required");
+        assert!(matches!(missing_hash_key, GenerateError::Unauthorized(_)));
+
+        let hash_key =
+            hoststamp_core::auth::SecretString::new("hash-key".to_owned()).expect("hash key");
+        store
+            .create_profile_token(profile.id, &generated.token_id, "deploy", [0; 32], None)
+            .unwrap_or_else(|_| panic!("token"));
+        let bad_secret = authorize_profile_request(
+            &headers,
+            &ApiAuthConfig {
+                required: true,
+                admin_token: None,
+                token_hash_key: Some(hash_key),
+            },
+            &mut store,
+            &profile,
+        )
+        .expect_err("bad secret should be rejected");
+        assert!(matches!(bad_secret, GenerateError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn missing_profile_authorization_rejects_non_admin_tokens() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer profile-token".parse().expect("header"),
+        );
+        let auth = ApiAuthConfig {
+            required: true,
+            admin_token: Some(
+                hoststamp_core::auth::SecretString::new("admin-secret".to_owned()).expect("admin"),
+            ),
+            token_hash_key: None,
+        };
+
+        let error = authorize_missing_profile_request(&headers, &auth)
+            .expect_err("profile token should not authorize missing profiles");
+
+        assert!(matches!(error, GenerateError::Unauthorized(_)));
+    }
+}
