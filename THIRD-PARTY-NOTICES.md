@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Generated from Hoststamp dictionary artifact schema 1 at 2026-05-24T18:37:32Z.
+Generated from Hoststamp dictionary artifact schema 1 at 2026-05-25T15:28:58Z.
 
 ## Corpora decorative stones
 
@@ -283,8 +283,8 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-24T18:37:32Z.
 - Source ID: `haikunator-adjectives`
 - Attribution: Atrox
 - Source: <https://github.com/Atrox/haikunatorgo>
-- License: MIT
-- License URL: <https://opensource.org/license/mit>
+- License: BSD-3-Clause
+- License URL: <https://opensource.org/license/bsd-3-clause>
 - Retrieved: 2026-05-19
 - SHA-256: `b60e8a358c7c55b1f41375a42303bc011988ca2457d69dd40a40bf7997b6966b`
 - Notice required: true
@@ -295,8 +295,8 @@ Generated from Hoststamp dictionary artifact schema 1 at 2026-05-24T18:37:32Z.
 - Source ID: `haikunator-nouns`
 - Attribution: Atrox
 - Source: <https://github.com/Atrox/haikunatorgo>
-- License: MIT
-- License URL: <https://opensource.org/license/mit>
+- License: BSD-3-Clause
+- License URL: <https://opensource.org/license/bsd-3-clause>
 - Retrieved: 2026-05-19
 - SHA-256: `b60e8a358c7c55b1f41375a42303bc011988ca2457d69dd40a40bf7997b6966b`
 - Notice required: true

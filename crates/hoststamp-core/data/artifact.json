@@ -13249,7 +13249,7 @@
       ]
     }
   },
-  "generated": "2026-05-24T18:37:32Z",
+  "generated": "2026-05-25T15:28:58Z",
   "generator": "dictionary-normalizer 0.1.0",
   "normalization": {
     "ascii_fold": true,
@@ -13516,8 +13516,8 @@
     "haikunator-adjectives": {
       "attribution": "Atrox",
       "changes": "extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped",
-      "license": "MIT",
-      "license_url": "https://opensource.org/license/mit",
+      "license": "BSD-3-Clause",
+      "license_url": "https://opensource.org/license/bsd-3-clause",
       "notice_required": true,
       "retrieved": "2026-05-19",
       "sha256": "b60e8a358c7c55b1f41375a42303bc011988ca2457d69dd40a40bf7997b6966b",
@@ -13527,8 +13527,8 @@
     "haikunator-nouns": {
       "attribution": "Atrox",
       "changes": "extracted Go array literal; ASCII-folded; lowercased; RFC-1123 filtered; blocklisted; deduped",
-      "license": "MIT",
-      "license_url": "https://opensource.org/license/mit",
+      "license": "BSD-3-Clause",
+      "license_url": "https://opensource.org/license/bsd-3-clause",
       "notice_required": true,
       "retrieved": "2026-05-19",
       "sha256": "b60e8a358c7c55b1f41375a42303bc011988ca2457d69dd40a40bf7997b6966b",
