@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-FROM rust:1.95-bookworm@sha256:503651ea31e66ecb74623beabde781059a5978df1595a9e8ed03974d5fec1bf0 AS builder
+FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
@@ -11,7 +11,7 @@ RUN --mount=type=cache,target=/build/target \
     cargo build --release --locked -p hoststamp \
     && install -m 0555 target/release/hoststamp /usr/local/bin/hoststamp
 
-FROM debian:bookworm-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3 AS runtime
+FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb AS runtime
 LABEL org.opencontainers.image.title="Hoststamp" \
       org.opencontainers.image.description="Deterministic hostname generator CLI, API server, and local UX" \
       org.opencontainers.image.source="https://github.com/michaeljstutz/hoststamp" \
