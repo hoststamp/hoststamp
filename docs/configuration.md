@@ -104,6 +104,10 @@ For example, resetting to `999` makes the next generated hostname use atomic
 value `1000`. Lowering the stored value can duplicate previously issued names,
 and raising it skips part of the deterministic sequence.
 
+Profile token names must be 64 characters or fewer, use lowercase ASCII
+letters, digits, hyphen, underscore, or dot, and start and end with a letter or
+digit. Active token names cannot be duplicated within one profile.
+
 Profile-backed suffix generation treats the selected profile config as part of
 the identity used for deterministic suffixes. Persistent generator settings are
 changed with `hoststamp config set`, which asks for two confirmations before

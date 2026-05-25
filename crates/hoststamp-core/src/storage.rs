@@ -429,9 +429,7 @@ impl ProfileStore {
         expires_at_ms: Option<i64>,
     ) -> Result<StoredProfileToken> {
         let name = name.trim();
-        if name.is_empty() {
-            bail!("profile token name must not be empty");
-        }
+        validate_profile_token_name(name)?;
 
         let tx = self
             .connection
@@ -439,6 +437,19 @@ impl ProfileStore {
         let now = unix_epoch_millis()?;
         if expires_at_ms.is_some_and(|expires_at_ms| expires_at_ms <= now) {
             bail!("profile token expiration must be in the future");
+        }
+        let active_name_count: i64 = tx.query_row(
+            "SELECT COUNT(*)
+             FROM hoststamp_profile_tokens
+             WHERE profile_id = ?1
+               AND name = ?2
+               AND revoked_at_ms IS NULL
+               AND (expires_at_ms IS NULL OR expires_at_ms > ?3)",
+            params![profile_id.as_bytes().as_slice(), name, now],
+            |row| row.get(0),
+        )?;
+        if active_name_count > 0 {
+            bail!("active profile token name {name:?} already exists");
         }
         tx.execute(
             "INSERT INTO hoststamp_profile_tokens (
@@ -527,6 +538,20 @@ impl ProfileStore {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    pub fn mark_profile_token_used(&mut self, profile_id: Uuid, token_id: &str) -> Result<()> {
+        let now = unix_epoch_millis()?;
+        self.connection.execute(
+            "UPDATE hoststamp_profile_tokens
+             SET last_used_at_ms = ?1
+             WHERE profile_id = ?2
+               AND token_id = ?3
+               AND revoked_at_ms IS NULL
+               AND (expires_at_ms IS NULL OR expires_at_ms > ?1)",
+            params![now, profile_id.as_bytes().as_slice(), token_id],
+        )?;
+        Ok(())
     }
 
     fn open_sqlite(path: &Path) -> Result<Self> {
@@ -634,6 +659,34 @@ fn active_profile_exists(connection: &Connection, slug: &ProfileSlug) -> Result<
         |row| row.get(0),
     )?;
     Ok(count > 0)
+}
+
+fn validate_profile_token_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("profile token name must not be empty");
+    }
+    if name.len() > 64 {
+        bail!("profile token name must be 64 characters or fewer");
+    }
+    if !name.bytes().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+    }) {
+        bail!(
+            "profile token name must use lowercase ASCII letters, digits, hyphen, underscore, or dot"
+        );
+    }
+    if !name
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+        || !name
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+    {
+        bail!("profile token name must start and end with a letter or digit");
+    }
+    Ok(())
 }
 
 fn select_profile(connection: &Connection, slug: &ProfileSlug) -> Result<StoredProfile> {
@@ -1025,6 +1078,27 @@ mod tests {
             .expect("record");
         assert_eq!(auth_record.profile_id, profile.id);
         assert_eq!(auth_record.token_hash, hash);
+
+        store
+            .mark_profile_token_used(profile.id, "token-id")
+            .expect("mark used");
+        let used = store
+            .list_profile_tokens(profile.id)
+            .expect("tokens")
+            .into_iter()
+            .find(|token| token.token_id == "token-id")
+            .expect("token");
+        assert!(used.last_used_at_ms.is_some());
+
+        let duplicate = store
+            .create_profile_token(profile.id, "token-id-2", "deploy", hash, None)
+            .expect_err("duplicate active name should be rejected");
+        assert!(duplicate.to_string().contains("already exists"));
+
+        let invalid_name = store
+            .create_profile_token(profile.id, "token-id-3", "Deploy", hash, None)
+            .expect_err("invalid name should be rejected");
+        assert!(invalid_name.to_string().contains("lowercase ASCII"));
 
         let revoked = store
             .revoke_profile_token(profile.id, "token-id")

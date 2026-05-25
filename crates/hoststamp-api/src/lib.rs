@@ -964,7 +964,7 @@ async fn regenerate_with_state(
         None => atomic.profile_slug.clone(),
     };
 
-    let store = atomic.store.lock().await;
+    let mut store = atomic.store.lock().await;
     let profile = match store.load_profile(&profile_slug) {
         Ok(profile) => profile,
         Err(error) => {
@@ -972,7 +972,7 @@ async fn regenerate_with_state(
             return Err(GenerateError::BadRequest(error.to_string()));
         }
     };
-    authorize_profile_request(headers, &state.auth, &store, &profile)?;
+    authorize_profile_request(headers, &state.auth, &mut store, &profile)?;
     if !profile.config.suffix.enabled {
         return Err(GenerateError::BadRequest(format!(
             "profile {:?} cannot regenerate hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
@@ -1086,7 +1086,7 @@ async fn generate_with_state(
                     .load_or_seed_profile(profile_slug, &ProfileConfig::default())
                     .map_err(GenerateError::Internal)?
             };
-            authorize_profile_request(headers, &state.auth, &store, &profile)?;
+            authorize_profile_request(headers, &state.auth, &mut store, &profile)?;
             let base = profile.config.to_generate_options(state.generate.count);
             let options = base.with_overrides(overrides);
 
@@ -1156,14 +1156,14 @@ async fn capacity_options(
             .load_or_seed_profile(profile_slug, &ProfileConfig::default())
             .map_err(GenerateError::Internal)?
     };
-    authorize_profile_request(headers, &state.auth, &store, &profile)?;
+    authorize_profile_request(headers, &state.auth, &mut store, &profile)?;
     Ok(profile.config.to_generate_options(state.generate.count))
 }
 
 fn authorize_profile_request(
     headers: &HeaderMap,
     auth: &ApiAuthConfig,
-    store: &ProfileStore,
+    store: &mut ProfileStore,
     profile: &StoredProfile,
 ) -> Result<(), GenerateError> {
     if !auth.required || profile.access == ProfileAccess::Public {
@@ -1210,6 +1210,9 @@ fn authorize_profile_request(
     if verify_profile_token_hash(hash_key, parsed.secret, &record.token_hash)
         .map_err(GenerateError::Internal)?
     {
+        store
+            .mark_profile_token_used(record.profile_id, parsed.token_id)
+            .map_err(GenerateError::Internal)?;
         return Ok(());
     }
 

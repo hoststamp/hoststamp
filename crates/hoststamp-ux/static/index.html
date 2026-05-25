@@ -584,7 +584,12 @@
               </div>
               <div class="panel-body stack">
                 <form id="create-token" class="token">
-                  <input id="token-name" autocomplete="off" placeholder="deploy" />
+                  <input
+                    id="token-name"
+                    autocomplete="off"
+                    placeholder="deploy"
+                    maxlength="64"
+                  />
                   <input
                     id="token-expires-at-ms"
                     type="number"
@@ -1155,6 +1160,11 @@
         if (!state.unlocked || !state.selected) return;
         const name = el("token-name").value.trim();
         if (!name) return;
+        if (!/^[a-z0-9](?:[a-z0-9_.-]{0,62}[a-z0-9])?$/.test(name)) {
+          throw new Error(
+            "token names must be lowercase letters, digits, hyphen, underscore, or dot",
+          );
+        }
         const expiresAt = el("token-expires-at-ms").value.trim();
         const body = { name };
         if (expiresAt) {

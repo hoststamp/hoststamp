@@ -615,7 +615,8 @@ async fn generate_endpoint_accepts_case_insensitive_bearer_scheme() {
 #[tokio::test]
 async fn generate_endpoint_accepts_profile_token_for_matching_profile() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let database_path = tempdir.path().join("hoststamp.db");
+    let database_url = StorageUrl::Sqlite(database_path.clone());
     let slug = ProfileSlug::default_profile();
     let mut store = ProfileStore::open(&database_url).expect("store");
     let profile = store
@@ -652,6 +653,15 @@ async fn generate_endpoint_accepts_profile_token_for_matching_profile() {
     .expect("response");
 
     assert_eq!(response.status(), http::StatusCode::OK);
+    let last_used_at_ms: Option<i64> = Connection::open(database_path)
+        .expect("connection")
+        .query_row(
+            "SELECT last_used_at_ms FROM hoststamp_profile_tokens WHERE token_id = ?1",
+            [&generated.token_id],
+            |row| row.get(0),
+        )
+        .expect("last used");
+    assert!(last_used_at_ms.is_some());
 }
 
 #[tokio::test]
@@ -1667,6 +1677,32 @@ async fn admin_profile_token_endpoints_manage_tokens() {
     assert_eq!(expired.status(), http::StatusCode::BAD_REQUEST);
     let message = response_text(expired).await;
     assert!(message.contains("expiration must be in the future"));
+
+    let duplicate = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/_/tokens",
+            json!({ "name": "deploy" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(duplicate.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(duplicate).await;
+    assert!(message.contains("already exists"));
+
+    let invalid_name = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/_/tokens",
+            json!({ "name": "Deploy" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(invalid_name.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(invalid_name).await;
+    assert!(message.contains("lowercase ASCII"));
 
     let revoked = app
         .oneshot(
