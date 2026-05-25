@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 #
 # Hoststamp bootstrap configuration. Generator profile defaults live in the
-# profile database; CLI/API request options can override them at generation time.
+# profile database; CLI request options and API random/admin routes can override
+# or replace generator settings deliberately.
 
 [server]
 addr = "127.0.0.1:8080"
