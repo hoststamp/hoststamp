@@ -38,20 +38,47 @@ single bundled HTML file.
 
 ## Docker
 
-For containers, mount a config file and set `HOSTSTAMP_CONFIG`:
+The image runs as UID/GID `10001`, sets
+`XDG_CONFIG_HOME=/home/hoststamp/.config`, and defaults the database to
+`/home/hoststamp/.config/hoststamp/hoststamp.db` when no config file is
+mounted.
+
+Build and smoke test locally with:
 
 ```sh
-docker run --rm -p 8080:8080 \
-  -e HOSTSTAMP_CONFIG=/etc/hoststamp/config.toml \
-  -e HOSTSTAMP_DATABASE_URL=sqlite:///home/hoststamp/.config/hoststamp/hoststamp.db \
-  -v hoststamp-data:/home/hoststamp/.config/hoststamp \
-  -v "$PWD/config.example.toml:/etc/hoststamp/config.toml:ro" \
-  hoststamp:dev
+mise run docker-smoke
 ```
 
-Build locally with:
+For local development without auth:
 
 ```sh
 docker build -t hoststamp:dev .
-docker run --rm -p 8080:8080 hoststamp:dev
+docker run --rm -p 127.0.0.1:8080:8080 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  -v hoststamp-data:/home/hoststamp/.config/hoststamp \
+  hoststamp:dev
 ```
+
+For exposed containers, require auth and provide secrets through your runtime
+secret manager or an uncommitted env file:
+
+```sh
+docker run --rm -p 8080:8080 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --env-file ./hoststamp.env \
+  -v hoststamp-data:/home/hoststamp/.config/hoststamp \
+  hoststamp:dev
+```
+
+Minimum env-file values for exposed use:
+
+```sh
+HOSTSTAMP_API_AUTH_REQUIRED=true
+HOSTSTAMP_ADMIN_TOKEN=<secret>
+HOSTSTAMP_TOKEN_HASH_KEY=<secret>
+```
+
+Do not commit the env file. Use a reverse proxy or platform load balancer for
+TLS, request logging, and rate limiting.

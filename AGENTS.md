@@ -65,6 +65,7 @@ Don't mutate state outside the working tree without being told to.
 - Secret scan: `mise run secret-scan`
 - Security scan: `mise run security-scan`
 - Docker build: `docker build -t hoststamp:dev .`
+- Docker smoke test: `mise run docker-smoke`
 - Dev server: `cargo run -p hoststamp -- serve`
 
 If the local shell refuses to load `mise.toml` because it is not trusted, prefix commands with `MISE_TRUSTED_CONFIG_PATHS=$PWD` instead of changing global trust state.

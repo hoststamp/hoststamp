@@ -111,6 +111,7 @@ cargo test --all-targets
 cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 90
 cargo build --release --locked
 docker build -t hoststamp:dev .
+mise run docker-smoke
 ```
 
 The same local checks are available through `mise`:

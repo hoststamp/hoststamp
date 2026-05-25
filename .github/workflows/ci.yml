@@ -100,9 +100,13 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          load: true
           tags: hoststamp:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke test image
+        run: sh scripts/docker-smoke.sh hoststamp:ci hoststamp-ci hoststamp-ci-data 18080
 
   publish-nightly:
     name: publish nightly image

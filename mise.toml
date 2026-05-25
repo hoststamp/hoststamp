@@ -50,6 +50,15 @@ run = "trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1
 description = "Build the release binary"
 run = "cargo build --release --locked"
 
+[tasks.docker-build]
+description = "Build the development Docker image"
+run = "docker build -t hoststamp:dev ."
+
+[tasks.docker-smoke]
+description = "Run the Docker image with hardened runtime flags and check health"
+depends = ["docker-build"]
+run = "sh scripts/docker-smoke.sh hoststamp:dev hoststamp-smoke hoststamp-smoke-data 18080"
+
 [tasks.ci]
 description = "Run the main local CI checks"
 depends = [
