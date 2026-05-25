@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Cancel superseded runs on PRs (rapid pushes). For main, let every run finish
+  # so each merge produces its own nightly image and `:sha-<short>` tag.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  test:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install mise
+        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
+        with:
+          version: 2026.5.4
+          sha256: 96a0eefa1ad8c92461c808e6e07644f95cda830d7719895b98c819c94b0e0b1c
+          install: true
+          install_args: --locked
+          cache: true
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy llvm-tools-preview
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
+
+      - name: Format
+        run: mise run fmt
+
+      - name: Clippy
+        run: mise run clippy
+
+      - name: Lint workflows
+        run: mise run workflow-lint
+
+      - name: Audit Rust dependencies
+        if: ${{ !cancelled() }}
+        run: mise run audit
+
+      - name: Scan for leaked secrets
+        if: ${{ !cancelled() }}
+        run: mise run secret-scan
+
+      - name: Scan filesystem security posture
+        if: ${{ !cancelled() }}
+        run: mise run security-scan
+
+      - name: Third-party notices drift
+        run: cargo test -p hoststamp-core notices::tests::third_party_notices_are_current --lib
+
+      - name: Test + coverage gate
+        # cargo-llvm-cov is pinned in mise.toml. It builds instrumented test
+        # binaries, runs them, and fails the job if line coverage drops below
+        # the threshold. Raise the threshold here when coverage goes up; do not
+        # lower it without recording why.
+        run: mise run coverage
+
+      - name: Build (release)
+        run: mise run build
+
+  docker:
+    name: docker build
+    # PR-only amd64 smoke build: proves the Dockerfile still builds, fast (native,
+    # no QEMU). arm64 is built and pushed at merge by publish-nightly, which runs
+    # the full multi-arch build. Emulating a full Rust release compile for arm64
+    # under QEMU here costs ~15 min/commit and is not worth it per PR push; the
+    # tradeoff is that an arm64-only Dockerfile/base-image break surfaces at merge.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: Build image (amd64, no push)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: hoststamp:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test image
+        run: sh scripts/docker-smoke.sh hoststamp:ci hoststamp-ci hoststamp-ci-data 18080

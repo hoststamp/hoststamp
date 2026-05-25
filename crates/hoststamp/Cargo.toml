@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
+[package]
+name = "hoststamp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Hoststamp CLI."
+
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+hoststamp-api = { path = "../hoststamp-api" }
+hoststamp-core = { path = "../hoststamp-core" }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+rusqlite.workspace = true
+tempfile = "3"

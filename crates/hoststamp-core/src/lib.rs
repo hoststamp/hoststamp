@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
+pub mod auth;
+pub mod config;
+pub mod credits;
+pub mod dictionary;
+pub mod generator;
+pub mod notices;
+pub mod profile;
+pub mod storage;
+
+pub const SERVICE_NAME: &str = "hoststamp";
