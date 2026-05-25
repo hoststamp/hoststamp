@@ -41,7 +41,7 @@ jobs:
         run: rustup component add rustfmt clippy llvm-tools-preview
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
 
       - name: Format
         run: mise run fmt
@@ -92,10 +92,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: Build image (amd64, no push)
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: .
           platforms: linux/amd64
@@ -107,82 +107,3 @@ jobs:
 
       - name: Smoke test image
         run: sh scripts/docker-smoke.sh hoststamp:ci hoststamp-ci hoststamp-ci-data 18080
-
-  publish-nightly:
-    name: publish nightly image
-    # docker is PR-only and skipped on main, so depend on test only. The full
-    # multi-arch (amd64+arm64) build happens in this job's own build+push step.
-    needs: [test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Install mise
-        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
-        with:
-          version: 2026.5.4
-          sha256: 96a0eefa1ad8c92461c808e6e07644f95cda830d7719895b98c819c94b0e0b1c
-          install: true
-          install_args: --locked
-          cache: true
-
-      - name: Install cargo-edit
-        run: cargo install cargo-edit --locked --version 0.13.10
-
-      - name: Compute and apply nightly version
-        id: nightly
-        run: |
-          # Read the next-pending release version from Cargo.toml and increment
-          # its patch component. The image tag carries the `v` prefix so nightly
-          # tags line up with release tags, while Cargo keeps plain SemVer.
-          CURRENT=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
-          IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          NEXT_PATCH="${MAJOR}.${MINOR}.$((PATCH + 1))"
-          DATE=$(date -u +%Y%m%d)
-          NIGHTLY_VERSION="${NEXT_PATCH}-nightly.${DATE}.${GITHUB_RUN_NUMBER}"
-          cargo set-version --workspace "$NIGHTLY_VERSION"
-          echo "version=$NIGHTLY_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$NIGHTLY_VERSION"     >> "$GITHUB_OUTPUT"
-          echo "Building nightly: v$NIGHTLY_VERSION"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
-        with:
-          platforms: arm64
-
-      - name: Log in to GHCR
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute image tags
-        id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
-          tags: |
-            type=raw,value=${{ steps.nightly.outputs.tag }}
-            type=raw,value=nightly
-            type=sha,prefix=sha-,format=short
-
-      - name: Build and push (multi-arch)
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

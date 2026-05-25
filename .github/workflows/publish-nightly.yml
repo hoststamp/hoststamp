@@ -1,0 +1,92 @@
+name: Publish Nightly
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  publish-nightly:
+    name: publish nightly image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install mise
+        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
+        with:
+          version: 2026.5.4
+          sha256: 96a0eefa1ad8c92461c808e6e07644f95cda830d7719895b98c819c94b0e0b1c
+          install: true
+          install_args: --locked
+          cache: true
+
+      - name: Install cargo-edit
+        run: cargo install cargo-edit --locked --version 0.13.10
+
+      - name: Compute and apply nightly version
+        id: nightly
+        run: |
+          # Read the next-pending release version from Cargo.toml and increment
+          # its patch component. The image tag carries the `v` prefix so nightly
+          # tags line up with release tags, while Cargo keeps plain SemVer.
+          CURRENT=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEXT_PATCH="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          DATE=$(date -u +%Y%m%d)
+          NIGHTLY_VERSION="${NEXT_PATCH}-nightly.${DATE}.${GITHUB_RUN_NUMBER}"
+          cargo set-version --workspace "$NIGHTLY_VERSION"
+          echo "version=$NIGHTLY_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NIGHTLY_VERSION"     >> "$GITHUB_OUTPUT"
+          echo "Building nightly: v$NIGHTLY_VERSION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
+        with:
+          platforms: arm64
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ steps.nightly.outputs.tag }}
+            type=raw,value=nightly
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

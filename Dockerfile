@@ -21,8 +21,8 @@ LABEL org.opencontainers.image.title="Hoststamp" \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 10001 hoststamp \
-    && useradd --system --uid 10001 --gid 10001 --home-dir /home/hoststamp --create-home --shell /usr/sbin/nologin hoststamp \
+    && groupadd --gid 10001 hoststamp \
+    && useradd --uid 10001 --gid 10001 --home-dir /home/hoststamp --create-home --shell /usr/sbin/nologin --no-log-init hoststamp \
     && install -d -o 10001 -g 10001 -m 0700 /home/hoststamp/.config/hoststamp
 
 COPY --from=builder --chown=root:root --chmod=0555 /usr/local/bin/hoststamp /usr/local/bin/hoststamp

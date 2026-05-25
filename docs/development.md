@@ -40,9 +40,10 @@ CI validates formatting, clippy, tests with coverage, release builds,
 third-party notice drift, workflow syntax, dependency advisories, secret leaks,
 filesystem vulnerability/misconfiguration scans, and the Docker image. Pull
 requests run a fast amd64 Docker smoke build and start the image with hardened
-runtime flags. Pushes to `main` publish
-multi-arch nightly images to GHCR tagged as `nightly`, `sha-<short>`, and
-`vX.Y.Z-nightly.YYYYMMDD.N`. Cargo audit and Dependabot also run weekly.
+runtime flags. The publish-nightly workflow runs on pushes to `main` and
+publishes multi-arch nightly images to GHCR tagged as `nightly`,
+`sha-<short>`, and `vX.Y.Z-nightly.YYYYMMDD.N`. Cargo audit and Dependabot
+also run weekly.
 
 ## Commit Messages
 
