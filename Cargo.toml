@@ -14,7 +14,7 @@ version = "0.0.0"
 edition = "2024"
 authors = ["Michael Stutz <michaeljstutz@users.noreply.github.com>"]
 license = "FSL-1.1-ALv2"
-repository = "https://github.com/michaeljstutz/hoststamp"
+repository = "https://github.com/hoststamp/hoststamp"
 readme = "README.md"
 
 [workspace.dependencies]
