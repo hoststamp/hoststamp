@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/build/target \
 FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb AS runtime
 LABEL org.opencontainers.image.title="Hoststamp" \
       org.opencontainers.image.description="Deterministic hostname generator CLI, API server, and local UX" \
-      org.opencontainers.image.source="https://github.com/michaeljstutz/hoststamp" \
+      org.opencontainers.image.source="https://github.com/hoststamp/hoststamp" \
       org.opencontainers.image.licenses="FSL-1.1-ALv2"
 
 # hadolint ignore=DL3008
