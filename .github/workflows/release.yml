@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable release version, for example 0.1.0 or v0.1.0
+        required: true
+        type: string
+      dry_run:
+        description: Verify without tagging, publishing, or creating a GitHub release
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: ghcr-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  release:
+    name: stable release
+    runs-on: ubuntu-latest
+    environment: stable-release
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install mise
+        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
+        with:
+          version: 2026.5.16
+          sha256: fb2d7bf1a3751398a5c336a3565cd3c60af9b41952abe6fd62e2f2f0d5f06b60
+          install: true
+          install_args: --locked
+          cache: true
+
+      - name: Resolve release version
+        id: release
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
+            echo "stable releases must run from main, got ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+          raw_version="$RAW_VERSION"
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "version must be stable X.Y.Z or vX.Y.Z, got $raw_version" >&2
+            exit 1
+          fi
+
+          current="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          if [[ "$version" != "$current" ]]; then
+            echo "requested version $version does not match Cargo.toml version $current" >&2
+            exit 1
+          fi
+
+          git fetch origin main --tags
+          head_sha="$(git rev-parse HEAD)"
+          remote_main="$(git rev-parse origin/main)"
+          if [[ "$head_sha" != "$remote_main" ]]; then
+            echo "release checkout must match origin/main before publishing" >&2
+            exit 1
+          fi
+
+          tag="v$version"
+          tag_exists=false
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/tmp/remote-tag 2>/dev/null; then
+            peeled_sha="$(git ls-remote --tags origin "refs/tags/$tag^{}" | awk '{ print $1 }')"
+            if [[ -z "$peeled_sha" ]]; then
+              peeled_sha="$(awk '{ print $1 }' /tmp/remote-tag)"
+            fi
+            if [[ "$peeled_sha" != "$head_sha" ]]; then
+              echo "remote tag $tag already exists at $peeled_sha, not $head_sha" >&2
+              exit 1
+            fi
+            tag_exists=true
+          fi
+
+          major="${version%%.*}"
+          minor_patch="${version#*.}"
+          minor="${minor_patch%%.*}"
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "major_tag=v$major"
+            echo "minor_tag=v$major.$minor"
+            echo "tag_exists=$tag_exists"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+
+      - name: Run release checks
+        run: mise run ci
+
+      - name: Verify release workflow did not change source
+        run: git diff --exit-code
+
+      - name: Create stable release tag
+        if: ${{ inputs.dry_run == false && steps.release.outputs.tag_exists == 'false' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag"
+          git -c http.extraHeader="AUTHORIZATION: bearer $GITHUB_TOKEN" push origin "$tag"
+
+      - name: Reuse existing stable release tag
+        if: ${{ inputs.dry_run == false && steps.release.outputs.tag_exists == 'true' }}
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: echo "Reusing $TAG at this commit."
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
+        with:
+          platforms: arm64
+
+      - name: Log in to GHCR
+        if: ${{ inputs.dry_run == false }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.tag }}
+            type=raw,value=${{ steps.release.outputs.minor_tag }}
+            type=raw,value=${{ steps.release.outputs.major_tag }}
+
+      - name: Build and publish image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ inputs.dry_run == false }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub release
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$tag" --notes "Release $tag"
+          else
+            gh release create "$tag" --verify-tag --title "$tag" --notes "Release $tag"
+          fi
+
+      - name: Report dry run
+        if: ${{ inputs.dry_run }}
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: echo "Dry run completed for $TAG."
