@@ -64,9 +64,9 @@ run = "sh scripts/docker-smoke.sh hoststamp:dev hoststamp-smoke hoststamp-smoke-
 description = "Create a release prep branch, version bump commit, and PR"
 run = "sh scripts/release-prep.sh"
 
-[tasks.release-tag]
-description = "Create and push the stable release tag for the current version"
-run = "sh scripts/release-tag.sh"
+[tasks.release-publish]
+description = "Dispatch the stable release workflow for the current version"
+run = "sh scripts/release-publish.sh"
 
 [tasks.ci]
 description = "Run the main local CI checks"

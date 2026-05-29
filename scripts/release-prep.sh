@@ -19,10 +19,12 @@ die() {
 }
 
 current_version() {
+  # Keep this in sync with scripts/release-publish.sh.
   awk -F'"' '/^version = / { print $2; exit }' Cargo.toml
 }
 
 is_stable_semver() {
+  # Keep this in sync with scripts/release-publish.sh.
   echo "$1" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 }
 

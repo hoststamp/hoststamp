@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: publish-nightly-${{ github.ref }}
+  group: ghcr-publish
   cancel-in-progress: false
 
 permissions:
@@ -36,12 +36,12 @@ jobs:
           install_args: --locked
           cache: true
 
-      - name: Install cargo-edit
-        run: cargo install cargo-edit --locked --version 0.13.11
-
       - name: Compute and apply nightly version
         id: nightly
+        shell: bash
         run: |
+          set -euo pipefail
+
           # Read the next-pending release version from Cargo.toml and increment
           # its patch component. The image tag carries the `v` prefix so nightly
           # tags line up with release tags, while Cargo keeps plain SemVer.

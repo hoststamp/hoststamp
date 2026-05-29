@@ -1,8 +1,8 @@
 # Release Process
 
 Hoststamp releases are intentionally review-first. Version bumps happen in a
-normal pull request, while GitHub Actions publish artifacts from reviewed
-commits and tags.
+normal pull request, while a manually dispatched GitHub Actions workflow creates
+the stable release tag and publishes artifacts from reviewed `main`.
 
 ## Release Prep PR
 
@@ -41,8 +41,8 @@ After confirmation, it:
 - pushes the branch to `origin`
 - opens a pull request with `gh pr create`
 
-The script intentionally stops before tagging. Stable tags are created only
-after the release prep PR has been reviewed and merged.
+The script intentionally stops before publishing. Stable releases are published
+only after the release prep PR has been reviewed and merged.
 
 In short, `release-prep`:
 
@@ -58,17 +58,18 @@ not commit release prep changes back to the repository.
 
 ## Stable Release
 
-After the release prep PR is merged, create the stable release tag with:
+After the release prep PR is merged, publish the stable release with:
 
 ```sh
-mise run release-tag
-mise run release-tag vX.Y.Z
+mise run release-publish
+mise run release-publish vX.Y.Z
+mise run release-publish --dry-run vX.Y.Z
 ```
 
-When no argument is provided, `release-tag` uses the workspace version in
+When no argument is provided, `release-publish` uses the workspace version in
 `Cargo.toml`. The script requires a clean `main` branch synced with
 `origin/main`, verifies that the local and remote tag do not already exist, and
-asks for confirmation before creating and pushing `vX.Y.Z`.
+asks for confirmation before dispatching the manual `Release` workflow.
 
 Before prompting, it:
 
@@ -80,26 +81,46 @@ Before prompting, it:
 - requires the workspace version to be a stable `X.Y.Z` version
 - rejects a provided `vX.Y.Z` or `X.Y.Z` argument if it does not match
   `Cargo.toml`
-- rejects tags that already exist locally or on `origin`
+- accepts existing local or remote tags only when they already point at the
+  current `main` commit, which allows re-dispatch after partial publish failures
+- rejects existing tags that point anywhere else
+- requires the `release.yml` workflow to be available on GitHub
 
 After confirmation, it:
 
-- creates annotated tag `vX.Y.Z` at the current `main` commit
-- pushes `vX.Y.Z` to `origin`
+- dispatches the manual `Release` workflow on `main`
+- passes the stable version and dry-run setting to the workflow
 
-In short, `release-tag`:
+In short, `release-publish`:
 
 - changes files: no
 - creates a branch: no
 - commits: no
-- pushes: yes, the tag only
-- tags: yes, after confirmation
+- pushes: no
+- tags: no, the remote workflow does that after checks pass
 - opens a PR: no
 
-A future stable release workflow will publish from the pushed tag and must
-verify that `vX.Y.Z` matches the workspace package version `X.Y.Z`. Release
-publishing must not rewrite source files, commit version changes, or push
-branches.
+The `Release` workflow is manual-only. It verifies that it is running from
+`main`, checks that `vX.Y.Z` matches the workspace package version `X.Y.Z`,
+runs the standard CI gate, verifies that the workflow did not modify source
+files, creates annotated Git tag `vX.Y.Z`, publishes the multi-architecture
+GHCR image, and creates or updates the GitHub Release.
+
+The workflow publishes Docker image tags:
+
+- `vX.Y.Z`
+- `vX.Y`
+- `vX`
+
+Only `vX.Y.Z` is a Git tag. The moving `vX.Y` and `vX` names are Docker image
+tags only, so they do not trigger duplicate Git tag workflows.
+
+Release publishing must not rewrite source files, commit version changes, or
+push branches. The workflow needs `contents: write` to create the release tag
+and GitHub Release, plus `packages: write` to publish to GHCR. Create a
+`stable-release` environment in GitHub repository settings. Add required
+reviewers to that environment if stable publishing should require manual
+approval before the job runs.
 
 The first supported stable release artifact is the multi-architecture GHCR
 image. Native binary packaging, SBOMs, provenance, and checksum artifacts are
@@ -131,7 +152,7 @@ answer "what did we intentionally release?".
 
 ## Release Checks
 
-Before tagging a stable release, run the standard CI gate:
+Before publishing a stable release, run the standard CI gate:
 
 ```sh
 MISE_TRUSTED_CONFIG_PATHS=$PWD mise run ci

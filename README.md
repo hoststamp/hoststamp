@@ -99,14 +99,14 @@ tokens can optionally expire with `expires_at_ms`.
   and attribution.
 - [Deployment](docs/deployment.md): exposed-server guidance, request limits,
   security headers, and Docker.
-- [Release](docs/release.md): release prep PRs, stable tags, nightly images,
-  and release checks.
+- [Release](docs/release.md): release prep PRs, stable publishing, nightly
+  images, and release checks.
 - [Development](docs/development.md): checks, crate layout, CI, and commit
   message conventions.
 
 Release preparation is handled through an explicit local workflow instead of
 GitHub Actions committing source changes. See [Release](docs/release.md) for
-the version bump, pull request, stable tag, and nightly image process.
+the version bump, pull request, stable release, and nightly image process.
 
 ## Project Commands
 

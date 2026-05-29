@@ -8,6 +8,7 @@ container="${2:-hoststamp-smoke}"
 volume="${3:-hoststamp-smoke-data}"
 port="${4:-18080}"
 
+# shellcheck disable=SC2329  # invoked via `trap` below
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
