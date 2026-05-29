@@ -7,6 +7,7 @@ lockfile = true
 rust = { version = "1.95.0", components = "rustfmt,clippy,llvm-tools-preview" }
 "cargo:cargo-llvm-cov" = "0.8.7"
 "cargo:cargo-audit" = "0.22.1"
+"cargo:cargo-edit" = "0.13.10"
 actionlint = "1.7.12"
 gitleaks = "8.30.1"
 trivy = "0.70.0"
@@ -58,6 +59,14 @@ run = "docker build -t hoststamp:dev ."
 description = "Run the Docker image with hardened runtime flags and check health"
 depends = ["docker-build"]
 run = "sh scripts/docker-smoke.sh hoststamp:dev hoststamp-smoke hoststamp-smoke-data 18080"
+
+[tasks.release-prep]
+description = "Create a release prep branch, version bump commit, and PR"
+run = "sh scripts/release-prep.sh"
+
+[tasks.release-tag]
+description = "Create and push the stable release tag for the current version"
+run = "sh scripts/release-tag.sh"
 
 [tasks.ci]
 description = "Run the main local CI checks"
