@@ -7,7 +7,7 @@ lockfile = true
 rust = { version = "1.95.0", components = "rustfmt,clippy,llvm-tools-preview" }
 "cargo:cargo-llvm-cov" = "0.8.7"
 "cargo:cargo-audit" = "0.22.1"
-"cargo:cargo-edit" = "0.13.10"
+"cargo:cargo-edit" = "0.13.11"
 actionlint = "1.7.12"
 gitleaks = "8.30.1"
 trivy = "0.70.0"

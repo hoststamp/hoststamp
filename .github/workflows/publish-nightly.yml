@@ -30,14 +30,14 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
         with:
-          version: 2026.5.4
-          sha256: 96a0eefa1ad8c92461c808e6e07644f95cda830d7719895b98c819c94b0e0b1c
+          version: 2026.5.16
+          sha256: fb2d7bf1a3751398a5c336a3565cd3c60af9b41952abe6fd62e2f2f0d5f06b60
           install: true
           install_args: --locked
           cache: true
 
       - name: Install cargo-edit
-        run: cargo install cargo-edit --locked --version 0.13.10
+        run: cargo install cargo-edit --locked --version 0.13.11
 
       - name: Compute and apply nightly version
         id: nightly
@@ -59,7 +59,7 @@ jobs:
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
         with:
           platforms: arm64
 
