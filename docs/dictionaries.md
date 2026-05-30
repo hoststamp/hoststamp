@@ -2,7 +2,8 @@
 
 Hoststamp embeds its generated dictionary artifact into the binary. Run
 `hoststamp --list-categories` for the category names and total counts compiled
-into the current build.
+into the current build. Global inspection flags such as `--list-categories`
+and `--credits` are handled before subcommands, similar to `--version`.
 
 Category stats from the generated artifact:
 

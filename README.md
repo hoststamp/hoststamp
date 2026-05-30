@@ -151,6 +151,9 @@ the CLI:
 cargo run -p hoststamp -- --credits
 ```
 
+Global inspection flags such as `--credits` and `--list-categories` are handled
+before subcommands, similar to `--version`.
+
 ## Commit Messages
 
 Use Conventional Commit-style subjects:

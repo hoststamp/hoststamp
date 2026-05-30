@@ -438,14 +438,23 @@ impl ProfileStore {
         if expires_at_ms.is_some_and(|expires_at_ms| expires_at_ms <= now) {
             bail!("profile token expiration must be in the future");
         }
+        tx.execute(
+            "UPDATE hoststamp_profile_tokens
+             SET revoked_at_ms = ?3
+             WHERE profile_id = ?1
+               AND name = ?2
+               AND revoked_at_ms IS NULL
+               AND expires_at_ms IS NOT NULL
+               AND expires_at_ms <= ?3",
+            params![profile_id.as_bytes().as_slice(), name, now],
+        )?;
         let active_name_count: i64 = tx.query_row(
             "SELECT COUNT(*)
              FROM hoststamp_profile_tokens
              WHERE profile_id = ?1
                AND name = ?2
-               AND revoked_at_ms IS NULL
-               AND (expires_at_ms IS NULL OR expires_at_ms > ?3)",
-            params![profile_id.as_bytes().as_slice(), name, now],
+               AND revoked_at_ms IS NULL",
+            params![profile_id.as_bytes().as_slice(), name],
             |row| row.get(0),
         )?;
         if active_name_count > 0 {
@@ -645,6 +654,10 @@ fn migrate(connection: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_hoststamp_profile_tokens_profile_id
             ON hoststamp_profile_tokens(profile_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_hoststamp_profile_tokens_active_name
+            ON hoststamp_profile_tokens(profile_id, name)
+            WHERE revoked_at_ms IS NULL;
         ",
     )?;
     Ok(())
@@ -921,6 +934,88 @@ mod tests {
                 .last_atomic_value,
             2
         );
+    }
+
+    #[test]
+    fn concurrent_atomic_increments_are_gapless() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = ProfileSlug::default_profile();
+        store
+            .load_or_seed_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+        drop(store);
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let url = url.clone();
+            let slug = slug.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut store = ProfileStore::open(&url).expect("store");
+                store.increment_atomic_value(&slug).expect("value")
+            }));
+        }
+
+        let mut values = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+
+        assert_eq!(values, (1..=16).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn concurrent_profile_token_names_are_reserved_once() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let profile = store
+            .create_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+        drop(store);
+
+        let mut handles = Vec::new();
+        for index in 0..8 {
+            let url = url.clone();
+            let profile_id = profile.id;
+            handles.push(std::thread::spawn(move || {
+                let mut store = ProfileStore::open(&url).expect("store");
+                store
+                    .create_profile_token(
+                        profile_id,
+                        &format!("token-id-{index}"),
+                        "deploy",
+                        [7_u8; 32],
+                        None,
+                    )
+                    .map(|token| token.token_id)
+                    .map_err(|error| error.to_string())
+            }));
+        }
+
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("already exists")))
+                .count(),
+            7
+        );
+
+        let store = ProfileStore::open(&url).expect("store");
+        let tokens = store.list_profile_tokens(profile.id).expect("tokens");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].name, "deploy");
     }
 
     #[test]
@@ -1202,6 +1297,14 @@ mod tests {
                 .expect("auth")
                 .is_none()
         );
+
+        let replacement = store
+            .create_profile_token(profile.id, "token-id-2", "deploy", hash, None)
+            .expect("replacement token");
+        assert_eq!(replacement.name, "deploy");
+        let expired =
+            select_profile_token(&store.connection, profile.id, "token-id").expect("expired token");
+        assert!(expired.revoked_at_ms.is_some());
     }
 
     #[test]

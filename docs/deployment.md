@@ -33,8 +33,7 @@ The local UX response sets:
 - `Content-Security-Policy` with `frame-ancestors 'none'`
 - `Permissions-Policy` disabling camera, microphone, geolocation, and payment
 
-The CSP allows inline script and style because the local UX is currently a
-single bundled HTML file.
+The CSP pins the local UX's bundled inline script and style by SHA-256 hash.
 
 ## Docker
 

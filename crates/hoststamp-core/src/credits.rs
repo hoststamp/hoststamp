@@ -20,14 +20,14 @@ Generated: {generated_at}
     );
 
     for source in dictionary::sources() {
-        writeln!(credits, "- {}", source.title).expect("write to string");
-        writeln!(credits, "  Attribution: {}", source.attribution).expect("write to string");
-        writeln!(credits, "  Source: {}", source.url).expect("write to string");
-        writeln!(credits, "  License: {}", source.license).expect("write to string");
-        writeln!(credits, "  License URL: {}", source.license_url).expect("write to string");
-        writeln!(credits, "  Retrieved: {}", source.retrieved).expect("write to string");
-        writeln!(credits, "  SHA-256: {}", source.sha256).expect("write to string");
-        writeln!(credits, "  Changes: {}", source.changes).expect("write to string");
+        let _ = writeln!(credits, "- {}", source.title);
+        let _ = writeln!(credits, "  Attribution: {}", source.attribution);
+        let _ = writeln!(credits, "  Source: {}", source.url);
+        let _ = writeln!(credits, "  License: {}", source.license);
+        let _ = writeln!(credits, "  License URL: {}", source.license_url);
+        let _ = writeln!(credits, "  Retrieved: {}", source.retrieved);
+        let _ = writeln!(credits, "  SHA-256: {}", source.sha256);
+        let _ = writeln!(credits, "  Changes: {}", source.changes);
     }
 
     credits

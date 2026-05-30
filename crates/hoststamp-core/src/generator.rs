@@ -167,15 +167,9 @@ pub struct ProfileGeneratedHostname {
 }
 
 struct SelectionPlan {
-    cells: Vec<SelectionCell>,
     words: Vec<&'static str>,
     word_indexes: HashMap<&'static str, usize>,
     total: usize,
-}
-
-struct SelectionCell {
-    upper_bound: usize,
-    words: Vec<&'static str>,
 }
 
 struct ProfileWordSelection<'a> {
@@ -470,10 +464,6 @@ impl SelectionPlan {
             bail!("{position} categories do not contain words matching the requested filters");
         }
 
-        let cells = vec![SelectionCell {
-            upper_bound: total,
-            words: plan_words.clone(),
-        }];
         let word_indexes = plan_words
             .iter()
             .enumerate()
@@ -481,7 +471,6 @@ impl SelectionPlan {
             .collect();
 
         Ok(Self {
-            cells,
             words: plan_words,
             word_indexes,
             total,
@@ -489,14 +478,7 @@ impl SelectionPlan {
     }
 
     fn random_word(&self) -> &'static str {
-        let index = random_index(self.total);
-        let cell = self
-            .cells
-            .iter()
-            .find(|cell| index < cell.upper_bound)
-            .expect("index is within total");
-        let lower_bound = cell.upper_bound - cell.words.len();
-        cell.words[index - lower_bound]
+        self.words[random_index(self.total)]
     }
 
     fn word_at(&self, index: usize) -> &'static str {
@@ -745,6 +727,8 @@ pub fn random_fallback_max_value(suffix_min_length: usize) -> Result<u64> {
 
 fn random_u64(min: u64, max: u64) -> u64 {
     assert!(min <= max, "random_u64 requires a valid range");
+    // As with random_index, modulo bias over UUIDv4's random space is
+    // operationally negligible for non-secret hostname suffix fallback.
     let span = u128::from(max - min) + 1;
     let value = u64::try_from(Uuid::new_v4().as_u128() % span).expect("bounded by u64 span");
     min + value
@@ -1243,6 +1227,25 @@ mod tests {
         assert!(first.len() >= 8);
         assert!(is_base36_suffix(&first));
         assert!(compute_profile_suffix(profile_id, 0, 8, blocklist_version).is_err());
+    }
+
+    #[test]
+    fn profile_alphabet_is_stable_profile_specific_permutation() {
+        let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+        let other_profile_id =
+            Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1b").expect("uuid");
+
+        let alphabet = profile_alphabet(Some(profile_id));
+        let alphabet_again = profile_alphabet(Some(profile_id));
+        let other_alphabet = profile_alphabet(Some(other_profile_id));
+        let unique_chars = alphabet.chars().collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(profile_alphabet(None), SUFFIX_ALPHABET);
+        assert_eq!(alphabet, alphabet_again);
+        assert_ne!(alphabet, other_alphabet);
+        assert_eq!(alphabet.len(), SUFFIX_ALPHABET.len());
+        assert_eq!(unique_chars.len(), SUFFIX_ALPHABET.len());
+        assert!(SUFFIX_ALPHABET.chars().all(|ch| unique_chars.contains(&ch)));
     }
 
     #[test]

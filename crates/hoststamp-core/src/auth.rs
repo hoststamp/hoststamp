@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::fmt;
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 pub const ADMIN_TOKEN_ENV: &str = "HOSTSTAMP_ADMIN_TOKEN";
@@ -103,13 +104,12 @@ pub fn constant_time_eq(left: &str, right: &str) -> bool {
     let left = left.as_bytes();
     let right = right.as_bytes();
     let max_len = left.len().max(right.len());
-    let mut diff = left.len() ^ right.len();
-    for index in 0..max_len {
-        let a = left.get(index).copied().unwrap_or(0);
-        let b = right.get(index).copied().unwrap_or(0);
-        diff |= usize::from(a ^ b);
-    }
-    diff == 0
+    let mut padded_left = vec![0; max_len];
+    let mut padded_right = vec![0; max_len];
+    padded_left[..left.len()].copy_from_slice(left);
+    padded_right[..right.len()].copy_from_slice(right);
+
+    padded_left.ct_eq(&padded_right).into() && left.len() == right.len()
 }
 
 #[cfg(test)]
@@ -132,6 +132,13 @@ mod tests {
 
         assert!(verify_profile_token_hash(&key, "token-secret", &hash).expect("verify"));
         assert!(!verify_profile_token_hash(&key, "other", &hash).expect("verify"));
+    }
+
+    #[test]
+    fn constant_time_eq_checks_value_and_length() {
+        assert!(constant_time_eq("admin-secret", "admin-secret"));
+        assert!(!constant_time_eq("admin-secret", "admin-other"));
+        assert!(!constant_time_eq("admin-secret", "admin-secret-extra"));
     }
 
     #[test]
