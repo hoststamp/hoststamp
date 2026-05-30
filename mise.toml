@@ -34,7 +34,7 @@ run = "cargo check --all-targets"
 
 [tasks.dev]
 description = "Run the local API and UX server, restarting when source files change"
-run = "HOSTSTAMP_UX_INDEX_HTML=crates/hoststamp-ux/static/index.html watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve"
+run = "HOSTSTAMP_UX_STATIC_DIR=crates/hoststamp-ux/static watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve"
 
 [tasks.dev-api]
 description = "Run the local API server, restarting when source files change"
@@ -42,7 +42,7 @@ run = "watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch
 
 [tasks.dev-ux]
 description = "Run the local UX server, restarting when source files change"
-run = "HOSTSTAMP_UX_INDEX_HTML=crates/hoststamp-ux/static/index.html watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode ux"
+run = "HOSTSTAMP_UX_STATIC_DIR=crates/hoststamp-ux/static watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode ux"
 
 [tasks.watch-check]
 description = "Run fast Rust type checks whenever source files change"

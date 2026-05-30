@@ -314,7 +314,10 @@ pub fn app_with_mode(
 ) -> Router {
     let mut router = Router::new().route("/healthz", get(healthz));
     if matches!(mode, AppMode::All | AppMode::Ux) {
-        router = router.route("/", get(hoststamp_ux::index));
+        router = router
+            .route("/", get(hoststamp_ux::index))
+            .route("/assets/app.css", get(hoststamp_ux::stylesheet))
+            .route("/assets/app.js", get(hoststamp_ux::script));
     }
     if matches!(mode, AppMode::All | AppMode::Api) {
         router = router

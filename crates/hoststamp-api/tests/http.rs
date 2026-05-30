@@ -139,6 +139,12 @@ async fn root_serves_local_ux() {
             .expect("csp")
             .contains("frame-ancestors 'none'")
     );
+    assert!(
+        response.headers()["content-security-policy"]
+            .to_str()
+            .expect("csp")
+            .contains("script-src 'self'")
+    );
 
     let body = response
         .into_body()
@@ -149,27 +155,93 @@ async fn root_serves_local_ux() {
     let html = std::str::from_utf8(&body).expect("utf8");
 
     assert!(html.contains("Hoststamp"));
-    assert!(html.contains("/api/health"));
+    assert!(html.contains("/assets/app.css"));
+    assert!(html.contains("/assets/app.js"));
+    assert!(!html.contains("<style>"));
+    assert!(!html.contains("<script>"));
+}
+
+#[tokio::test]
+async fn local_ux_assets_are_served() {
+    let app = server::app(GenerateOptions::default());
+
+    let css = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/assets/app.css")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(css.status(), http::StatusCode::OK);
+    assert_eq!(css.headers()["x-content-type-options"], "nosniff");
+    assert!(
+        css.headers()[http::header::CONTENT_TYPE]
+            .to_str()
+            .expect("content type")
+            .starts_with("text/css")
+    );
+    assert!(response_text(css).await.contains(":root"));
+
+    let js = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(js.status(), http::StatusCode::OK);
+    assert_eq!(js.headers()["x-content-type-options"], "nosniff");
+    assert!(
+        js.headers()[http::header::CONTENT_TYPE]
+            .to_str()
+            .expect("content type")
+            .starts_with("text/javascript")
+    );
+    let js = response_text(js).await;
+    assert!(js.contains("const state"));
+    assert!(js.contains("/api/health"));
 }
 
 #[tokio::test]
 async fn api_mode_does_not_serve_local_ux() {
-    let response = server::app_with_mode(
+    let app = server::app_with_mode(
         GenerateOptions::default(),
         None,
         ApiAuthConfig::default(),
         server::AppMode::Api,
-    )
-    .oneshot(
-        http::Request::builder()
-            .uri("/")
-            .body(Body::empty())
-            .expect("request"),
-    )
-    .await
-    .expect("response");
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
 
     assert_eq!(response.status(), http::StatusCode::NOT_FOUND);
+
+    let asset = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/assets/app.css")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(asset.status(), http::StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
