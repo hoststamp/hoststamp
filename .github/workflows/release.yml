@@ -104,6 +104,7 @@ jobs:
           {
             echo "version=$version"
             echo "tag=$tag"
+            echo "major=$major"
             echo "major_tag=v$major"
             echo "minor_tag=v$major.$minor"
             echo "tag_exists=$tag_exists"
@@ -118,25 +119,15 @@ jobs:
       - name: Verify release workflow did not change source
         run: git diff --exit-code
 
-      - name: Create stable release tag
-        if: ${{ inputs.dry_run == false && steps.release.outputs.tag_exists == 'false' }}
+      - name: Verify release git credentials
+        if: ${{ steps.release.outputs.tag_exists == 'false' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="$TAG"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "Release $tag"
-          git -c http.extraHeader="AUTHORIZATION: bearer $GITHUB_TOKEN" push origin "$tag"
-
-      - name: Reuse existing stable release tag
-        if: ${{ inputs.dry_run == false && steps.release.outputs.tag_exists == 'true' }}
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
-        run: echo "Reusing $TAG at this commit."
+          git push --dry-run "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/tags/$TAG"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
@@ -145,6 +136,21 @@ jobs:
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
         with:
           platforms: arm64
+
+      - name: Build arm64 smoke image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/arm64 \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --load \
+            --tag hoststamp:release-smoke-arm64 \
+            .
+
+      - name: Smoke test arm64 image
+        run: sh scripts/docker-smoke.sh hoststamp:release-smoke-arm64 hoststamp-release-arm64-smoke hoststamp-release-arm64-smoke-data 18081
 
       - name: Log in to GHCR
         if: ${{ inputs.dry_run == false }}
@@ -162,7 +168,7 @@ jobs:
           tags: |
             type=raw,value=${{ steps.release.outputs.tag }}
             type=raw,value=${{ steps.release.outputs.minor_tag }}
-            type=raw,value=${{ steps.release.outputs.major_tag }}
+            type=raw,value=${{ steps.release.outputs.major_tag }},enable=${{ steps.release.outputs.major != '0' }}
 
       - name: Build and publish image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
@@ -174,6 +180,26 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create stable release tag
+        if: ${{ inputs.dry_run == false && steps.release.outputs.tag_exists == 'false' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$tag"
+
+      - name: Reuse existing stable release tag
+        if: ${{ inputs.dry_run == false && steps.release.outputs.tag_exists == 'true' }}
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: echo "Reusing $TAG at this commit."
 
       - name: Create GitHub release
         if: ${{ inputs.dry_run == false }}
