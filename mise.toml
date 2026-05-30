@@ -34,19 +34,19 @@ run = "cargo check --all-targets"
 
 [tasks.dev]
 description = "Run the local API and UX server, restarting when source files change"
-run = "watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates -- cargo run -p hoststamp -- serve"
+run = "HOSTSTAMP_UX_INDEX_HTML=crates/hoststamp-ux/static/index.html watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve"
 
 [tasks.dev-api]
 description = "Run the local API server, restarting when source files change"
-run = "watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates -- cargo run -p hoststamp -- serve --mode api"
+run = "watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode api"
 
 [tasks.dev-ux]
 description = "Run the local UX server, restarting when source files change"
-run = "watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates -- cargo run -p hoststamp -- serve --mode ux"
+run = "HOSTSTAMP_UX_INDEX_HTML=crates/hoststamp-ux/static/index.html watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode ux"
 
 [tasks.watch-check]
 description = "Run fast Rust type checks whenever source files change"
-run = "watchexec --clear --watch Cargo.toml --watch Cargo.lock --watch crates -- cargo check --all-targets"
+run = "watchexec --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo check --all-targets"
 
 [tasks.coverage]
 description = "Run tests with the 90% line coverage gate"

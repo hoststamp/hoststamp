@@ -33,8 +33,10 @@ mise run dev
 ```
 
 The task runs `cargo run -p hoststamp -- serve` under `watchexec` and restarts
-the server whenever `Cargo.toml`, `Cargo.lock`, or files under `crates/` change.
-Open `http://127.0.0.1:8080/` and refresh the browser after each restart.
+the server whenever Rust source or Cargo metadata changes. It also sets
+`HOSTSTAMP_UX_INDEX_HTML=crates/hoststamp-ux/static/index.html`, which makes
+the debug server read the admin shell from disk on each request. HTML, CSS, and
+JavaScript edits to that file only need a browser refresh.
 
 Two narrower server loops are also available:
 
@@ -50,10 +52,11 @@ mise run check
 mise run watch-check
 ```
 
-The admin shell is currently embedded into the binary from
-`crates/hoststamp-ux/static/index.html`, so HTML, CSS, and JavaScript edits
-still rebuild the `hoststamp-ux` crate. If that becomes too slow, the next
-workflow improvement should be a dev-only file-serving path for local UX assets.
+Production builds still embed the admin shell from
+`crates/hoststamp-ux/static/index.html` and keep the strict hash-pinned content
+security policy. The disk-served path is debug-only and uses a relaxed local
+CSP so inline admin edits are visible without updating hashes during each
+iteration.
 
 ## Crate Layout
 
