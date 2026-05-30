@@ -7,7 +7,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN --mount=type=cache,target=/build/target \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --release --locked -p hoststamp \
     && install -m 0555 target/release/hoststamp /usr/local/bin/hoststamp
 
