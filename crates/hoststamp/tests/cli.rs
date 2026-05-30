@@ -70,7 +70,10 @@ fn version_prints_cli_name_and_version() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("hoststamp 0.0.0"));
+        .stdout(predicate::str::contains(format!(
+            "hoststamp {}",
+            env!("CARGO_PKG_VERSION")
+        )));
 }
 
 #[test]
