@@ -103,17 +103,26 @@ In short, `release-publish`:
 The `Release` workflow is manual-only. It verifies that it is running from
 `main`, checks that `vX.Y.Z` matches the workspace package version `X.Y.Z`,
 runs the standard CI gate, verifies that the workflow did not modify source
-files, creates annotated Git tag `vX.Y.Z`, publishes the multi-architecture
-GHCR image, and creates or updates the GitHub Release.
+files, verifies release Git credentials with a non-mutating dry-run tag push,
+builds and smoke-tests the arm64 image under QEMU, publishes the
+multi-architecture GHCR image, creates or reuses annotated Git tag `vX.Y.Z`,
+and creates or updates the GitHub Release.
+
+Dry runs run the release checks, the release Git credential preflight, the arm64
+smoke test, and the multi-architecture image build. They do not publish image
+tags, create Git tags, or create GitHub Releases.
 
 The workflow publishes Docker image tags:
 
 - `vX.Y.Z`
 - `vX.Y`
-- `vX`
+- `vX` for 1.0 and later
 
 Only `vX.Y.Z` is a Git tag. The moving `vX.Y` and `vX` names are Docker image
-tags only, so they do not trigger duplicate Git tag workflows.
+tags only, so they do not trigger duplicate Git tag workflows. While Hoststamp
+is pre-1.0, the release workflow suppresses the `v0` Docker image tag because
+0.x minor releases may contain breaking changes. The exact `v0.Y.Z` tag and
+minor-line `v0.Y` tag are still published.
 
 Release publishing must not rewrite source files, commit version changes, or
 push branches. The workflow needs `contents: write` to create the release tag
@@ -125,6 +134,17 @@ approval before the job runs.
 The first supported stable release artifact is the multi-architecture GHCR
 image. Native binary packaging, SBOMs, provenance, and checksum artifacts are
 separate release-scope decisions.
+
+The release gate intentionally re-runs advisory and filesystem security scans
+against the current RustSec, gitleaks, and Trivy data. A byte-identical commit
+can fail release checks if a new advisory or finding appears after merge. Treat
+that as a current-release blocker: fix or explicitly accept the finding on
+`main`, then re-dispatch the release workflow.
+
+If a release fails after the image and Git tag are published but before the
+GitHub Release is created, re-dispatch before merging anything new to `main`. If
+`main` has already advanced, delete the published tag and orphaned image tags,
+then cut the next version.
 
 ## Nightly Release
 
