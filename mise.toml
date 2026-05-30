@@ -34,15 +34,19 @@ run = "cargo check --all-targets"
 
 [tasks.dev]
 description = "Run the local API and UX server, restarting when source files change"
-run = "HOSTSTAMP_UX_STATIC_DIR=crates/hoststamp-ux/static watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve"
+run = "sh scripts/dev-env.sh watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve"
 
 [tasks.dev-api]
 description = "Run the local API server, restarting when source files change"
-run = "watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode api"
+run = "sh scripts/dev-env.sh watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode api"
 
 [tasks.dev-ux]
 description = "Run the local UX server, restarting when source files change"
-run = "HOSTSTAMP_UX_STATIC_DIR=crates/hoststamp-ux/static watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode ux"
+run = "sh scripts/dev-env.sh watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode ux"
+
+[tasks.dev-reset]
+description = "Delete the throwaway local development state"
+run = "rm -f target/dev/hoststamp.db target/dev/hoststamp.db-shm target/dev/hoststamp.db-wal target/dev/admin-token target/dev/token-hash-key"
 
 [tasks.watch-check]
 description = "Run fast Rust type checks whenever source files change"

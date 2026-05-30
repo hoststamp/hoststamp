@@ -33,16 +33,26 @@ mise run dev
 ```
 
 The task runs `cargo run -p hoststamp -- serve` under `watchexec` and restarts
-the server whenever Rust source or Cargo metadata changes. It also sets
-`HOSTSTAMP_UX_STATIC_DIR=crates/hoststamp-ux/static`, which makes the debug
-server read the admin HTML, CSS, and JavaScript from disk on each request.
-Edits to those files only need a browser refresh.
+the server whenever Rust source or Cargo metadata changes. The wrapper in
+`scripts/dev-env.sh` uses the throwaway SQLite database at
+`target/dev/hoststamp.db`, creates local admin and token-hash key files under
+`target/dev/` when they are missing, and sets
+`HOSTSTAMP_UX_STATIC_DIR=crates/hoststamp-ux/static` so the debug server reads
+the admin HTML, CSS, and JavaScript from disk on each request. Edits to those
+files only need a browser refresh. The admin bearer token for the browser
+prompt is stored at `target/dev/admin-token`.
 
 Two narrower server loops are also available:
 
 ```sh
 mise run dev-api
 mise run dev-ux
+```
+
+Stop the dev server before resetting its local state:
+
+```sh
+mise run dev-reset
 ```
 
 For a fast compile-only feedback loop, run:
