@@ -3,6 +3,7 @@
 ## Project Commands
 
 ```sh
+cargo check --all-targets
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
@@ -16,11 +17,43 @@ The same local checks are available through `mise`:
 
 ```sh
 mise install --locked
+mise run check
 mise run ci
 ```
 
 Run individual `mise` tasks when you only need one check. Tool versions are
 pinned in `mise.toml` and locked in `mise.lock`.
+
+## Local Dev Loop
+
+Use the watched dev server when working on the API or local UX:
+
+```sh
+mise run dev
+```
+
+The task runs `cargo run -p hoststamp -- serve` under `watchexec` and restarts
+the server whenever `Cargo.toml`, `Cargo.lock`, or files under `crates/` change.
+Open `http://127.0.0.1:8080/` and refresh the browser after each restart.
+
+Two narrower server loops are also available:
+
+```sh
+mise run dev-api
+mise run dev-ux
+```
+
+For a fast compile-only feedback loop, run:
+
+```sh
+mise run check
+mise run watch-check
+```
+
+The admin shell is currently embedded into the binary from
+`crates/hoststamp-ux/static/index.html`, so HTML, CSS, and JavaScript edits
+still rebuild the `hoststamp-ux` crate. If that becomes too slow, the next
+workflow improvement should be a dev-only file-serving path for local UX assets.
 
 ## Crate Layout
 
