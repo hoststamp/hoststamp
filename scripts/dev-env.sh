@@ -30,6 +30,13 @@ if [ "$#" -eq 0 ]; then
   die "expected a command to run"
 fi
 
+if ! command -v "$1" >/dev/null 2>&1; then
+  if [ "$1" = "watchexec" ]; then
+    die "watchexec is not installed; run: mise install --locked"
+  fi
+  die "$1 is not installed"
+fi
+
 dev_dir="${HOSTSTAMP_DEV_DIR:-target/dev}"
 mkdir -p "$dev_dir"
 
