@@ -43,6 +43,17 @@ The image runs as UID/GID `10001`, sets
 `/home/hoststamp/.config/hoststamp/hoststamp.db` when no config file is
 mounted.
 
+After `v0.1.0` is published, pull and run the stable image from GHCR:
+
+```sh
+docker pull ghcr.io/hoststamp/hoststamp:v0.1.0
+docker run --rm -p 127.0.0.1:8080:8080 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  -v hoststamp-data:/home/hoststamp/.config/hoststamp \
+  ghcr.io/hoststamp/hoststamp:v0.1.0
+```
+
 Build and smoke test locally with:
 
 ```sh
@@ -69,7 +80,7 @@ docker run --rm -p 8080:8080 \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --env-file ./hoststamp.env \
   -v hoststamp-data:/home/hoststamp/.config/hoststamp \
-  hoststamp:dev
+  ghcr.io/hoststamp/hoststamp:v0.1.0
 ```
 
 Minimum env-file values for exposed use:

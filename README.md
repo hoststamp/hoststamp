@@ -49,6 +49,17 @@ cargo run -p hoststamp -- config init
 cargo run -p hoststamp -- config show
 ```
 
+After `v0.1.0` is published, the first stable Docker image will be available
+from GHCR:
+
+```sh
+docker run --rm -p 127.0.0.1:8080:8080 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  -v hoststamp-data:/home/hoststamp/.config/hoststamp \
+  ghcr.io/hoststamp/hoststamp:v0.1.0
+```
+
 ## Core Model
 
 Hostnames are assembled from `word1`, `word2`, and `suffix`. Profile-backed
