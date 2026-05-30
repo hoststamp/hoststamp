@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "hoststamp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "hoststamp-api"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "hoststamp-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "hmac",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "hoststamp-ux"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
 ]
