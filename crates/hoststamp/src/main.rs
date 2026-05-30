@@ -1014,7 +1014,8 @@ fn format_storage_url(url: &storage::StorageUrl) -> String {
 fn hex_string(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        hex.push_str(&format!("{byte:02x}"));
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
     }
     hex
 }

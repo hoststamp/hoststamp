@@ -84,7 +84,7 @@ fn main() {
 }
 
 fn try_main() -> Result<(), String> {
-    println!("cargo:rerun-if-env-changed={ARTIFACT_ENV}");
+    println!("cargo::rerun-if-env-changed={ARTIFACT_ENV}");
 
     let manifest_dir = PathBuf::from(
         env::var("CARGO_MANIFEST_DIR")
@@ -93,7 +93,7 @@ fn try_main() -> Result<(), String> {
     let artifact_path = env::var_os(ARTIFACT_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join(DEFAULT_ARTIFACT_PATH));
-    println!("cargo:rerun-if-changed={}", artifact_path.display());
+    println!("cargo::rerun-if-changed={}", artifact_path.display());
 
     let contents = fs::read_to_string(&artifact_path).map_err(|error| {
         format!(
@@ -743,7 +743,8 @@ fn string_literal(value: &str) -> String {
 fn hex_digest(bytes: &[u8]) -> String {
     let mut value = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        value.push_str(&format!("{byte:02x}"));
+        use std::fmt::Write as _;
+        let _ = write!(value, "{byte:02x}");
     }
     value
 }

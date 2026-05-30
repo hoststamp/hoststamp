@@ -5,28 +5,26 @@ use std::fmt::Write as _;
 
 pub fn text() -> String {
     let mut notices = String::from("# Third-Party Notices\n\n");
-    writeln!(
+    let _ = writeln!(
         notices,
         "Generated from Hoststamp dictionary artifact schema {} at {}.\n",
         dictionary::SCHEMA_VERSION,
         dictionary::GENERATED_AT
-    )
-    .expect("write to string");
+    );
 
     for source in dictionary::sources() {
-        writeln!(notices, "## {}", source.title).expect("write to string");
-        writeln!(notices).expect("write to string");
-        writeln!(notices, "- Source ID: `{}`", source.id).expect("write to string");
-        writeln!(notices, "- Attribution: {}", source.attribution).expect("write to string");
-        writeln!(notices, "- Source: <{}>", source.url).expect("write to string");
-        writeln!(notices, "- License: {}", source.license).expect("write to string");
-        writeln!(notices, "- License URL: <{}>", source.license_url).expect("write to string");
-        writeln!(notices, "- Retrieved: {}", source.retrieved).expect("write to string");
-        writeln!(notices, "- SHA-256: `{}`", source.sha256).expect("write to string");
-        writeln!(notices, "- Notice required: {}", source.notice_required)
-            .expect("write to string");
-        writeln!(notices, "- Changes: {}", source.changes).expect("write to string");
-        writeln!(notices).expect("write to string");
+        let _ = writeln!(notices, "## {}", source.title);
+        let _ = writeln!(notices);
+        let _ = writeln!(notices, "- Source ID: `{}`", source.id);
+        let _ = writeln!(notices, "- Attribution: {}", source.attribution);
+        let _ = writeln!(notices, "- Source: <{}>", source.url);
+        let _ = writeln!(notices, "- License: {}", source.license);
+        let _ = writeln!(notices, "- License URL: <{}>", source.license_url);
+        let _ = writeln!(notices, "- Retrieved: {}", source.retrieved);
+        let _ = writeln!(notices, "- SHA-256: `{}`", source.sha256);
+        let _ = writeln!(notices, "- Notice required: {}", source.notice_required);
+        let _ = writeln!(notices, "- Changes: {}", source.changes);
+        let _ = writeln!(notices);
     }
 
     if notices.ends_with("\n\n") {

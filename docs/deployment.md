@@ -33,8 +33,7 @@ The local UX response sets:
 - `Content-Security-Policy` with `frame-ancestors 'none'`
 - `Permissions-Policy` disabling camera, microphone, geolocation, and payment
 
-The CSP allows inline script and style because the local UX is currently a
-single bundled HTML file.
+The CSP pins the local UX's bundled inline script and style by SHA-256 hash.
 
 ## Docker
 
@@ -42,6 +41,17 @@ The image runs as UID/GID `10001`, sets
 `XDG_CONFIG_HOME=/home/hoststamp/.config`, and defaults the database to
 `/home/hoststamp/.config/hoststamp/hoststamp.db` when no config file is
 mounted.
+
+After `v0.1.0` is published, pull and run the stable image from GHCR:
+
+```sh
+docker pull ghcr.io/hoststamp/hoststamp:v0.1.0
+docker run --rm -p 127.0.0.1:8080:8080 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  -v hoststamp-data:/home/hoststamp/.config/hoststamp \
+  ghcr.io/hoststamp/hoststamp:v0.1.0
+```
 
 Build and smoke test locally with:
 
@@ -69,7 +79,7 @@ docker run --rm -p 8080:8080 \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --env-file ./hoststamp.env \
   -v hoststamp-data:/home/hoststamp/.config/hoststamp \
-  hoststamp:dev
+  ghcr.io/hoststamp/hoststamp:v0.1.0
 ```
 
 Minimum env-file values for exposed use:
