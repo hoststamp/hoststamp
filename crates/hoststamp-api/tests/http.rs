@@ -15,6 +15,59 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::ServiceExt;
 
+#[cfg(debug_assertions)]
+const UX_STATIC_DIR_ENV: &str = "HOSTSTAMP_UX_STATIC_DIR";
+
+#[cfg(debug_assertions)]
+static UX_STATIC_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(debug_assertions)]
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+#[cfg(debug_assertions)]
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::path::Path) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: UX route tests that mutate this variable hold UX_STATIC_ENV_LOCK.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: UX route tests that mutate this variable hold UX_STATIC_ENV_LOCK.
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, previous }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => {
+                // SAFETY: UX route tests that mutate this variable hold UX_STATIC_ENV_LOCK.
+                unsafe {
+                    std::env::set_var(self.key, value);
+                }
+            }
+            None => {
+                // SAFETY: UX route tests that mutate this variable hold UX_STATIC_ENV_LOCK.
+                unsafe {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+}
+
 fn hostname_from_item(item: &serde_json::Value) -> &str {
     item["hostname"].as_str().expect("hostname")
 }
@@ -119,6 +172,11 @@ async fn healthz_returns_ok_payload() {
 
 #[tokio::test]
 async fn root_serves_local_ux() {
+    #[cfg(debug_assertions)]
+    let _env_lock = UX_STATIC_ENV_LOCK.lock().await;
+    #[cfg(debug_assertions)]
+    let _env = EnvVarGuard::remove(UX_STATIC_DIR_ENV);
+
     let response = server::app(GenerateOptions::default())
         .oneshot(
             http::Request::builder()
@@ -163,6 +221,11 @@ async fn root_serves_local_ux() {
 
 #[tokio::test]
 async fn local_ux_assets_are_served() {
+    #[cfg(debug_assertions)]
+    let _env_lock = UX_STATIC_ENV_LOCK.lock().await;
+    #[cfg(debug_assertions)]
+    let _env = EnvVarGuard::remove(UX_STATIC_DIR_ENV);
+
     let app = server::app(GenerateOptions::default());
 
     let css = app
@@ -209,6 +272,99 @@ async fn local_ux_assets_are_served() {
     assert!(js.contains("/api/health"));
 }
 
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn all_and_ux_modes_serve_dev_reload_routes_when_static_dir_is_enabled() {
+    let _env_lock = UX_STATIC_ENV_LOCK.lock().await;
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tempdir.path().join("index.html"),
+        "<!doctype html><html><body>Hoststamp</body></html>",
+    )
+    .expect("write index");
+    std::fs::write(
+        tempdir.path().join("app.css"),
+        ":root { color-scheme: light; }",
+    )
+    .expect("write css");
+    std::fs::write(tempdir.path().join("app.js"), "const state = {};").expect("write js");
+    std::fs::write(
+        tempdir.path().join("dev-reload.js"),
+        "function checkForUpdate() {}",
+    )
+    .expect("write reload");
+    let _env = EnvVarGuard::set(UX_STATIC_DIR_ENV, tempdir.path());
+
+    for mode in [server::AppMode::All, server::AppMode::Ux] {
+        let app = server::app_with_mode(
+            GenerateOptions::default(),
+            None,
+            ApiAuthConfig::default(),
+            mode,
+        );
+
+        let root = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(root.status(), http::StatusCode::OK);
+        assert!(response_text(root).await.contains("/assets/dev-reload.js"));
+
+        let version = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri("/assets/dev-version")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(version.status(), http::StatusCode::OK);
+        assert!(
+            version.headers()[http::header::CONTENT_TYPE]
+                .to_str()
+                .expect("content type")
+                .starts_with("text/plain")
+        );
+        let version = response_text(version).await;
+        let version_parts = version.split('.').collect::<Vec<_>>();
+        assert_eq!(version_parts.len(), 4);
+        assert!(
+            version_parts
+                .iter()
+                .all(|part| !part.is_empty() && part.parse::<u128>().is_ok())
+        );
+
+        let reload = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/assets/dev-reload.js")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(reload.status(), http::StatusCode::OK);
+        assert!(
+            reload.headers()[http::header::CONTENT_TYPE]
+                .to_str()
+                .expect("content type")
+                .starts_with("text/javascript")
+        );
+        assert!(response_text(reload).await.contains("checkForUpdate"));
+    }
+}
+
 #[tokio::test]
 async fn api_mode_does_not_serve_local_ux() {
     let app = server::app_with_mode(
@@ -246,6 +402,11 @@ async fn api_mode_does_not_serve_local_ux() {
 
 #[tokio::test]
 async fn ux_mode_does_not_serve_api_routes() {
+    #[cfg(debug_assertions)]
+    let _env_lock = UX_STATIC_ENV_LOCK.lock().await;
+    #[cfg(debug_assertions)]
+    let _env = EnvVarGuard::remove(UX_STATIC_DIR_ENV);
+
     let app = server::app_with_mode(
         GenerateOptions::default(),
         None,

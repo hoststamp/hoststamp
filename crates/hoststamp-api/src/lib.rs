@@ -318,6 +318,15 @@ pub fn app_with_mode(
             .route("/", get(hoststamp_ux::index))
             .route("/assets/app.css", get(hoststamp_ux::stylesheet))
             .route("/assets/app.js", get(hoststamp_ux::script));
+        #[cfg(debug_assertions)]
+        {
+            router = router
+                .route(
+                    "/assets/dev-reload.js",
+                    get(hoststamp_ux::dev_reload_script),
+                )
+                .route("/assets/dev-version", get(hoststamp_ux::dev_version));
+        }
     }
     if matches!(mode, AppMode::All | AppMode::Api) {
         router = router
