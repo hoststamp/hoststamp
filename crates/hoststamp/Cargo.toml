@@ -14,6 +14,8 @@ description = "Hoststamp CLI."
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
 hoststamp-api = { path = "../hoststamp-api" }
 hoststamp-core = { path = "../hoststamp-core" }
 serde_json.workspace = true
