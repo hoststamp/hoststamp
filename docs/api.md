@@ -155,7 +155,9 @@ array, `null`, `"any"`, or the same comma-separated form as the CLI.
 `GET /api/profiles/{slug}/export` returns a portable JSON profile containing
 the deterministic profile ID, access mode, last issued atomic value, config
 hash, and config. `POST /api/profiles/import` restores that identity on another
-instance; importing over an existing slug requires action `replace`.
+instance; importing over an existing slug requires action `replace`. The same
+workflow is available locally with `hoststamp profile export` and
+`hoststamp profile import <path>`.
 
 JSON request bodies are capped at 256 KiB. That is intentionally larger than
 current profile exports and small enough to avoid accidental large uploads on

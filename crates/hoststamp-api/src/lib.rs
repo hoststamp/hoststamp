@@ -26,7 +26,7 @@ use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::{net::TcpListener, signal, sync::Mutex};
 use uuid::Uuid;
 
-const PROFILE_EXPORT_FORMAT: &str = "hoststamp-profile-v1";
+pub const PROFILE_EXPORT_FORMAT: &str = "hoststamp-profile-v1";
 pub const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +269,42 @@ pub struct ImportProfileRequest {
     pub config_hash: String,
     pub config: ProfileConfig,
     pub confirmation: Option<AdminConfirmation>,
+}
+
+pub struct ValidatedImportProfile {
+    pub id: Uuid,
+    pub slug: ProfileSlug,
+}
+
+pub fn validate_import_profile_request(
+    request: &ImportProfileRequest,
+) -> Result<ValidatedImportProfile, String> {
+    if request.format != PROFILE_EXPORT_FORMAT {
+        return Err(format!(
+            "profile import format must be {PROFILE_EXPORT_FORMAT:?}"
+        ));
+    }
+    let id = Uuid::parse_str(&request.id)
+        .map_err(|error| format!("profile import id is invalid: {error}"))?;
+    let slug = request.slug.parse()?;
+    if request.last_atomic_value < 0 {
+        return Err("profile import last_atomic_value must be at least 0".to_owned());
+    }
+    let options = request.config.to_generate_options(generator::DEFAULT_COUNT);
+    generator::validate_generate_options(&options).map_err(|error| error.to_string())?;
+    let expected_config_hash =
+        hex_string(&config_hash(&request.config).map_err(|error| error.to_string())?);
+    if request.config_hash != expected_config_hash {
+        return Err("profile import config_hash does not match config".to_owned());
+    }
+    if !request.config.uses_current_generation_contract() {
+        return Err(
+            "profile import config was created with a generation engine, dictionary/blocklist versions, or resolved word pools that do not match this binary"
+                .to_owned(),
+        );
+    }
+
+    Ok(ValidatedImportProfile { id, slug })
 }
 
 #[derive(Debug, Deserialize)]
@@ -624,36 +660,10 @@ async fn admin_import_profile(
     Json(request): Json<ImportProfileRequest>,
 ) -> Result<(StatusCode, Json<ProfileEnvelope>), Response> {
     authorize_admin_request(&headers, &state.auth)?;
-    if request.format != PROFILE_EXPORT_FORMAT {
-        return Err(admin_bad_request_response(format!(
-            "profile import format must be {PROFILE_EXPORT_FORMAT:?}"
-        )));
-    }
-    let id = Uuid::parse_str(&request.id).map_err(|error| {
-        admin_bad_request_response(format!("profile import id is invalid: {error}"))
-    })?;
-    let slug = parse_slug(&request.slug)?;
-    if request.last_atomic_value < 0 {
-        return Err(admin_bad_request_response(
-            "profile import last_atomic_value must be at least 0",
-        ));
-    }
-    let options = request.config.to_generate_options(generator::DEFAULT_COUNT);
-    generator::validate_generate_options(&options).map_err(admin_bad_request_response)?;
-    let expected_config_hash = hex_string(
-        &config_hash(&request.config)
-            .map_err(|error| admin_bad_request_response(error.to_string()))?,
-    );
-    if request.config_hash != expected_config_hash {
-        return Err(admin_bad_request_response(
-            "profile import config_hash does not match config",
-        ));
-    }
-    if !request.config.uses_current_generation_contract() {
-        return Err(admin_bad_request_response(
-            "profile import config was created with a generation engine, dictionary/blocklist versions, or resolved word pools that do not match this binary",
-        ));
-    }
+    let validated =
+        validate_import_profile_request(&request).map_err(admin_bad_request_response)?;
+    let id = validated.id;
+    let slug = validated.slug;
 
     let store = admin_store(&state)?;
     let mut store = store.lock().await;

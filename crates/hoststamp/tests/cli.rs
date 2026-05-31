@@ -613,6 +613,189 @@ fn profile_commands_create_show_list_and_delete_profiles() {
 }
 
 #[test]
+fn profile_export_import_preserves_profile_identity() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let source_database = tempdir.path().join("source.db");
+    let target_database = tempdir.path().join("target.db");
+    let export_path = tempdir.path().join("team-a.json");
+
+    let mut create = command_for_database(&source_database);
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let mut access = command_for_database(&source_database);
+    access
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "set-access",
+            "--access",
+            "public",
+        ])
+        .assert()
+        .success();
+
+    let mut generate = command_for_database(&source_database);
+    generate
+        .args(["--profile", "team-a", "generate", "--count", "2"])
+        .assert()
+        .success();
+
+    let mut export = command_for_database(&source_database);
+    let assert = export
+        .args(["--profile", "team-a", "profile", "export"])
+        .assert()
+        .success();
+    let exported = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&exported).expect("json");
+    let exported_id = payload["id"].as_str().expect("id").to_owned();
+
+    assert_eq!(payload["format"], "hoststamp-profile-v1");
+    assert_eq!(payload["slug"], "team-a");
+    assert_eq!(payload["access"], "public");
+    assert_eq!(payload["last_atomic_value"], 2);
+    assert_eq!(payload["config_hash"].as_str().expect("hash").len(), 64);
+
+    fs::write(&export_path, exported).expect("export file");
+
+    let mut import = command_for_database(&target_database);
+    import
+        .args(["profile", "import", export_path.to_str().expect("path")])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(format!(r#"id = "{exported_id}""#))
+                .and(predicate::str::contains(r#"slug = "team-a""#))
+                .and(predicate::str::contains(r#"access = "public""#))
+                .and(predicate::str::contains("last_atomic_value = 2")),
+        );
+
+    let mut next = command_for_database(&target_database);
+    let assert = next
+        .args(["--profile", "team-a", "generate", "--json"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    assert_eq!(payload["hostnames"][0]["profile"], "team-a");
+    assert_eq!(payload["hostnames"][0]["atomic_value"], 3);
+}
+
+#[test]
+fn profile_import_replacement_requires_confirmation() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let source_database = tempdir.path().join("source.db");
+    let target_database = tempdir.path().join("target.db");
+    let export_path = tempdir.path().join("team-a.json");
+
+    let mut create = command_for_database(&source_database);
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let mut export = command_for_database(&source_database);
+    let assert = export
+        .args(["--profile", "team-a", "profile", "export"])
+        .assert()
+        .success();
+    let exported = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    fs::write(&export_path, &exported).expect("export file");
+
+    let mut import = command_for_database(&target_database);
+    import
+        .args(["profile", "import", export_path.to_str().expect("path")])
+        .assert()
+        .success();
+
+    let mut replacement: serde_json::Value = serde_json::from_str(&exported).expect("json");
+    replacement["last_atomic_value"] = serde_json::json!(9);
+    fs::write(
+        &export_path,
+        serde_json::to_string_pretty(&replacement).expect("json"),
+    )
+    .expect("replacement file");
+
+    let mut cancelled = command_for_database(&target_database);
+    cancelled
+        .args(["profile", "import", export_path.to_str().expect("path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "profile import replacement requires interactive confirmation",
+        ));
+
+    let mut wrong_slug = command_for_database(&target_database);
+    wrong_slug
+        .args(["profile", "import", export_path.to_str().expect("path")])
+        .write_stdin("wrong-slug\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "profile import replacement cancelled",
+        ));
+
+    let mut wrong_action = command_for_database(&target_database);
+    wrong_action
+        .args(["profile", "import", export_path.to_str().expect("path")])
+        .write_stdin("team-a\nno\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "profile import replacement cancelled",
+        ));
+
+    let mut confirmed = command_for_database(&target_database);
+    confirmed
+        .args(["profile", "import", export_path.to_str().expect("path")])
+        .write_stdin("team-a\nreplace\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("last_atomic_value = 9"))
+        .stderr(predicate::str::contains("confirm profile import"));
+}
+
+#[test]
+fn profile_import_rejects_invalid_export_hash() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let source_database = tempdir.path().join("source.db");
+    let target_database = tempdir.path().join("target.db");
+    let export_path = tempdir.path().join("team-a.json");
+
+    let mut create = command_for_database(&source_database);
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let mut export = command_for_database(&source_database);
+    let assert = export
+        .args(["--profile", "team-a", "profile", "export"])
+        .assert()
+        .success();
+    let exported = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let mut payload: serde_json::Value = serde_json::from_str(&exported).expect("json");
+    payload["config_hash"] = serde_json::json!("bad-hash");
+    fs::write(
+        &export_path,
+        serde_json::to_string_pretty(&payload).expect("json"),
+    )
+    .expect("export file");
+
+    let mut import = command_for_database(&target_database);
+    import
+        .args(["profile", "import", export_path.to_str().expect("path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "profile import config_hash does not match config",
+        ));
+}
+
+#[test]
 fn profile_reset_atomic_value_sets_the_stored_counter() {
     let (mut generate, tempdir) = command_with_database();
     generate.arg("generate").assert().success();

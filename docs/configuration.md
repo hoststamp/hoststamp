@@ -89,6 +89,8 @@ hoststamp profile list
 hoststamp --profile team-a profile show
 hoststamp --profile team-a profile new
 hoststamp --profile team-a profile delete
+hoststamp --profile team-a profile export > team-a.hoststamp-profile.json
+hoststamp profile import team-a.hoststamp-profile.json
 hoststamp --profile team-a profile set-access --access public
 hoststamp --profile team-a profile token create --name deploy
 hoststamp --profile team-a profile token create --name deploy --expires-at-ms 1893456000000
@@ -97,12 +99,16 @@ hoststamp --profile team-a profile token revoke <token-id>
 hoststamp --profile team-a profile reset-atomic-value --atomic-value 999
 ```
 
-`profile delete` and `profile reset-atomic-value` require two interactive
-confirmations. `reset-atomic-value` sets the stored `last_atomic_value`; the
-next profile-backed generation increments first and uses the following value.
-For example, resetting to `999` makes the next generated hostname use atomic
-value `1000`. Lowering the stored value can duplicate previously issued names,
-and raising it skips part of the deterministic sequence.
+`profile export` writes portable JSON containing the profile UUID, slug, access
+mode, last issued atomic value, config hash, and config. `profile import` reads
+that export and restores the same deterministic profile identity on another
+machine. `profile delete`, `profile import` when replacing an existing differing
+profile, and `profile reset-atomic-value` require two interactive confirmations.
+`reset-atomic-value` sets the stored `last_atomic_value`; the next
+profile-backed generation increments first and uses the following value. For
+example, resetting to `999` makes the next generated hostname use atomic value
+`1000`. Lowering the stored value can duplicate previously issued names, and
+raising it skips part of the deterministic sequence.
 
 Profile token names must be 64 characters or fewer, use lowercase ASCII
 letters, digits, hyphen, underscore, or dot, and start and end with a letter or

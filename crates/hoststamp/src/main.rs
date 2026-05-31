@@ -238,6 +238,13 @@ enum ProfileCommand {
     New,
     /// Delete the selected active profile.
     Delete,
+    /// Export the selected active profile as portable JSON.
+    Export,
+    /// Import a portable profile JSON export.
+    Import {
+        /// Path to a JSON profile export.
+        path: PathBuf,
+    },
     /// Set the selected profile's API access mode.
     SetAccess {
         /// Profile API access mode.
@@ -396,6 +403,32 @@ async fn main() -> anyhow::Result<()> {
                     confirm_profile_delete(&profile)?;
                     store.delete_profile(&cli.profile)?;
                     println!("deleted profile {:?}", cli.profile.as_str());
+                    Ok(())
+                }
+                ProfileCommand::Export => {
+                    let profile = store.load_profile(&cli.profile)?;
+                    let export = server::ProfileExport {
+                        format: server::PROFILE_EXPORT_FORMAT,
+                        id: profile.id.to_string(),
+                        slug: profile.slug.as_str().to_owned(),
+                        access: profile.access,
+                        last_atomic_value: profile.last_atomic_value,
+                        config_hash: hex_string(&profile.config_hash),
+                        config: profile.config,
+                    };
+                    println!("{}", serde_json::to_string_pretty(&export)?);
+                    Ok(())
+                }
+                ProfileCommand::Import { path } => {
+                    let contents = fs::read_to_string(&path).with_context(|| {
+                        format!("failed to read profile import {}", path.display())
+                    })?;
+                    let request: server::ImportProfileRequest = serde_json::from_str(&contents)
+                        .with_context(|| {
+                            format!("failed to parse profile import {}", path.display())
+                        })?;
+                    let profile = import_profile_request(&mut store, request)?;
+                    print_profile_show(&profile);
                     Ok(())
                 }
                 ProfileCommand::SetAccess { access } => {
@@ -766,6 +799,34 @@ fn load_profile_store(
     })?;
     let store = ProfileStore::open(&settings.database_url)?;
     Ok((settings, store))
+}
+
+fn import_profile_request(
+    store: &mut ProfileStore,
+    request: server::ImportProfileRequest,
+) -> anyhow::Result<StoredProfile> {
+    let validated =
+        server::validate_import_profile_request(&request).map_err(anyhow::Error::msg)?;
+    let id = validated.id;
+    let slug = validated.slug;
+
+    let existing = store.load_profile(&slug).ok();
+    if existing.as_ref().is_some_and(|profile| {
+        profile.id != id
+            || profile.access != request.access
+            || profile.config != request.config
+            || profile.last_atomic_value != request.last_atomic_value
+    }) {
+        confirm_profile_import_replacement(&slug)?;
+    }
+
+    store.import_profile(
+        &slug,
+        id,
+        request.access,
+        &request.config,
+        request.last_atomic_value,
+    )
 }
 
 const INITIAL_CONFIG_TEMPLATE: &str = r#"# Hoststamp bootstrap configuration.
@@ -1215,6 +1276,46 @@ fn confirm_atomic_value_reset(profile: &StoredProfile, atomic_value: i64) -> any
     }
     if !second.trim().eq_ignore_ascii_case("reset") {
         anyhow::bail!("atomic value reset cancelled");
+    }
+
+    Ok(())
+}
+
+fn confirm_profile_import_replacement(slug: &ProfileSlug) -> anyhow::Result<()> {
+    let mut stderr = io::stderr();
+    writeln!(
+        stderr,
+        "Importing profile {:?} will replace the active profile row.",
+        slug.as_str()
+    )?;
+    writeln!(
+        stderr,
+        "This can change its profile UUID, access mode, configuration, and stored atomic value."
+    )?;
+    write!(
+        stderr,
+        "Type the profile slug ({}) to continue: ",
+        slug.as_str()
+    )?;
+    stderr.flush()?;
+
+    let mut first = String::new();
+    if io::stdin().read_line(&mut first)? == 0 {
+        anyhow::bail!("profile import replacement requires interactive confirmation");
+    }
+    if first.trim() != slug.as_str() {
+        anyhow::bail!("profile import replacement cancelled");
+    }
+
+    write!(stderr, "Type replace to confirm profile import: ")?;
+    stderr.flush()?;
+
+    let mut second = String::new();
+    if io::stdin().read_line(&mut second)? == 0 {
+        anyhow::bail!("profile import replacement requires interactive confirmation");
+    }
+    if !second.trim().eq_ignore_ascii_case("replace") {
+        anyhow::bail!("profile import replacement cancelled");
     }
 
     Ok(())
