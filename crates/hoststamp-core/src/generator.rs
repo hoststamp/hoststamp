@@ -166,6 +166,12 @@ pub struct ProfileGeneratedHostname {
     pub atomic_value: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileLookup {
+    pub atomic_value: Option<i64>,
+    pub valid: bool,
+}
+
 struct SelectionPlan {
     words: Vec<&'static str>,
     word_indexes: HashMap<&'static str, usize>,
@@ -249,6 +255,47 @@ where
             })
         })
         .collect()
+}
+
+pub fn lookup_profile_hostname(
+    hostname: &str,
+    options: &GenerateOptions,
+    profile_id: Uuid,
+    config_hash: &[u8; 32],
+) -> Result<ProfileLookup> {
+    validate_generate_options(options)?;
+    if !options.suffix_enabled {
+        bail!("profile-backed lookup requires suffixes to be enabled");
+    }
+
+    let parts = parse_hostname_parts(hostname);
+    let word_count = usize::from(options.word1_enabled) + usize::from(options.word2_enabled);
+    if parts.len() != word_count + 1 {
+        return Ok(ProfileLookup {
+            atomic_value: None,
+            valid: false,
+        });
+    }
+
+    let suffix = parts.last().expect("suffix part exists");
+    let Some(atomic_value) = decode_profile_suffix(
+        profile_id,
+        suffix,
+        options.suffix_min_length,
+        options.blocklist_version,
+    )?
+    else {
+        return Ok(ProfileLookup {
+            atomic_value: None,
+            valid: false,
+        });
+    };
+    let generated = generate_profile_hostname(options, profile_id, config_hash, atomic_value)?;
+
+    Ok(ProfileLookup {
+        atomic_value: Some(atomic_value),
+        valid: generated == hostname,
+    })
 }
 
 fn generate_profile_hostname_with_plans(
@@ -684,6 +731,24 @@ pub fn compute_profile_suffix(
     sqids_for_profile(Some(profile_id), suffix_min_length, blocklist_version)?
         .encode(&[value])
         .map_err(Into::into)
+}
+
+fn decode_profile_suffix(
+    profile_id: Uuid,
+    suffix: &str,
+    suffix_min_length: usize,
+    blocklist_version: u32,
+) -> Result<Option<i64>> {
+    let values =
+        sqids_for_profile(Some(profile_id), suffix_min_length, blocklist_version)?.decode(suffix);
+    let [value] = values.as_slice() else {
+        return Ok(None);
+    };
+    if *value < u64::try_from(ATOMIC_MIN_VALUE).expect("positive atomic minimum fits in u64") {
+        return Ok(None);
+    }
+    let atomic_value = i64::try_from(*value).ok();
+    Ok(atomic_value)
 }
 
 pub fn random_sqids_suffix(suffix_min_length: usize, blocklist_version: u32) -> Result<String> {
@@ -1279,6 +1344,59 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, next);
         ensure_no_repeated_words(&first, 2).expect("distinct words");
+    }
+
+    #[test]
+    fn lookup_profile_hostname_decodes_and_validates_profile_hostname() {
+        let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+        let config_hash = [7u8; 32];
+        let options = GenerateOptions::default();
+        let hostname =
+            generate_profile_hostname(&options, profile_id, &config_hash, 42).expect("hostname");
+
+        let lookup =
+            lookup_profile_hostname(&hostname, &options, profile_id, &config_hash).expect("lookup");
+
+        assert_eq!(lookup.atomic_value, Some(42));
+        assert!(lookup.valid);
+    }
+
+    #[test]
+    fn lookup_profile_hostname_rejects_tampered_hostnames() {
+        let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+        let config_hash = [7u8; 32];
+        let options = GenerateOptions::default();
+        let hostname =
+            generate_profile_hostname(&options, profile_id, &config_hash, 42).expect("hostname");
+        let mut parts = parse_hostname_parts(&hostname);
+        parts[0] = "zzzzz";
+        let tampered = parts.join("-");
+
+        let lookup =
+            lookup_profile_hostname(&tampered, &options, profile_id, &config_hash).expect("lookup");
+        let malformed =
+            lookup_profile_hostname("not-a-hoststamp-name", &options, profile_id, &config_hash)
+                .expect("malformed lookup");
+
+        assert_eq!(lookup.atomic_value, Some(42));
+        assert!(!lookup.valid);
+        assert_eq!(malformed.atomic_value, None);
+        assert!(!malformed.valid);
+    }
+
+    #[test]
+    fn lookup_profile_hostname_requires_suffixes() {
+        let profile_id = Uuid::parse_str("018f3f7a-4f34-7c6a-a1f0-6ec4b6ec7c1a").expect("uuid");
+        let config_hash = [7u8; 32];
+        let options = GenerateOptions {
+            suffix_enabled: false,
+            ..GenerateOptions::default()
+        };
+
+        let error = lookup_profile_hostname("brief-cobra", &options, profile_id, &config_hash)
+            .expect_err("lookup should require suffixes");
+
+        assert!(error.to_string().contains("requires suffixes"));
     }
 
     #[test]

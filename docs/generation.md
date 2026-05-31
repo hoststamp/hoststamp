@@ -16,6 +16,8 @@ cargo run -p hoststamp -- random --word1-categories adjective --word2-categories
 cargo run -p hoststamp -- random --suffix-min-length 8
 cargo run -p hoststamp -- random --json
 cargo run -p hoststamp -- --profile team-a generate
+cargo run -p hoststamp -- --profile team-a lookup brief-cobra-db50d
+cargo run -p hoststamp -- --profile team-a lookup brief-cobra-db50d --json
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --count 3 --json
 cargo run -p hoststamp -- --profile team-a --capacity
@@ -133,3 +135,19 @@ profiles include the generation engine, selected dictionary and blocklist
 versions, those version hashes, and resolved word-pool hashes. Hoststamp will
 not regenerate if the engine, selected version content, or resolved pools drift
 from what this binary supports.
+
+## Lookup
+
+Use `hoststamp lookup <hostname>` to validate a profile-backed hostname against
+the selected profile (`--profile`, default `_`). Lookup decodes the Sqids suffix
+to an atomic value, regenerates that profile hostname, and returns `valid =
+true` only when the hostname matches and the atomic value has already been
+issued by the profile.
+
+Plain output reports `valid`, `profile`, and `atomic_value`. `--json` returns
+the same fields as JSON. Tampered names return `valid = false`; when the suffix
+can still be decoded, `atomic_value` is included to help diagnose which issued
+value was altered. Lookup requires suffixes and the current deterministic
+generation contract for the stored profile. It only applies to profile-backed
+atomic hostnames; stateless random hostnames and profiles with suffixes
+disabled cannot be reverse-looked-up.
