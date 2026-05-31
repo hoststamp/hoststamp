@@ -89,7 +89,47 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("regenerate"))
             .and(predicate::str::contains("lookup"))
             .and(predicate::str::contains("profile"))
-            .and(predicate::str::contains("config")),
+            .and(predicate::str::contains("config"))
+            .and(predicate::str::contains("completions"))
+            .and(predicate::str::contains("man")),
+    );
+}
+
+#[test]
+fn completions_print_supported_shell_scripts() {
+    for (shell, expected) in [
+        ("bash", "_hoststamp()"),
+        ("zsh", "#compdef hoststamp"),
+        ("fish", "complete -c hoststamp"),
+    ] {
+        let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+        cmd.args(["completions", shell]).assert().success().stdout(
+            predicate::str::contains(expected)
+                .and(predicate::str::contains("profile"))
+                .and(predicate::str::contains("serve")),
+        );
+    }
+}
+
+#[test]
+fn completions_reject_unsupported_shells() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.args(["completions", "powershell"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value"));
+}
+
+#[test]
+fn man_prints_generated_roff_page() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+
+    cmd.arg("man").assert().success().stdout(
+        predicate::str::contains(".TH hoststamp 1")
+            .and(predicate::str::contains(".SH SUBCOMMANDS"))
+            .and(predicate::str::contains("hoststamp\\-completions(1)"))
+            .and(predicate::str::contains("hoststamp\\-man(1)")),
     );
 }
 

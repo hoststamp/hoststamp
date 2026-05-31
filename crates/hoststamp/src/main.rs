@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 use anyhow::Context;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use hoststamp_api as server;
 use hoststamp_core::{
     SERVICE_NAME, auth,
@@ -201,6 +201,14 @@ enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Print a shell completion script.
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: CompletionShell,
+    },
+    /// Print the generated man page.
+    Man,
     /// Run the API server and local UX.
     Serve {
         /// Address the server should bind to.
@@ -216,6 +224,23 @@ enum Command {
     Notices,
     /// Print a local health payload.
     Health,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+impl From<CompletionShell> for clap_complete::Shell {
+    fn from(shell: CompletionShell) -> Self {
+        match shell {
+            CompletionShell::Bash => Self::Bash,
+            CompletionShell::Zsh => Self::Zsh,
+            CompletionShell::Fish => Self::Fish,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -336,6 +361,17 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Notices => {
             print!("{}", notices::text());
+            Ok(())
+        }
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+            let bin_name = command.get_name().to_owned();
+            let shell: clap_complete::Shell = shell.into();
+            clap_complete::generate(shell, &mut command, bin_name, &mut io::stdout());
+            Ok(())
+        }
+        Command::Man => {
+            clap_mangen::Man::new(Cli::command()).render(&mut io::stdout())?;
             Ok(())
         }
         Command::Config { command } => match command {

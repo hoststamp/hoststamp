@@ -59,6 +59,15 @@ cargo run -p hoststamp -- config init
 cargo run -p hoststamp -- config show
 ```
 
+Print shell integration artifacts, including the top-level man page:
+
+```sh
+cargo run -p hoststamp -- completions bash
+cargo run -p hoststamp -- completions zsh
+cargo run -p hoststamp -- completions fish
+cargo run -p hoststamp -- man
+```
+
 After `v0.1.0` is published, the first stable Docker image will be available
 from GHCR:
 

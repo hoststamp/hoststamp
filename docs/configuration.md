@@ -123,6 +123,23 @@ does not trigger profile replacement. API generation requests cannot override
 stored profile config; use the admin config endpoint or CLI to replace profile
 config deliberately.
 
+## Shell Integration
+
+Hoststamp can print shell completions and its generated top-level man page to
+stdout:
+
+```sh
+hoststamp completions bash > hoststamp.bash
+hoststamp completions zsh > _hoststamp
+hoststamp completions fish > hoststamp.fish
+hoststamp man > hoststamp.1
+```
+
+Install the generated files using the conventions of your shell or operating
+system package. `hoststamp man` emits `hoststamp(1)` only; it does not emit
+separate per-subcommand pages. The completion command supports `bash`, `zsh`,
+and `fish`.
+
 ## Storage
 
 SQLite storage is implemented for local profiles. `postgres://` and
