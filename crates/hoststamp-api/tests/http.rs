@@ -4,7 +4,7 @@ use axum::{body::Body, http};
 use hoststamp_api as server;
 use hoststamp_core::{
     auth::{self, ApiAuthConfig, SecretString},
-    generator::{GenerateOptions, is_base36_suffix},
+    generator::{self, GenerateOptions, is_base36_suffix},
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
     storage::{ProfileStore, StorageUrl, config_hash},
 };
@@ -1205,6 +1205,215 @@ async fn regenerate_endpoint_recreates_profile_hostname_without_incrementing_cou
             .last_atomic_value,
         2
     );
+}
+
+#[tokio::test]
+async fn lookup_endpoint_validates_profile_hostname() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let atomic_config = ProfileConfig::from(&GenerateOptions::default());
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &atomic_config)
+        .expect("profile");
+
+    let app = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+    );
+
+    let generated_response = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/generate?count=2")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(generated_response.status(), http::StatusCode::OK);
+    let generated_body = response_text(generated_response).await;
+    let generated = generated_body.lines().collect::<Vec<_>>();
+    assert_eq!(generated.len(), 2);
+
+    let lookup = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri(format!("/api/lookup?hostname={}&format=json", generated[1]))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(lookup.status(), http::StatusCode::OK);
+    let payload = response_json(lookup).await;
+    assert_eq!(payload["profile"], "_");
+    assert_eq!(payload["atomic_value"], 2);
+    assert_eq!(payload["valid"], true);
+
+    let plain_format = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri(format!(
+                    "/api/lookup?hostname={}&format=plain",
+                    generated[1]
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(plain_format.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(plain_format).await;
+    assert!(body.contains("lookup only supports format=json"));
+
+    let mut parts = generated[1].split('-').collect::<Vec<_>>();
+    parts[0] = "zzzzz";
+    let tampered = parts.join("-");
+    let tampered_lookup = app
+        .oneshot(
+            http::Request::builder()
+                .uri(format!("/api/lookup?hostname={tampered}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(tampered_lookup.status(), http::StatusCode::OK);
+    let payload = response_json(tampered_lookup).await;
+    assert_eq!(payload["profile"], "_");
+    assert_eq!(payload["atomic_value"], 2);
+    assert_eq!(payload["valid"], false);
+}
+
+#[tokio::test]
+async fn lookup_endpoint_rejects_unissued_profile_hostname() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    let profile = store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+    let hostname =
+        generator::generate_profile_hostname(&options, profile.id, &profile.config_hash, 1)
+            .expect("hostname");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri(format!("/api/lookup?hostname={hostname}"))
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let payload = response_json(response).await;
+    assert_eq!(payload["atomic_value"], 1);
+    assert_eq!(payload["valid"], false);
+}
+
+#[tokio::test]
+async fn lookup_endpoint_requires_profile_storage() {
+    let response = server::app(GenerateOptions::default())
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/lookup?hostname=brief-cobra-db50d")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("profile storage is required"));
+}
+
+#[tokio::test]
+async fn lookup_endpoint_requires_auth_for_private_profiles() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    );
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/lookup?hostname=brief-cobra-db50d")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), http::StatusCode::UNAUTHORIZED);
+    assert_eq!(unauthorized.headers()["www-authenticate"], "Bearer");
+
+    let authorized = app
+        .oneshot(
+            http::Request::builder()
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .uri("/api/lookup?hostname=brief-cobra-db50d")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(authorized.status(), http::StatusCode::OK);
+    let payload = response_json(authorized).await;
+    assert_eq!(payload["valid"], false);
+}
+
+#[tokio::test]
+async fn lookup_endpoint_requires_profile_backed_suffixes() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let config = ProfileConfig::from(&GenerateOptions {
+        suffix_enabled: false,
+        ..GenerateOptions::default()
+    });
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store.load_or_seed_profile(&slug, &config).expect("profile");
+
+    let response = server::app_with_atomic(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+    )
+    .oneshot(
+        http::Request::builder()
+            .uri("/api/lookup?hostname=brief-cobra-db50d")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("atomic values are only tracked"));
 }
 
 #[tokio::test]

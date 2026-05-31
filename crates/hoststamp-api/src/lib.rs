@@ -14,7 +14,9 @@ use hoststamp_core::{
         ApiAuthConfig, constant_time_eq, generate_profile_token, parse_profile_token,
         profile_token_hash, verify_profile_token_hash,
     },
-    generator::{self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname},
+    generator::{
+        self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname, ProfileLookup,
+    },
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
     storage::{ProfileStore, StoredProfile, StoredProfileToken, config_hash},
 };
@@ -94,6 +96,30 @@ impl GeneratedHostname {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LookupResponse {
+    pub profile: String,
+    pub atomic_value: Option<i64>,
+    pub valid: bool,
+}
+
+impl LookupResponse {
+    pub fn profile_backed(
+        profile: &ProfileSlug,
+        lookup: ProfileLookup,
+        last_atomic_value: i64,
+    ) -> Self {
+        let valid = lookup
+            .atomic_value
+            .is_some_and(|atomic_value| lookup.valid && atomic_value <= last_atomic_value);
+        Self {
+            profile: profile.as_str().to_owned(),
+            atomic_value: lookup.atomic_value,
+            valid,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GenerateQuery {
@@ -130,6 +156,14 @@ pub struct RegenerateQuery {
     pub profile: Option<String>,
     pub atomic_value: i64,
     pub count: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LookupQuery {
+    pub format: Option<GenerateFormat>,
+    pub profile: Option<String>,
+    pub hostname: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -337,6 +371,7 @@ pub fn app_with_mode(
             )
             .route("/api/capacity", get(capacity_one))
             .route("/api/regenerate", get(regenerate_one))
+            .route("/api/lookup", get(lookup_one))
             .route("/api/random", get(random_one))
             .route(
                 "/api/profiles",
@@ -486,6 +521,21 @@ async fn regenerate_one(
         query.format.unwrap_or(GenerateFormat::Plain),
         hostnames,
     ))
+}
+
+async fn lookup_one(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<LookupQuery>,
+) -> Result<Json<LookupResponse>, Response> {
+    if query.format == Some(GenerateFormat::Plain) {
+        return Err(bad_request_response("lookup only supports format=json"));
+    }
+
+    let lookup = lookup_with_state(&query, &state, &headers)
+        .await
+        .map_err(generate_error_response)?;
+    Ok(Json(lookup))
 }
 
 async fn admin_list_profiles(
@@ -1028,6 +1078,58 @@ async fn regenerate_with_state(
             ))
         })
         .collect()
+}
+
+async fn lookup_with_state(
+    query: &LookupQuery,
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<LookupResponse, GenerateError> {
+    let Some(atomic) = &state.atomic else {
+        return Err(GenerateError::BadRequest(
+            "profile storage is required for API lookup".to_owned(),
+        ));
+    };
+    let profile_slug = match query.profile.as_deref() {
+        Some(profile) => profile.parse().map_err(GenerateError::BadRequest)?,
+        None => atomic.profile_slug.clone(),
+    };
+
+    let mut store = atomic.store.lock().await;
+    let profile = match store.load_profile(&profile_slug) {
+        Ok(profile) => profile,
+        Err(error) => {
+            authorize_missing_profile_request(headers, &state.auth)?;
+            return Err(GenerateError::BadRequest(error.to_string()));
+        }
+    };
+    authorize_profile_request(headers, &state.auth, &mut store, &profile)?;
+    if !profile.config.suffix.enabled {
+        return Err(GenerateError::BadRequest(format!(
+            "profile {:?} cannot lookup hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
+            profile.slug.as_str()
+        )));
+    }
+    if !profile.config.uses_current_generation_contract() {
+        return Err(GenerateError::BadRequest(format!(
+            "profile {:?} was created with a generation engine, dictionary/blocklist versions, or resolved word pools that do not match this binary; profile-backed generation cannot run safely across generation contract changes",
+            profile.slug.as_str()
+        )));
+    }
+
+    let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+    let lookup = generator::lookup_profile_hostname(
+        &query.hostname,
+        &options,
+        profile.id,
+        &profile.config_hash,
+    )
+    .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
+    Ok(LookupResponse::profile_backed(
+        &profile.slug,
+        lookup,
+        profile.last_atomic_value,
+    ))
 }
 
 fn generate_response(format: GenerateFormat, hostnames: Vec<GeneratedHostname>) -> Response {

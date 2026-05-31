@@ -87,6 +87,7 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("--database-url"))
             .and(predicate::str::contains("random"))
             .and(predicate::str::contains("regenerate"))
+            .and(predicate::str::contains("lookup"))
             .and(predicate::str::contains("profile"))
             .and(predicate::str::contains("config")),
     );
@@ -902,6 +903,105 @@ fn regenerate_json_prints_atomic_metadata() {
     assert_eq!(hostnames[0]["hostname"], generated);
     assert_eq!(hostnames[0]["profile"], "_");
     assert_eq!(hostnames[0]["atomic_value"], 1);
+}
+
+#[test]
+fn lookup_validates_profile_backed_hostname() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate
+        .args(["generate", "--count", "2"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.lines().collect::<Vec<_>>();
+    assert_eq!(generated.len(), 2);
+
+    let mut lookup = command_for_database(&database);
+    lookup
+        .args(["lookup", generated[1]])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("valid = true")
+                .and(predicate::str::contains(r#"profile = "_""#))
+                .and(predicate::str::contains("atomic_value = 2")),
+        );
+}
+
+#[test]
+fn lookup_json_reports_tampered_hostname_as_invalid() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate.arg("generate").assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.trim();
+    let mut parts = generated.split('-').collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3);
+    parts[0] = "zzzzz";
+    let tampered = parts.join("-");
+
+    let mut lookup = command_for_database(&database);
+    let assert = lookup
+        .args(["lookup", &tampered, "--json"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+
+    assert_eq!(payload["profile"], "_");
+    assert_eq!(payload["atomic_value"], 1);
+    assert_eq!(payload["valid"], false);
+}
+
+#[test]
+fn lookup_requires_profile_backed_suffixes() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut store = ProfileStore::open(&StorageUrl::Sqlite(database.clone())).expect("store");
+    let config = ProfileConfig::from(&GenerateOptions {
+        suffix_enabled: false,
+        ..GenerateOptions::default()
+    });
+    store
+        .load_or_seed_profile(&ProfileSlug::default_profile(), &config)
+        .expect("profile");
+
+    let mut cmd = command_for_database(&database);
+    cmd.args(["lookup", "brief-cobra-db50d"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "atomic values are only tracked when suffixes are enabled",
+        ));
+}
+
+#[test]
+fn lookup_rejects_unsupported_options() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+
+    let mut count = command_for_database(&database);
+    count
+        .args(["lookup", "brief-cobra-db50d", "--count", "3"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "lookup only supports --profile and --json",
+        ));
+
+    let mut capacity = command_for_database(&database);
+    capacity
+        .args(["lookup", "brief-cobra-db50d", "--capacity"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "lookup only supports --profile and --json",
+        ));
 }
 
 #[test]

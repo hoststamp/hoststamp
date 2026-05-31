@@ -77,6 +77,10 @@ impl GenerateArgs {
         self.capacity
     }
 
+    fn has_unsupported_lookup_options(&self) -> bool {
+        self.capacity || self.count.is_some()
+    }
+
     fn options(&self, base: GenerateOptions) -> GenerateOptions {
         GenerateOptions {
             count: self.count.unwrap_or(base.count),
@@ -181,6 +185,11 @@ enum Command {
         /// Atomic value to regenerate.
         #[arg(long, value_parser = parse_atomic_value)]
         atomic_value: i64,
+    },
+    /// Look up a profile-backed hostname.
+    Lookup {
+        /// Hostname to validate.
+        hostname: String,
     },
     /// Inspect or manage Hoststamp configuration.
     Config {
@@ -563,6 +572,43 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Lookup { hostname } => {
+            if cli.generate.has_unsupported_lookup_options() {
+                anyhow::bail!("lookup only supports --profile and --json");
+            }
+            let settings = config::load(Overrides {
+                config_path: cli.config.clone(),
+                addr: None,
+                database_url: cli.database_url.clone(),
+            })?;
+            let mut store = ProfileStore::open(&settings.database_url)?;
+            let profile = store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+            if !profile.config.suffix.enabled {
+                anyhow::bail!(
+                    "profile {:?} cannot lookup hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
+                    profile.slug.as_str()
+                );
+            }
+            ensure_profile_generation_contract_is_current(&profile)?;
+            let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+            let lookup = generator::lookup_profile_hostname(
+                &hostname,
+                &options,
+                profile.id,
+                &profile.config_hash,
+            )?;
+            let response = server::LookupResponse::profile_backed(
+                &profile.slug,
+                lookup,
+                profile.last_atomic_value,
+            );
+            if cli.generate.json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                print_lookup_response(&response);
+            }
+            Ok(())
+        }
         Command::Serve { addr, mode } => {
             let settings = config::load(Overrides {
                 config_path: cli.config.clone(),
@@ -864,6 +910,16 @@ fn print_profile_show(profile: &StoredProfile) {
     println!("config_hash = {:?}", hex_string(&profile.config_hash));
     println!();
     print_profile_config("profile.config", &profile.config);
+}
+
+fn print_lookup_response(response: &server::LookupResponse) {
+    println!("[lookup]");
+    println!("valid = {}", response.valid);
+    println!("profile = {:?}", response.profile);
+    match response.atomic_value {
+        Some(atomic_value) => println!("atomic_value = {atomic_value}"),
+        None => println!("atomic_value = \"n/a\""),
+    }
 }
 
 fn print_profile_token_list(tokens: &[StoredProfileToken]) {
