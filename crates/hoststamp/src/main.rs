@@ -494,7 +494,7 @@ async fn main() -> anyhow::Result<()> {
             let base = profile.config.to_generate_options(generator::DEFAULT_COUNT);
             let options = cli.generate.options(base);
             if cli.generate.capacity {
-                print_capacity_report(&options)?;
+                print_capacity_report(&options, cli.generate.json)?;
                 return Ok(());
             }
             ensure_profile_generation_contract_is_current(&profile)?;
@@ -519,7 +519,7 @@ async fn main() -> anyhow::Result<()> {
                     .to_generate_options(generator::DEFAULT_COUNT),
             );
             if cli.generate.capacity {
-                print_capacity_report(&options)?;
+                print_capacity_report(&options, cli.generate.json)?;
                 return Ok(());
             }
             generator::validate_generate_options(&options)?;
@@ -658,7 +658,7 @@ async fn main() -> anyhow::Result<()> {
             let base = profile.config.to_generate_options(generator::DEFAULT_COUNT);
             let options = cli.generate.options(base);
             if cli.generate.capacity {
-                print_capacity_report(&options)?;
+                print_capacity_report(&options, cli.generate.json)?;
                 return Ok(());
             }
             ensure_profile_generation_contract_is_current(&profile)?;
@@ -705,8 +705,12 @@ fn generate_with_profile(
     })
 }
 
-fn print_capacity_report(options: &GenerateOptions) -> anyhow::Result<()> {
+fn print_capacity_report(options: &GenerateOptions, json: bool) -> anyhow::Result<()> {
     let report = generator::capacity_report(options)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
 
     println!(
         "word1_words\t{}",

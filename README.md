@@ -29,6 +29,7 @@ Generate names from the default profile:
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- generate --count 10
 cargo run -p hoststamp -- generate --count 10 --json
+cargo run -p hoststamp -- --capacity --json
 ```
 
 Generate stateless random names without opening the profile database:

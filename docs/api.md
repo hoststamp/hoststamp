@@ -59,7 +59,8 @@ regeneration also include `profile` and `atomic_value`.
 
 `/api/generate` accepts `format`, `profile`, and `count`; `profile` defaults to
 the server's active profile. `/api/capacity` accepts `profile` and returns the
-selected profile's current name-space report without incrementing the counter.
+selected profile's current name-space report without incrementing the counter;
+`hoststamp --capacity --json` returns the same report locally.
 `/api/regenerate` accepts `format`, `profile`, `atomic_value`, and `count`;
 `profile` defaults to the server's active profile. It is read-only, does not
 increment the counter, and rejects ranges beyond the selected profile's

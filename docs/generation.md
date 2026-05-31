@@ -9,6 +9,7 @@ Hoststamp assembles hostnames from three positions: `word1`, `word2`, and
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- generate --count 10
 cargo run -p hoststamp -- generate --count 10 --json
+cargo run -p hoststamp -- --capacity --json
 cargo run -p hoststamp -- random
 cargo run -p hoststamp -- random --count 10
 cargo run -p hoststamp -- random --word1-lengths 4 --word2-lengths 4
@@ -21,6 +22,7 @@ cargo run -p hoststamp -- --profile team-a lookup brief-cobra-db50d --json
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --count 3 --json
 cargo run -p hoststamp -- --profile team-a --capacity
+cargo run -p hoststamp -- --profile team-a --capacity --json
 ```
 
 `generate` uses the selected profile's stored generator settings and atomic

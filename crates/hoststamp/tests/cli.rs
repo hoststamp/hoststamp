@@ -504,6 +504,25 @@ fn capacity_reports_suffix_number_bounds() {
 }
 
 #[test]
+fn capacity_json_reports_structured_capacity() {
+    let (mut cmd, _tempdir) = command_with_database();
+
+    let assert = cmd.args(["--capacity", "--json"]).assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+
+    assert_eq!(payload["suffix_enabled"], true);
+    assert_eq!(payload["suffix_min_length"], 5);
+    assert_eq!(payload["suffix_variants"], "60466176");
+    assert_eq!(payload["suffix_bits"], 25);
+    assert_eq!(payload["random_fallback_max_value"], 30233088);
+    assert_eq!(
+        payload["atomic_storage_max_value"],
+        9_223_372_036_854_775_807i64
+    );
+}
+
+#[test]
 fn capacity_reports_disabled_suffix_bounds() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");
