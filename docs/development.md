@@ -40,7 +40,11 @@ the server whenever Rust source or Cargo metadata changes. The wrapper in
 `HOSTSTAMP_UX_STATIC_DIR=crates/hoststamp-ux/static` so the debug server reads
 the admin HTML, CSS, and JavaScript from disk on each request. Edits to those
 files automatically reload the browser. The admin bearer token for the browser
-prompt is stored at `target/dev/admin-token`.
+prompt is stored at `target/dev/admin-token`. To print the current local token:
+
+```sh
+mise run dev-token
+```
 
 Two narrower server loops are also available:
 

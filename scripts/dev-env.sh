@@ -26,6 +26,22 @@ ensure_secret_file() {
   chmod 600 "$path"
 }
 
+dev_dir="${HOSTSTAMP_DEV_DIR:-target/dev}"
+mkdir -p "$dev_dir"
+
+admin_token_file="$dev_dir/admin-token"
+token_hash_key_file="$dev_dir/token-hash-key"
+
+if [ "$#" -eq 1 ] && [ "$1" = "--print-admin-token" ]; then
+  if [ -n "${HOSTSTAMP_ADMIN_TOKEN+x}" ]; then
+    printf '%s\n' "$HOSTSTAMP_ADMIN_TOKEN"
+    exit 0
+  fi
+  ensure_secret_file "$admin_token_file"
+  cat "$admin_token_file"
+  exit 0
+fi
+
 if [ "$#" -eq 0 ]; then
   die "expected a command to run"
 fi
@@ -36,12 +52,6 @@ if ! command -v "$1" >/dev/null 2>&1; then
   fi
   die "$1 is not installed"
 fi
-
-dev_dir="${HOSTSTAMP_DEV_DIR:-target/dev}"
-mkdir -p "$dev_dir"
-
-admin_token_file="$dev_dir/admin-token"
-token_hash_key_file="$dev_dir/token-hash-key"
 
 if [ -z "${HOSTSTAMP_ADMIN_TOKEN+x}" ]; then
   ensure_secret_file "$admin_token_file"

@@ -48,6 +48,10 @@ run = "sh scripts/dev-env.sh watchexec --restart --clear --watch Cargo.toml --wa
 description = "Delete the throwaway local development state"
 run = "rm -f target/dev/hoststamp.db target/dev/hoststamp.db-shm target/dev/hoststamp.db-wal target/dev/admin-token target/dev/token-hash-key"
 
+[tasks.dev-token]
+description = "Print the local development admin token"
+run = "sh scripts/dev-env.sh --print-admin-token"
+
 [tasks.watch-check]
 description = "Run fast Rust type checks whenever source files change"
 run = "watchexec --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo check --all-targets"
