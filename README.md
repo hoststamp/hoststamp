@@ -29,6 +29,7 @@ Generate names from the default profile:
 cargo run -p hoststamp -- generate
 cargo run -p hoststamp -- generate --count 10
 cargo run -p hoststamp -- generate --count 10 --json
+cargo run -p hoststamp -- --capacity --json
 ```
 
 Generate stateless random names without opening the profile database:
@@ -45,6 +46,8 @@ Manage and use a named profile:
 cargo run -p hoststamp -- --profile team-a profile new
 cargo run -p hoststamp -- --profile team-a config set --word1-lengths 4,5,6 --word2-lengths 4,5,6
 cargo run -p hoststamp -- --profile team-a generate
+cargo run -p hoststamp -- --profile team-a profile export > team-a.hoststamp-profile.json
+cargo run -p hoststamp -- profile import team-a.hoststamp-profile.json
 cargo run -p hoststamp -- --profile team-a lookup brief-cobra-db50d
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --count 3 --json
 ```
