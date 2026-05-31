@@ -12,6 +12,12 @@ Run the local API and UX:
 cargo run -p hoststamp -- serve
 ```
 
+During development, run the watched server instead after `mise install --locked`:
+
+```sh
+mise run dev
+```
+
 The server binds to `127.0.0.1:8080` by default. Open:
 
 - UX: `http://127.0.0.1:8080/`
@@ -122,6 +128,7 @@ the version bump, pull request, stable release, and nightly image process.
 ## Project Commands
 
 ```sh
+cargo check --all-targets
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
@@ -135,6 +142,7 @@ The same local checks are available through `mise`:
 
 ```sh
 mise install --locked
+mise run check
 mise run ci
 ```
 

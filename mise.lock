@@ -49,3 +49,11 @@ backend = "aqua:aquasecurity/trivy"
 checksum = "sha256:8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
 url = "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-64bit.tar.gz"
 provenance = "cosign"
+
+[[tools.watchexec]]
+version = "2.5.1"
+backend = "aqua:watchexec/watchexec"
+
+[tools.watchexec."platforms.linux-x64"]
+checksum = "sha256:9efabd08de720c1ee7e57b487fe11904f0966828e76146e2b5ea5deee90626be"
+url = "https://github.com/watchexec/watchexec/releases/download/v2.5.1/watchexec-2.5.1-x86_64-unknown-linux-musl.tar.xz"

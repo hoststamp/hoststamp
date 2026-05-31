@@ -11,6 +11,7 @@ rust = { version = "1.95.0", components = "rustfmt,clippy,llvm-tools-preview" }
 actionlint = "1.7.12"
 gitleaks = "8.30.1"
 trivy = "0.70.0"
+watchexec = "2.5.1"
 # actionlint shells out to shellcheck for `run:` blocks. Pin it so local
 # `actionlint` matches CI (GitHub runners have shellcheck preinstalled).
 shellcheck = "0.11.0"
@@ -26,6 +27,34 @@ run = "cargo clippy --all-targets -- -D warnings"
 [tasks.test]
 description = "Run all Rust tests"
 run = "cargo test --all-targets"
+
+[tasks.check]
+description = "Run fast Rust type checks"
+run = "cargo check --all-targets"
+
+[tasks.dev]
+description = "Run the local API and UX server, restarting when source files change"
+run = "sh scripts/dev-env.sh watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve"
+
+[tasks.dev-api]
+description = "Run the local API server, restarting when source files change"
+run = "sh scripts/dev-env.sh watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode api"
+
+[tasks.dev-ux]
+description = "Run the local UX server, restarting when source files change"
+run = "sh scripts/dev-env.sh watchexec --restart --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo run -p hoststamp -- serve --mode ux"
+
+[tasks.dev-reset]
+description = "Delete the throwaway local development state"
+run = "rm -f target/dev/hoststamp.db target/dev/hoststamp.db-shm target/dev/hoststamp.db-wal target/dev/admin-token target/dev/token-hash-key"
+
+[tasks.dev-token]
+description = "Print the local development admin token"
+run = "sh scripts/dev-env.sh --print-admin-token"
+
+[tasks.watch-check]
+description = "Run fast Rust type checks whenever source files change"
+run = "watchexec --clear --watch Cargo.toml --watch Cargo.lock --watch crates --ignore 'crates/hoststamp-ux/static/**' -- cargo check --all-targets"
 
 [tasks.coverage]
 description = "Run tests with the 90% line coverage gate"
