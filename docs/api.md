@@ -31,6 +31,7 @@ cargo run -p hoststamp -- health
 - API random: `http://127.0.0.1:8080/api/random?count=3&word1_lengths=4&word2_lengths=4`
 - API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
 - Admin profiles: `http://127.0.0.1:8080/api/profiles`
+- Admin events: `http://127.0.0.1:8080/api/events?profile=_&limit=25`
 - Container health: `http://127.0.0.1:8080/healthz`
 
 `POST /api/generate` returns newline-delimited `text/plain` by default so
@@ -125,6 +126,7 @@ Admin API endpoints mirror the profile/config CLI operations:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `GET` | `/api/events` | list audit events |
 | `GET` | `/api/profiles` | list active profiles |
 | `POST` | `/api/profiles` | create a profile with default config |
 | `GET` | `/api/profiles/{slug}` | show one active profile |
@@ -163,6 +165,40 @@ hash, and config. `POST /api/profiles/import` restores that identity on another
 instance; importing over an existing slug requires action `replace`. The same
 workflow is available locally with `hoststamp profile export` and
 `hoststamp profile import <path>`.
+
+`GET /api/events` returns recent audit events and requires the admin bearer
+token. Optional filters are `profile`, `action`, `source`, `token_name`,
+`since_ms`, `until_ms`, and `limit` (`1..=500`, default `50`). Events include
+profile and token lifecycle changes, profile imports/exports, config
+replacement, atomic resets, generation batches, and regeneration batches.
+Generation events store one row per request with `atomic_start` and
+`atomic_end` when the request allocated or reproduced profile-backed atomic
+values. Event writes are best-effort: if recording fails after an action has
+completed, Hoststamp logs a warning and still returns the action's real result.
+The database keeps the newest 10,000 audit events and prunes older rows during
+event recording.
+
+```json
+{
+  "events": [
+    {
+      "id": "0190f4d2-8f84-7abc-b922-81250d2e20ac",
+      "created_at_ms": 1780800000000,
+      "source": "api",
+      "action": "generate",
+      "profile_slug": "_",
+      "profile_id": "0190f4d2-8f84-7abc-b922-81250d2e20aa",
+      "token_id": null,
+      "token_name": null,
+      "atomic_start": 1,
+      "atomic_end": 3,
+      "metadata": {
+        "count": 3
+      }
+    }
+  ]
+}
+```
 
 JSON request bodies are capped at 256 KiB. That is intentionally larger than
 current profile exports and small enough to avoid accidental large uploads on

@@ -2056,6 +2056,96 @@ async fn admin_profile_endpoints_manage_profiles() {
 }
 
 #[tokio::test]
+async fn admin_events_endpoint_lists_filtered_events() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let default_slug = ProfileSlug::default_profile();
+    let store = ProfileStore::open(&database_url).expect("store");
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, default_slug)),
+        auth_config(),
+    );
+
+    let created = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles",
+            json!({ "slug": "team-a" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(created.status(), http::StatusCode::CREATED);
+
+    let generated = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/generate?format=json&profile=team-a&count=2")
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(generated.status(), http::StatusCode::OK);
+
+    let events = app
+        .clone()
+        .oneshot(admin_get_request(
+            "/api/events?profile=team-a&action=generate",
+        ))
+        .await
+        .expect("response");
+    assert_eq!(events.status(), http::StatusCode::OK);
+    let events = response_json(events).await;
+    let events = events["events"].as_array().expect("events");
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["source"], "api");
+    assert_eq!(events[0]["action"], "generate");
+    assert_eq!(events[0]["profile_slug"], "team-a");
+    assert_eq!(events[0]["atomic_start"], 1);
+    assert_eq!(events[0]["atomic_end"], 2);
+    assert_eq!(events[0]["metadata"]["count"], 2);
+
+    let all_events = app
+        .clone()
+        .oneshot(admin_get_request("/api/events?source=api&limit=10"))
+        .await
+        .expect("response");
+    assert_eq!(all_events.status(), http::StatusCode::OK);
+    let all_events = response_json(all_events).await;
+    assert!(
+        all_events["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| event["action"] == "profile.create")
+    );
+
+    let invalid = app
+        .clone()
+        .oneshot(admin_get_request("/api/events?limit=0"))
+        .await
+        .expect("response");
+    assert_eq!(invalid.status(), http::StatusCode::BAD_REQUEST);
+
+    let unauthorized = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/events")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn admin_profile_import_preserves_exported_identity() {
     let source_dir = tempfile::tempdir().expect("source tempdir");
     let source_database = StorageUrl::Sqlite(source_dir.path().join("hoststamp.db"));

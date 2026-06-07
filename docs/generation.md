@@ -94,6 +94,8 @@ earlier for a given profile alphabet.
 With profile storage, Hoststamp increments the selected profile's database
 counter and derives the full hostname from the profile UUID, profile config
 hash, and atomic value. Stored profile configs include `engine = "atomic-v1"`.
+Each profile-backed generation command or API request records one audit event
+with the issued atomic range.
 
 That engine freezes the deterministic generation contract: word-pair
 permutation, no-repeat word handling, suffix encoding, profile-specific suffix
@@ -139,6 +141,8 @@ profiles include the generation engine, selected dictionary and blocklist
 versions, those version hashes, and resolved word-pool hashes. Hoststamp will
 not regenerate if the engine, selected version content, or resolved pools drift
 from what this binary supports.
+Successful regeneration records an audit event with the reproduced atomic
+range; it still does not increment the profile counter.
 
 ## Lookup
 

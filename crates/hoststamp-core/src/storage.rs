@@ -3,6 +3,7 @@
 use crate::profile::{ProfileAccess, ProfileConfig, ProfileSlug};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -13,6 +14,7 @@ use uuid::Uuid;
 
 pub const DATABASE_ENV: &str = "HOSTSTAMP_DATABASE_URL";
 pub const DEFAULT_DATABASE_FILE: &str = "hoststamp.db";
+pub const EVENT_RETENTION_LIMIT: i64 = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageUrl {
@@ -79,6 +81,75 @@ pub struct StoredProfileToken {
 pub struct ProfileTokenAuthRecord {
     pub profile_id: Uuid,
     pub token_hash: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredEvent {
+    pub id: Uuid,
+    pub created_at_ms: i64,
+    pub source: String,
+    pub action: String,
+    pub profile_slug: Option<ProfileSlug>,
+    pub profile_id: Option<Uuid>,
+    pub token_id: Option<String>,
+    pub token_name: Option<String>,
+    pub atomic_start: Option<i64>,
+    pub atomic_end: Option<i64>,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewEvent {
+    pub source: &'static str,
+    pub action: &'static str,
+    pub profile_slug: Option<ProfileSlug>,
+    pub profile_id: Option<Uuid>,
+    pub token_id: Option<String>,
+    pub token_name: Option<String>,
+    pub atomic_start: Option<i64>,
+    pub atomic_end: Option<i64>,
+    pub metadata: Value,
+}
+
+impl NewEvent {
+    pub fn new(source: &'static str, action: &'static str) -> Self {
+        Self {
+            source,
+            action,
+            profile_slug: None,
+            profile_id: None,
+            token_id: None,
+            token_name: None,
+            atomic_start: None,
+            atomic_end: None,
+            metadata: Value::Object(serde_json::Map::new()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EventFilter {
+    pub profile_slug: Option<ProfileSlug>,
+    pub action: Option<String>,
+    pub source: Option<String>,
+    pub token_name: Option<String>,
+    pub since_ms: Option<i64>,
+    pub until_ms: Option<i64>,
+    pub limit: usize,
+}
+
+impl Default for EventFilter {
+    fn default() -> Self {
+        Self {
+            profile_slug: None,
+            action: None,
+            source: None,
+            token_name: None,
+            since_ms: None,
+            until_ms: None,
+            limit: 50,
+        }
+    }
 }
 
 pub struct ProfileStore {
@@ -586,6 +657,80 @@ impl ProfileStore {
         Ok(())
     }
 
+    pub fn record_event(&mut self, event: NewEvent) -> Result<StoredEvent> {
+        validate_event_text("event source", event.source)?;
+        validate_event_text("event action", event.action)?;
+        validate_atomic_range(event.atomic_start, event.atomic_end)?;
+
+        let id = Uuid::now_v7();
+        let now = unix_epoch_millis()?;
+        let metadata_json = serde_json::to_string(&event.metadata)?;
+        self.connection.execute(
+            "INSERT INTO hoststamp_events (
+                id, created_at_ms, source, action, profile_slug, profile_id,
+                token_id, token_name, atomic_start, atomic_end, metadata_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                id.as_bytes().as_slice(),
+                now,
+                event.source,
+                event.action,
+                event.profile_slug.as_ref().map(ProfileSlug::as_str),
+                event
+                    .profile_id
+                    .map(|profile_id| profile_id.as_bytes().to_vec()),
+                event.token_id,
+                event.token_name,
+                event.atomic_start,
+                event.atomic_end,
+                metadata_json,
+            ],
+        )?;
+        prune_events(&self.connection, EVENT_RETENTION_LIMIT)?;
+        select_event(&self.connection, id)
+    }
+
+    pub fn list_events(&self, filter: &EventFilter) -> Result<Vec<StoredEvent>> {
+        if filter.limit == 0 || filter.limit > 500 {
+            bail!("event limit must be between 1 and 500");
+        }
+        if let (Some(since_ms), Some(until_ms)) = (filter.since_ms, filter.until_ms)
+            && since_ms > until_ms
+        {
+            bail!("event since_ms must be less than or equal to until_ms");
+        }
+
+        let limit = i64::try_from(filter.limit).context("event limit does not fit in i64")?;
+        let mut statement = self.connection.prepare(
+            "SELECT id, created_at_ms, source, action, profile_slug, profile_id,
+                    token_id, token_name, atomic_start, atomic_end, metadata_json
+             FROM hoststamp_events
+             WHERE (?1 IS NULL OR profile_slug = ?1)
+               AND (?2 IS NULL OR action = ?2)
+               AND (?3 IS NULL OR source = ?3)
+               AND (?4 IS NULL OR token_name = ?4)
+               AND (?5 IS NULL OR created_at_ms >= ?5)
+               AND (?6 IS NULL OR created_at_ms <= ?6)
+             ORDER BY created_at_ms DESC, id DESC
+             LIMIT ?7",
+        )?;
+        let events = statement
+            .query_map(
+                params![
+                    filter.profile_slug.as_ref().map(ProfileSlug::as_str),
+                    filter.action.as_deref(),
+                    filter.source.as_deref(),
+                    filter.token_name.as_deref(),
+                    filter.since_ms,
+                    filter.until_ms,
+                    limit,
+                ],
+                event_from_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(events)
+    }
+
     fn open_sqlite(path: &Path) -> Result<Self> {
         if path != Path::new(":memory:") {
             ensure_database_parent(path)?;
@@ -661,6 +806,22 @@ fn migrate(connection: &Connection) -> Result<()> {
             last_used_at_ms INTEGER,
             revoked_at_ms INTEGER
         );
+
+        CREATE TABLE IF NOT EXISTS hoststamp_events (
+            id BLOB PRIMARY KEY NOT NULL CHECK(length(id) = 16),
+            created_at_ms INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            action TEXT NOT NULL,
+            profile_slug TEXT,
+            profile_id BLOB CHECK(profile_id IS NULL OR length(profile_id) = 16),
+            token_id TEXT,
+            token_name TEXT,
+            atomic_start INTEGER,
+            atomic_end INTEGER,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            CHECK((atomic_start IS NULL AND atomic_end IS NULL)
+                OR (atomic_start IS NOT NULL AND atomic_end IS NOT NULL AND atomic_start <= atomic_end))
+        );
         ",
     )?;
     connection.execute_batch(
@@ -681,6 +842,21 @@ fn migrate(connection: &Connection) -> Result<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_hoststamp_profile_tokens_active_name
             ON hoststamp_profile_tokens(profile_id, name)
             WHERE revoked_at_ms IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_hoststamp_events_created_at_ms
+            ON hoststamp_events(created_at_ms);
+
+        CREATE INDEX IF NOT EXISTS idx_hoststamp_events_profile_slug
+            ON hoststamp_events(profile_slug);
+
+        CREATE INDEX IF NOT EXISTS idx_hoststamp_events_action
+            ON hoststamp_events(action);
+
+        CREATE INDEX IF NOT EXISTS idx_hoststamp_events_source
+            ON hoststamp_events(source);
+
+        CREATE INDEX IF NOT EXISTS idx_hoststamp_events_token_name
+            ON hoststamp_events(token_name);
         ",
     )?;
     Ok(())
@@ -722,6 +898,47 @@ fn validate_profile_token_name(name: &str) -> Result<()> {
     {
         bail!("profile token name must start and end with a letter or digit");
     }
+    Ok(())
+}
+
+fn validate_event_text(label: &str, value: &str) -> Result<()> {
+    if value.trim() != value || value.is_empty() {
+        bail!("{label} must not be empty or contain surrounding whitespace");
+    }
+    if value.len() > 128 {
+        bail!("{label} must be 128 characters or fewer");
+    }
+    if !value.bytes().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
+    }) {
+        bail!("{label} must use lowercase ASCII letters, digits, dot, hyphen, or underscore");
+    }
+    Ok(())
+}
+
+fn validate_atomic_range(atomic_start: Option<i64>, atomic_end: Option<i64>) -> Result<()> {
+    match (atomic_start, atomic_end) {
+        (None, None) => Ok(()),
+        (Some(start), Some(end)) if start <= end => Ok(()),
+        (Some(_), Some(_)) => bail!("event atomic_start must be less than or equal to atomic_end"),
+        _ => bail!("event atomic range requires both atomic_start and atomic_end"),
+    }
+}
+
+fn prune_events(connection: &Connection, limit: i64) -> Result<()> {
+    if limit <= 0 {
+        bail!("event retention limit must be positive");
+    }
+    connection.execute(
+        "DELETE FROM hoststamp_events
+         WHERE id IN (
+             SELECT id
+             FROM hoststamp_events
+             ORDER BY created_at_ms DESC, id DESC
+             LIMIT -1 OFFSET ?1
+         )",
+        params![limit],
+    )?;
     Ok(())
 }
 
@@ -861,6 +1078,85 @@ fn profile_token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPro
         expires_at_ms: row.get(4)?,
         last_used_at_ms: row.get(5)?,
         revoked_at_ms: row.get(6)?,
+    })
+}
+
+fn select_event(connection: &Connection, id: Uuid) -> Result<StoredEvent> {
+    connection
+        .query_row(
+            "SELECT id, created_at_ms, source, action, profile_slug, profile_id,
+                    token_id, token_name, atomic_start, atomic_end, metadata_json
+             FROM hoststamp_events
+             WHERE id = ?1",
+            params![id.as_bytes().as_slice()],
+            event_from_row,
+        )
+        .optional()?
+        .with_context(|| format!("event id {id} does not exist"))
+}
+
+fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent> {
+    stored_event_from_parts(StoredEventParts {
+        id_blob: row.get(0)?,
+        created_at_ms: row.get(1)?,
+        source: row.get(2)?,
+        action: row.get(3)?,
+        profile_slug_value: row.get(4)?,
+        profile_id_blob: row.get(5)?,
+        token_id: row.get(6)?,
+        token_name: row.get(7)?,
+        atomic_start: row.get(8)?,
+        atomic_end: row.get(9)?,
+        metadata_json: row.get(10)?,
+    })
+    .map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into())
+    })
+}
+
+struct StoredEventParts {
+    id_blob: Vec<u8>,
+    created_at_ms: i64,
+    source: String,
+    action: String,
+    profile_slug_value: Option<String>,
+    profile_id_blob: Option<Vec<u8>>,
+    token_id: Option<String>,
+    token_name: Option<String>,
+    atomic_start: Option<i64>,
+    atomic_end: Option<i64>,
+    metadata_json: String,
+}
+
+fn stored_event_from_parts(parts: StoredEventParts) -> Result<StoredEvent> {
+    let id = Uuid::from_slice(&parts.id_blob).context("stored event id is not a UUID")?;
+    let profile_slug = parts
+        .profile_slug_value
+        .map(|value| {
+            value
+                .parse::<ProfileSlug>()
+                .map_err(anyhow::Error::msg)
+                .context("stored event profile slug is invalid")
+        })
+        .transpose()?;
+    let profile_id = parts
+        .profile_id_blob
+        .map(|blob| Uuid::from_slice(&blob).context("stored event profile id is not a UUID"))
+        .transpose()?;
+    let metadata = serde_json::from_str(&parts.metadata_json)
+        .context("stored event metadata_json is invalid")?;
+    Ok(StoredEvent {
+        id,
+        created_at_ms: parts.created_at_ms,
+        source: parts.source,
+        action: parts.action,
+        profile_slug,
+        profile_id,
+        token_id: parts.token_id,
+        token_name: parts.token_name,
+        atomic_start: parts.atomic_start,
+        atomic_end: parts.atomic_end,
+        metadata,
     })
 }
 
@@ -1339,6 +1635,140 @@ mod tests {
                 .expect("auth")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn event_records_round_trip_with_filters() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let profile = store
+            .create_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+
+        let mut created = NewEvent::new("cli", "profile.create");
+        created.profile_slug = Some(slug.clone());
+        created.profile_id = Some(profile.id);
+        created.metadata = serde_json::json!({ "access": "private" });
+        let created = store.record_event(created).expect("created event");
+
+        let mut token = NewEvent::new("api", "profile.token.create");
+        token.profile_slug = Some(slug.clone());
+        token.profile_id = Some(profile.id);
+        token.token_id = Some("token-id".to_owned());
+        token.token_name = Some("deploy".to_owned());
+        token.metadata = serde_json::json!({ "expires_at_ms": null });
+        let token = store.record_event(token).expect("token event");
+
+        let mut generated = NewEvent::new("api", "generate");
+        generated.profile_slug = Some(slug.clone());
+        generated.profile_id = Some(profile.id);
+        generated.atomic_start = Some(1);
+        generated.atomic_end = Some(3);
+        generated.metadata = serde_json::json!({ "count": 3 });
+        let generated = store.record_event(generated).expect("generate event");
+
+        let events = store.list_events(&EventFilter::default()).expect("events");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].id, generated.id);
+        assert_eq!(events[1].id, token.id);
+        assert_eq!(events[2].id, created.id);
+
+        let profile_events = store
+            .list_events(&EventFilter {
+                profile_slug: Some(slug.clone()),
+                ..EventFilter::default()
+            })
+            .expect("profile events");
+        assert_eq!(profile_events.len(), 3);
+
+        let token_events = store
+            .list_events(&EventFilter {
+                action: Some("profile.token.create".to_owned()),
+                source: Some("api".to_owned()),
+                token_name: Some("deploy".to_owned()),
+                ..EventFilter::default()
+            })
+            .expect("token events");
+        assert_eq!(token_events.len(), 1);
+        assert_eq!(token_events[0].id, token.id);
+        assert_eq!(token_events[0].token_id.as_deref(), Some("token-id"));
+
+        let recent_events = store
+            .list_events(&EventFilter {
+                since_ms: Some(generated.created_at_ms),
+                limit: 2,
+                ..EventFilter::default()
+            })
+            .expect("recent events");
+        assert!(!recent_events.is_empty());
+        assert!(recent_events.len() <= 2);
+    }
+
+    #[test]
+    fn event_validation_rejects_invalid_inputs() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+
+        let invalid_source = store
+            .record_event(NewEvent::new("CLI", "profile.create"))
+            .expect_err("uppercase source should fail");
+        assert!(invalid_source.to_string().contains("event source"));
+
+        let mut invalid_range = NewEvent::new("cli", "generate");
+        invalid_range.atomic_start = Some(2);
+        invalid_range.atomic_end = Some(1);
+        let invalid_range = store
+            .record_event(invalid_range)
+            .expect_err("inverted range should fail");
+        assert!(invalid_range.to_string().contains("atomic_start"));
+
+        let invalid_limit = store
+            .list_events(&EventFilter {
+                limit: 0,
+                ..EventFilter::default()
+            })
+            .expect_err("zero limit should fail");
+        assert!(invalid_limit.to_string().contains("event limit"));
+    }
+
+    #[test]
+    fn event_pruning_keeps_newest_rows() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+
+        let mut ids = Vec::new();
+        for index in 0..5 {
+            let mut event = NewEvent::new("cli", "generate");
+            event.metadata = serde_json::json!({ "index": index });
+            let id = store.record_event(event).expect("event").id;
+            store
+                .connection
+                .execute(
+                    "UPDATE hoststamp_events SET created_at_ms = ?1 WHERE id = ?2",
+                    params![index, id.as_bytes().as_slice()],
+                )
+                .expect("timestamp");
+            ids.push(id);
+        }
+
+        prune_events(&store.connection, 3).expect("prune");
+        let events = store
+            .list_events(&EventFilter {
+                limit: 10,
+                ..EventFilter::default()
+            })
+            .expect("events");
+
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().any(|event| event.id == ids[4]));
+        assert!(events.iter().any(|event| event.id == ids[3]));
+        assert!(events.iter().any(|event| event.id == ids[2]));
+        assert!(!events.iter().any(|event| event.id == ids[1]));
+        assert!(!events.iter().any(|event| event.id == ids[0]));
     }
 
     #[test]
