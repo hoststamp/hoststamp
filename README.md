@@ -128,6 +128,7 @@ tokens can optionally expire with `expires_at_ms`.
 - [Configuration](docs/configuration.md): config file, environment variables,
   profiles, and storage.
 - [API](docs/api.md): API routes, admin endpoints, auth behavior, and local UX.
+- [Integrations](docs/integrations.md): GitHub Actions validation example.
 - [Dictionaries](docs/dictionaries.md): embedded categories, version hashes,
   and attribution.
 - [Deployment](docs/deployment.md): exposed-server guidance, request limits,
