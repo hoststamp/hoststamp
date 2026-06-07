@@ -82,11 +82,12 @@ lowercase ASCII letters, digits, and hyphens, and must start and end with a
 letter or digit. Missing profiles are seeded from the built-in `5/5/5`
 generator defaults on first use.
 
-Profile management commands operate on active profile rows:
+Most profile management commands operate on active profile rows:
 
 ```sh
 hoststamp profile list
 hoststamp --profile team-a profile show
+hoststamp --profile team-a profile history
 hoststamp --profile team-a profile new
 hoststamp --profile team-a profile delete
 hoststamp --profile team-a profile export > team-a.hoststamp-profile.json
@@ -124,6 +125,12 @@ warning. Replacement creates a new profile UUID and resets that profile's atomic
 counter. `--count` is a request option only and does not trigger profile
 replacement. API generation requests cannot override stored profile config; use
 the admin config endpoint or CLI to replace profile config deliberately.
+
+`profile history` lists active and replaced rows for the selected slug,
+including each immutable profile UUID, replacement timestamp, and
+`replaced_by_id` link. Use `hoststamp regenerate --profile-id <uuid>` when a
+hostname must be reproduced from a replaced profile row instead of the active
+slug.
 
 ## Shell Integration
 

@@ -18,6 +18,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
+use uuid::Uuid;
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -192,6 +193,9 @@ enum Command {
     Random(RandomArgs),
     /// Regenerate a profile-backed hostname from an atomic value.
     Regenerate {
+        /// Immutable profile UUID to regenerate from instead of the active --profile slug.
+        #[arg(long, value_name = "UUID")]
+        profile_id: Option<Uuid>,
         /// Atomic value to regenerate.
         #[arg(long, value_parser = parse_atomic_value)]
         atomic_value: i64,
@@ -269,6 +273,8 @@ enum ConfigCommand {
 enum ProfileCommand {
     /// List active profiles.
     List,
+    /// List active and replaced rows for the selected profile.
+    History,
     /// Show the selected active profile.
     Show,
     /// Create the selected profile with default generator settings.
@@ -432,6 +438,17 @@ async fn main() -> anyhow::Result<()> {
                     print_profile_list(&store.list_profiles()?);
                     Ok(())
                 }
+                ProfileCommand::History => {
+                    if cli.profile.as_str() == profile::DEFAULT_PROFILE_SLUG {
+                        store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+                    }
+                    let history = store.list_profile_history(&cli.profile)?;
+                    if history.is_empty() {
+                        anyhow::bail!("profile {:?} does not exist", cli.profile.as_str());
+                    }
+                    print_profile_history(&history);
+                    Ok(())
+                }
                 ProfileCommand::Show => {
                     let profile = if cli.profile.as_str() == profile::DEFAULT_PROFILE_SLUG {
                         store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?
@@ -587,10 +604,13 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Regenerate { atomic_value } => {
+        Command::Regenerate {
+            profile_id,
+            atomic_value,
+        } => {
             if cli.generate.has_unsupported_regenerate_options() {
                 anyhow::bail!(
-                    "regenerate only supports --profile, --atomic-value, --count, and --json"
+                    "regenerate only supports --profile, --profile-id, --atomic-value, --count, and --json"
                 );
             }
             let settings = config::load(Overrides {
@@ -599,48 +619,12 @@ async fn main() -> anyhow::Result<()> {
                 database_url: cli.database_url.clone(),
             })?;
             let mut store = ProfileStore::open(&settings.database_url)?;
-            let profile = store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
-            if !profile.config.suffix.enabled {
-                anyhow::bail!(
-                    "profile {:?} cannot regenerate hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
-                    profile.slug.as_str()
-                );
-            }
             let count = cli.generate.count.unwrap_or(generator::DEFAULT_COUNT);
-            generator::validate_count(count)?;
-            let count_offset = i64::try_from(count - 1)?;
-            let final_atomic_value = atomic_value
-                .checked_add(count_offset)
-                .ok_or_else(|| anyhow::anyhow!("atomic value range is too large"))?;
-            if final_atomic_value > profile.last_atomic_value {
-                anyhow::bail!(
-                    "profile {:?} has issued {} atomic values; requested range {}..={} includes values that were never generated",
-                    profile.slug.as_str(),
-                    profile.last_atomic_value,
-                    atomic_value,
-                    final_atomic_value
-                );
-            }
-            ensure_profile_generation_contract_is_current(&profile)?;
-            let options = profile.config.to_generate_options(count);
-            generator::validate_generate_options(&options)?;
-            let hostnames = (atomic_value..=final_atomic_value)
-                .map(|atomic_value| {
-                    let hostname = generator::generate_profile_hostname(
-                        &options,
-                        profile.id,
-                        &profile.config_hash,
-                        atomic_value,
-                    )?;
-                    Ok(server::GeneratedHostname::profile_backed(
-                        &profile.slug,
-                        ProfileGeneratedHostname {
-                            hostname,
-                            atomic_value,
-                        },
-                    ))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
+            let profile = match profile_id {
+                Some(profile_id) => store.load_profile_by_id(profile_id)?,
+                None => store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?,
+            };
+            let hostnames = regenerate_profile_hostnames(&profile, atomic_value, count)?;
             if cli.generate.json {
                 println!(
                     "{}",
@@ -764,6 +748,53 @@ fn generate_with_profile(
             .map(server::GeneratedHostname::plain)
             .collect()
     })
+}
+
+fn regenerate_profile_hostnames(
+    profile: &StoredProfile,
+    atomic_value: i64,
+    count: usize,
+) -> anyhow::Result<Vec<server::GeneratedHostname>> {
+    if !profile.config.suffix.enabled {
+        anyhow::bail!(
+            "profile {:?} cannot regenerate hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
+            profile.slug.as_str()
+        );
+    }
+    generator::validate_count(count)?;
+    let count_offset = i64::try_from(count - 1)?;
+    let final_atomic_value = atomic_value
+        .checked_add(count_offset)
+        .ok_or_else(|| anyhow::anyhow!("atomic value range is too large"))?;
+    if final_atomic_value > profile.last_atomic_value {
+        anyhow::bail!(
+            "profile {:?} has issued {} atomic values; requested range {}..={} includes values that were never generated",
+            profile.slug.as_str(),
+            profile.last_atomic_value,
+            atomic_value,
+            final_atomic_value
+        );
+    }
+    ensure_profile_generation_contract_is_current(profile)?;
+    let options = profile.config.to_generate_options(count);
+    generator::validate_generate_options(&options)?;
+    (atomic_value..=final_atomic_value)
+        .map(|atomic_value| {
+            let hostname = generator::generate_profile_hostname(
+                &options,
+                profile.id,
+                &profile.config_hash,
+                atomic_value,
+            )?;
+            Ok(server::GeneratedHostname::profile_backed(
+                &profile.slug,
+                ProfileGeneratedHostname {
+                    hostname,
+                    atomic_value,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn lookup_hostname_response(
@@ -1111,6 +1142,37 @@ fn print_profile_list(profiles: &[StoredProfile]) {
             profile.id,
             profile.access,
             profile.last_atomic_value
+        );
+    }
+}
+
+fn print_profile_history(profiles: &[StoredProfile]) {
+    println!(
+        "slug\tid\tstate\taccess\tlast_atomic_value\tcreated_at_ms\tupdated_at_ms\treplaced_at_ms\treplaced_by_id"
+    );
+    for profile in profiles {
+        let state = if profile.replaced_at_ms.is_some() {
+            "replaced"
+        } else {
+            "active"
+        };
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            profile.slug.as_str(),
+            profile.id,
+            state,
+            profile.access,
+            profile.last_atomic_value,
+            profile.created_at_ms,
+            profile.updated_at_ms,
+            profile
+                .replaced_at_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
+            profile
+                .replaced_by_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned())
         );
     }
 }

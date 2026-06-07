@@ -1208,6 +1208,78 @@ async fn regenerate_endpoint_recreates_profile_hostname_without_incrementing_cou
 }
 
 #[tokio::test]
+async fn regenerate_endpoint_supports_admin_profile_id_history() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    let profile = store
+        .create_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    assert_eq!(store.increment_atomic_value(&slug).expect("atomic"), 1);
+    let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+    let expected =
+        generator::generate_profile_hostname(&options, profile.id, &profile.config_hash, 1)
+            .expect("hostname");
+    let replacement_config = ProfileConfig::from(&GenerateOptions {
+        word1_lengths: Some(vec![4]),
+        ..GenerateOptions::default()
+    });
+    store
+        .replace_profile_config(&slug, &replacement_config)
+        .expect("replacement");
+
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(
+            store,
+            ProfileSlug::default_profile(),
+        )),
+        auth_config(),
+    );
+    let uri = format!(
+        "/api/regenerate?format=json&profile_id={}&atomic_value=1",
+        profile.id
+    );
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri(&uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), http::StatusCode::UNAUTHORIZED);
+
+    let both_profile_selectors = app
+        .clone()
+        .oneshot(admin_get_request(&format!("{uri}&profile=team-a")))
+        .await
+        .expect("response");
+    assert_eq!(
+        both_profile_selectors.status(),
+        http::StatusCode::BAD_REQUEST
+    );
+    let message = response_text(both_profile_selectors).await;
+    assert!(message.contains("either profile or profile_id"));
+
+    let regenerated = app
+        .oneshot(admin_get_request(&uri))
+        .await
+        .expect("response");
+    assert_eq!(regenerated.status(), http::StatusCode::OK);
+    let payload = response_json(regenerated).await;
+    let hostnames = payload["hostnames"].as_array().expect("hostnames");
+    assert_eq!(hostnames.len(), 1);
+    assert_eq!(hostnames[0]["hostname"], expected);
+    assert_eq!(hostnames[0]["profile"], "team-a");
+    assert_eq!(hostnames[0]["atomic_value"], 1);
+}
+
+#[tokio::test]
 async fn lookup_endpoint_validates_profile_hostname() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
@@ -1892,6 +1964,22 @@ async fn admin_profile_endpoints_manage_profiles() {
         serde_json::Value::Null
     );
     assert_eq!(config["profile"]["last_atomic_value"], 0);
+
+    let history = app
+        .clone()
+        .oneshot(admin_get_request("/api/profiles/team-a/history"))
+        .await
+        .expect("response");
+    assert_eq!(history.status(), http::StatusCode::OK);
+    let history = response_json(history).await;
+    let profiles = history["profiles"].as_array().expect("profiles");
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(profiles[0]["id"], created["profile"]["id"]);
+    assert_eq!(profiles[0]["replaced_by_id"], config["profile"]["id"]);
+    assert!(profiles[0]["replaced_at_ms"].is_number());
+    assert_eq!(profiles[1]["id"], config["profile"]["id"]);
+    assert_eq!(profiles[1]["replaced_at_ms"], serde_json::Value::Null);
+    assert_eq!(profiles[1]["replaced_by_id"], serde_json::Value::Null);
 
     let exported = app
         .clone()
