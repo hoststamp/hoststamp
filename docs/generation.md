@@ -153,3 +153,9 @@ value was altered. Lookup requires suffixes and the current deterministic
 generation contract for the stored profile. It only applies to profile-backed
 atomic hostnames; stateless random hostnames and profiles with suffixes
 disabled cannot be reverse-looked-up.
+
+For CI and bulk checks, use `hoststamp validate <hostname>` or
+`hoststamp validate --file <path>`. File input is newline-delimited, blank lines
+are ignored, and any invalid hostname makes the command exit non-zero. Pass
+`--json` to print a `results` array with `hostname`, `profile`, `atomic_value`,
+and `valid` fields.

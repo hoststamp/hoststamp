@@ -1201,6 +1201,139 @@ fn lookup_json_reports_tampered_hostname_as_invalid() {
 }
 
 #[test]
+fn validate_accepts_profile_backed_hostname() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate
+        .args(["generate", "--count", "2"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.lines().collect::<Vec<_>>();
+    assert_eq!(generated.len(), 2);
+
+    let mut validate = command_for_database(&database);
+    validate
+        .args(["validate", generated[1]])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("hostname\tvalid\tprofile\tatomic_value")
+                .and(predicate::str::contains(generated[1]))
+                .and(predicate::str::contains("true\t_\t2")),
+        );
+}
+
+#[test]
+fn validate_rejects_invalid_argument_shapes() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let input = tempdir.path().join("hostnames.txt");
+    fs::write(&input, "brief-cobra-db50d\n").expect("write input");
+
+    let mut both = command_for_database(&database);
+    both.args([
+        "validate",
+        "brief-cobra-db50d",
+        "--file",
+        input.to_str().expect("path"),
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains(
+        "validate requires exactly one hostname or --file <path>",
+    ));
+
+    let mut neither = command_for_database(&database);
+    neither
+        .arg("validate")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "validate requires exactly one hostname or --file <path>",
+        ));
+
+    let mut count = command_for_database(&database);
+    count
+        .args(["validate", "brief-cobra-db50d", "--count", "2"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "validate only supports --profile, --file, and --json",
+        ));
+
+    let mut capacity = command_for_database(&database);
+    capacity
+        .args(["validate", "brief-cobra-db50d", "--capacity"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "validate only supports --profile, --file, and --json",
+        ));
+}
+
+#[test]
+fn validate_rejects_empty_file_input() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let input = tempdir.path().join("hostnames.txt");
+    fs::write(&input, "\n  \n").expect("write input");
+
+    let mut validate = command_for_database(&database);
+    validate
+        .args(["validate", "--file", input.to_str().expect("path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not contain any hostnames"));
+}
+
+#[test]
+fn validate_file_json_reports_invalid_hostnames_and_fails() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate.arg("generate").assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.trim();
+    let mut parts = generated.split('-').collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3);
+    parts[0] = "zzzzz";
+    let tampered = parts.join("-");
+    let input = tempdir.path().join("hostnames.txt");
+    fs::write(&input, format!("{generated}\n\n{tampered}\n")).expect("write input");
+
+    let mut validate = command_for_database(&database);
+    let assert = validate
+        .args([
+            "validate",
+            "--file",
+            input.to_str().expect("path"),
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "validation failed for 1 hostname(s)",
+        ));
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let results = payload["results"].as_array().expect("results");
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["hostname"], generated);
+    assert_eq!(results[0]["profile"], "_");
+    assert_eq!(results[0]["atomic_value"], 1);
+    assert_eq!(results[0]["valid"], true);
+    assert_eq!(results[1]["hostname"], tampered);
+    assert_eq!(results[1]["profile"], "_");
+    assert_eq!(results[1]["atomic_value"], 1);
+    assert_eq!(results[1]["valid"], false);
+}
+
+#[test]
 fn lookup_requires_profile_backed_suffixes() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");
