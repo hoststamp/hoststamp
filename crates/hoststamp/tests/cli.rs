@@ -1122,6 +1122,89 @@ fn events_command_lists_filtered_audit_events() {
 }
 
 #[test]
+fn backup_export_prints_profiles_token_metadata_and_events_without_secrets() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+
+    let mut create = command_for_database(&database);
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let mut generate = command_for_database(&database);
+    generate
+        .args(["--profile", "team-a", "generate", "--count", "2"])
+        .assert()
+        .success();
+
+    let mut token = command_for_database(&database);
+    token
+        .env("HOSTSTAMP_TOKEN_HASH_KEY", "hash-key")
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "token",
+            "create",
+            "--name",
+            "deploy",
+        ])
+        .assert()
+        .success();
+
+    let mut export = command_for_database(&database);
+    let assert = export.args(["backup", "export"]).assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+
+    assert_eq!(payload["format"], "hoststamp-backup-v1");
+    assert!(payload["exported_at_ms"].as_i64().expect("exported_at_ms") > 0);
+
+    let profiles = payload["profiles"].as_array().expect("profiles");
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0]["slug"], "team-a");
+    assert_eq!(profiles[0]["last_atomic_value"], 2);
+
+    let profile_tokens = payload["profile_tokens"]
+        .as_array()
+        .expect("profile tokens");
+    assert_eq!(profile_tokens.len(), 1);
+    assert_eq!(profile_tokens[0]["name"], "deploy");
+    assert!(profile_tokens[0].get("profile_token").is_none());
+    assert!(profile_tokens[0].get("token_hash").is_none());
+
+    let events = payload["events"].as_array().expect("events");
+    for action in ["profile.create", "generate", "profile.token.create"] {
+        assert!(
+            events.iter().any(|event| event["action"] == action),
+            "missing action {action}"
+        );
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["action"] == "backup.export")
+    );
+    assert!(!output.contains("hspt_"));
+    assert!(!output.contains("hash-key"));
+
+    let mut audit = command_for_database(&database);
+    let assert = audit
+        .args(["--json", "events", "--action", "backup.export"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let backup_events = payload["events"].as_array().expect("events");
+    assert_eq!(backup_events.len(), 1);
+    let backup_event = backup_events.iter().next().expect("backup event");
+    assert_eq!(backup_event["metadata"]["profile_count"], 1);
+    assert_eq!(backup_event["metadata"]["profile_token_count"], 1);
+    assert_eq!(backup_event["metadata"]["event_count"], 3);
+}
+
+#[test]
 fn regenerate_recreates_profile_hostname_without_incrementing_counter() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");

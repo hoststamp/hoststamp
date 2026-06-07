@@ -30,6 +30,7 @@ use tokio::{net::TcpListener, signal, sync::Mutex};
 use uuid::Uuid;
 
 pub const PROFILE_EXPORT_FORMAT: &str = "hoststamp-profile-v1";
+pub const BACKUP_EXPORT_FORMAT: &str = "hoststamp-backup-v1";
 pub const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
 const EVENT_SOURCE_API: &str = "api";
 
@@ -319,6 +320,15 @@ pub struct ProfileExport {
     pub last_atomic_value: i64,
     pub config_hash: String,
     pub config: ProfileConfig,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackupBundle {
+    pub format: &'static str,
+    pub exported_at_ms: i64,
+    pub profiles: Vec<ProfileResponse>,
+    pub profile_tokens: Vec<ProfileTokenResponse>,
+    pub events: Vec<EventResponse>,
 }
 
 #[derive(Debug, Deserialize)]

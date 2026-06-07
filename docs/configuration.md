@@ -152,6 +152,18 @@ stored in events. Event writes are best-effort: if recording fails after the
 audited action has completed, Hoststamp logs a warning and still returns the
 action's real result.
 
+## Backup Bundles
+
+`hoststamp backup export` prints a `hoststamp-backup-v1` JSON bundle containing
+profile rows, profile-token metadata, and retained audit events. The bundle
+includes active and replaced profile rows so regenerated hostnames remain tied
+to their immutable profile UUIDs. Profile-token hashes and one-time token
+secrets are not exported.
+
+After collecting the snapshot, the command records a best-effort
+`backup.export` audit event with exported row counts. Backup restore/import is
+not implemented.
+
 ## Shell Integration
 
 Hoststamp can print shell completions and its generated top-level man page to

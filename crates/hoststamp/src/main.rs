@@ -11,7 +11,8 @@ use hoststamp_core::{
     notices,
     profile::{self, ProfileAccess, ProfileConfig, ProfileSlug},
     storage::{
-        self, EventFilter, NewEvent, ProfileStore, StoredEvent, StoredProfile, StoredProfileToken,
+        self, BackupSnapshot, EventFilter, NewEvent, ProfileStore, StoredEvent, StoredProfile,
+        StoredProfileToken,
     },
 };
 use std::{
@@ -268,6 +269,11 @@ enum Command {
     },
     /// Inspect audit events.
     Events(EventsArgs),
+    /// Export Hoststamp backup bundles.
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
     /// Print a shell completion script.
     Completions {
         /// Shell to generate completions for.
@@ -356,6 +362,12 @@ enum ProfileCommand {
         #[arg(long, value_parser = parse_stored_atomic_value)]
         atomic_value: i64,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum BackupCommand {
+    /// Export profiles, token metadata, and retained audit events as JSON.
+    Export,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -687,6 +699,27 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Backup { command } => match command {
+            BackupCommand::Export => {
+                let (_settings, mut store) =
+                    load_profile_store(cli.config.clone(), cli.database_url.clone())?;
+                let snapshot = store.backup_snapshot()?;
+                let profile_count = snapshot.profiles.len();
+                let profile_token_count = snapshot.profile_tokens.len();
+                let event_count = snapshot.events.len();
+                let payload = backup_export_payload(snapshot)?;
+                record_backup_event(
+                    &mut store,
+                    serde_json::json!({
+                        "profile_count": profile_count,
+                        "profile_token_count": profile_token_count,
+                        "event_count": event_count,
+                    }),
+                );
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+                Ok(())
+            }
+        },
         Command::Generate => {
             let settings = config::load(Overrides {
                 config_path: cli.config.clone(),
@@ -1187,6 +1220,14 @@ fn record_profile_token_event(
     }
 }
 
+fn record_backup_event(store: &mut ProfileStore, metadata: serde_json::Value) {
+    let mut event = NewEvent::new(EVENT_SOURCE_CLI, "backup.export");
+    event.metadata = metadata;
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action = "backup.export", error = %error, "failed to record audit event");
+    }
+}
+
 fn record_generation_event(
     store: &mut ProfileStore,
     action: &'static str,
@@ -1210,6 +1251,32 @@ fn record_generation_event(
     if let Err(error) = store.record_event(event) {
         tracing::warn!(action, error = %error, "failed to record audit event");
     }
+}
+
+fn backup_export_payload(snapshot: BackupSnapshot) -> anyhow::Result<server::BackupBundle> {
+    let profiles = snapshot
+        .profiles
+        .into_iter()
+        .map(server::ProfileResponse::from)
+        .collect::<Vec<_>>();
+    let profile_tokens = snapshot
+        .profile_tokens
+        .into_iter()
+        .map(server::ProfileTokenResponse::from)
+        .collect::<Vec<_>>();
+    let events = snapshot
+        .events
+        .into_iter()
+        .map(server::EventResponse::from)
+        .collect::<Vec<_>>();
+
+    Ok(server::BackupBundle {
+        format: server::BACKUP_EXPORT_FORMAT,
+        exported_at_ms: storage::unix_epoch_millis()?,
+        profiles,
+        profile_tokens,
+        events,
+    })
 }
 
 const INITIAL_CONFIG_TEMPLATE: &str = r#"# Hoststamp bootstrap configuration.
