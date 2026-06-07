@@ -1,0 +1,44 @@
+name: Validate hostnames
+
+on:
+  pull_request:
+    paths:
+      - ".github/hoststamp/**"
+      - ".github/workflows/validate-hostnames.yml"
+      - "infrastructure/**"
+
+permissions:
+  contents: read
+
+jobs:
+  hoststamp:
+    runs-on: ubuntu-latest
+    env:
+      HOSTSTAMP_PROFILE: team-a
+      HOSTSTAMP_PROFILE_EXPORT: .github/hoststamp/team-a.profile.json
+      HOSTSTAMP_HOSTNAME_FILE: infrastructure/hostnames.txt
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install Rust
+        run: rustup toolchain install 1.96.0 --profile minimal
+
+      - name: Install Hoststamp
+        run: cargo +1.96.0 install --git https://github.com/hoststamp/hoststamp --tag v0.1.0 --locked hoststamp
+
+      - name: Import trusted Hoststamp profile
+        env:
+          HOSTSTAMP_DATABASE_URL: sqlite://${{ runner.temp }}/hoststamp.db
+        run: |
+          git fetch --depth=1 origin main
+          git show "origin/main:${HOSTSTAMP_PROFILE_EXPORT}" > "${RUNNER_TEMP}/hoststamp-profile.json"
+          hoststamp profile import "${RUNNER_TEMP}/hoststamp-profile.json"
+
+      - name: Validate hostnames
+        env:
+          HOSTSTAMP_DATABASE_URL: sqlite://${{ runner.temp }}/hoststamp.db
+        run: |
+          hoststamp --profile "${HOSTSTAMP_PROFILE}" validate \
+            --file "${HOSTSTAMP_HOSTNAME_FILE}" \
+            --json

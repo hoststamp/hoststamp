@@ -158,4 +158,5 @@ For CI and bulk checks, use `hoststamp validate <hostname>` or
 `hoststamp validate --file <path>`. File input is newline-delimited, blank lines
 are ignored, and any invalid hostname makes the command exit non-zero. Pass
 `--json` to print a `results` array with `hostname`, `profile`, `atomic_value`,
-and `valid` fields.
+and `valid` fields. See [Integrations](./integrations.md) for a GitHub Actions
+validation workflow example.
