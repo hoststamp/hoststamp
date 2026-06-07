@@ -21,6 +21,7 @@ cargo run -p hoststamp -- --profile team-a lookup brief-cobra-db50d
 cargo run -p hoststamp -- --profile team-a lookup brief-cobra-db50d --json
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42
 cargo run -p hoststamp -- --profile team-a regenerate --atomic-value 42 --count 3 --json
+cargo run -p hoststamp -- regenerate --profile-id <uuid> --atomic-value 42
 cargo run -p hoststamp -- --profile team-a --capacity
 cargo run -p hoststamp -- --profile team-a --capacity --json
 ```
@@ -122,13 +123,14 @@ used by Hoststamp profile storage (`1..=9,223,372,036,854,775,807`).
 Use `hoststamp regenerate --atomic-value <n>` to reproduce the hostname for a
 stored profile atomic value. Regeneration uses only the selected profile
 (`--profile`, default `_`) and an atomic range; it does not increment the
-counter.
+counter. Use `--profile-id <uuid>` to regenerate from a replaced or deleted
+profile row listed by `hoststamp --profile <slug> profile history`.
 
 Pass `--count <n>` to regenerate a contiguous range starting at
 `--atomic-value`. Plain output is one hostname per line, and `--json` returns
 each hostname with `profile` and `atomic_value` metadata. The requested atomic
-range must already have been issued by the active profile generation. For
-example, a profile with `last_atomic_value = 10` rejects
+range must already have been issued by the selected profile row. For example, a
+profile with `last_atomic_value = 10` rejects
 `--atomic-value 10 --count 2` because that includes value `11`.
 
 Regeneration requires suffixes to be enabled for the stored profile because

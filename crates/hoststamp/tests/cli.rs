@@ -1123,6 +1123,70 @@ fn regenerate_supports_count() {
 }
 
 #[test]
+fn profile_history_supports_regenerating_replaced_profiles_by_id() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate
+        .args(["--profile", "team-a", "generate"])
+        .assert()
+        .success();
+    let generated = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = generated.trim().to_owned();
+
+    let mut replace = command_for_database(&database);
+    replace
+        .args([
+            "--profile",
+            "team-a",
+            "config",
+            "set",
+            "--word1-lengths",
+            "4",
+        ])
+        .write_stdin("team-a\nreplace\n")
+        .assert()
+        .success();
+
+    let store = ProfileStore::open(&StorageUrl::Sqlite(database.clone())).expect("store");
+    let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+    let history = store.list_profile_history(&slug).expect("history");
+    assert_eq!(history.len(), 2);
+    assert!(history[0].replaced_at_ms.is_some());
+    assert_eq!(history[0].replaced_by_id, Some(history[1].id));
+    assert!(history[1].replaced_at_ms.is_none());
+    let retired_id = history[0].id.to_string();
+    let replacement_id = history[1].id.to_string();
+
+    let mut history_cmd = command_for_database(&database);
+    history_cmd
+        .args(["--profile", "team-a", "profile", "history"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("slug\tid\tstate\taccess\tlast_atomic_value")
+                .and(predicate::str::contains(&retired_id))
+                .and(predicate::str::contains(&replacement_id))
+                .and(predicate::str::contains("\treplaced\t"))
+                .and(predicate::str::contains("\tactive\t")),
+        );
+
+    let mut regenerate = command_for_database(&database);
+    regenerate
+        .args([
+            "regenerate",
+            "--profile-id",
+            &retired_id,
+            "--atomic-value",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(generated));
+}
+
+#[test]
 fn regenerate_json_prints_atomic_metadata() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");
@@ -1411,7 +1475,7 @@ fn regenerate_rejects_generation_options() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "regenerate only supports --profile, --atomic-value, --count, and --json",
+            "regenerate only supports --profile, --profile-id, --atomic-value, --count, and --json",
         ));
 }
 

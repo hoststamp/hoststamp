@@ -58,6 +58,10 @@ pub struct StoredProfile {
     pub config: ProfileConfig,
     pub config_hash: [u8; 32],
     pub last_atomic_value: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub replaced_at_ms: Option<i64>,
+    pub replaced_by_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +134,8 @@ impl ProfileStore {
 
     pub fn list_profiles(&self) -> Result<Vec<StoredProfile>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, slug, access, config_json, config_hash, last_atomic_value
+            "SELECT id, slug, access, config_json, config_hash, last_atomic_value,
+                    created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
              FROM hoststamp_profiles
              WHERE replaced_at_ms IS NULL
              ORDER BY slug ASC",
@@ -139,6 +144,24 @@ impl ProfileStore {
             .query_map([], profile_from_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(profiles)
+    }
+
+    pub fn list_profile_history(&self, slug: &ProfileSlug) -> Result<Vec<StoredProfile>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, slug, access, config_json, config_hash, last_atomic_value,
+                    created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
+             FROM hoststamp_profiles
+             WHERE slug = ?1
+             ORDER BY created_at_ms ASC, updated_at_ms ASC, id ASC",
+        )?;
+        let profiles = statement
+            .query_map(params![slug.as_str()], profile_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(profiles)
+    }
+
+    pub fn load_profile_by_id(&self, id: Uuid) -> Result<StoredProfile> {
+        select_profile_by_id(&self.connection, id)
     }
 
     pub fn create_profile(
@@ -705,7 +728,8 @@ fn validate_profile_token_name(name: &str) -> Result<()> {
 fn select_profile(connection: &Connection, slug: &ProfileSlug) -> Result<StoredProfile> {
     connection
         .query_row(
-            "SELECT id, slug, access, config_json, config_hash, last_atomic_value
+            "SELECT id, slug, access, config_json, config_hash, last_atomic_value,
+                    created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
              FROM hoststamp_profiles
              WHERE slug = ?1 AND replaced_at_ms IS NULL",
             params![slug.as_str()],
@@ -713,6 +737,20 @@ fn select_profile(connection: &Connection, slug: &ProfileSlug) -> Result<StoredP
         )
         .optional()?
         .with_context(|| format!("profile {:?} does not exist", slug.as_str()))
+}
+
+fn select_profile_by_id(connection: &Connection, id: Uuid) -> Result<StoredProfile> {
+    connection
+        .query_row(
+            "SELECT id, slug, access, config_json, config_hash, last_atomic_value,
+                    created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
+             FROM hoststamp_profiles
+             WHERE id = ?1",
+            params![id.as_bytes().as_slice()],
+            profile_from_row,
+        )
+        .optional()?
+        .with_context(|| format!("profile id {id} does not exist"))
 }
 
 fn profile_id_owner(connection: &Connection, id: Uuid) -> Result<Option<(String, bool)>> {
@@ -728,52 +766,66 @@ fn profile_id_owner(connection: &Connection, id: Uuid) -> Result<Option<(String,
 }
 
 fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProfile> {
-    let id_blob: Vec<u8> = row.get(0)?;
-    let slug_value: String = row.get(1)?;
-    let access_value: String = row.get(2)?;
-    let config_json: String = row.get(3)?;
-    let config_hash_blob: Vec<u8> = row.get(4)?;
-    let last_atomic_value: i64 = row.get(5)?;
-    stored_profile_from_parts(
-        id_blob,
-        slug_value,
-        access_value,
-        config_json,
-        config_hash_blob,
-        last_atomic_value,
-    )
+    stored_profile_from_parts(StoredProfileParts {
+        id_blob: row.get(0)?,
+        slug_value: row.get(1)?,
+        access_value: row.get(2)?,
+        config_json: row.get(3)?,
+        config_hash_blob: row.get(4)?,
+        last_atomic_value: row.get(5)?,
+        created_at_ms: row.get(6)?,
+        updated_at_ms: row.get(7)?,
+        replaced_at_ms: row.get(8)?,
+        replaced_by_id_blob: row.get(9)?,
+    })
     .map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into())
     })
 }
 
-fn stored_profile_from_parts(
+struct StoredProfileParts {
     id_blob: Vec<u8>,
     slug_value: String,
     access_value: String,
     config_json: String,
     config_hash_blob: Vec<u8>,
     last_atomic_value: i64,
-) -> Result<StoredProfile> {
-    let id = Uuid::from_slice(&id_blob).context("stored profile id is not a UUID")?;
-    let slug = slug_value
+    created_at_ms: i64,
+    updated_at_ms: i64,
+    replaced_at_ms: Option<i64>,
+    replaced_by_id_blob: Option<Vec<u8>>,
+}
+
+fn stored_profile_from_parts(parts: StoredProfileParts) -> Result<StoredProfile> {
+    let id = Uuid::from_slice(&parts.id_blob).context("stored profile id is not a UUID")?;
+    let slug = parts
+        .slug_value
         .parse::<ProfileSlug>()
         .map_err(anyhow::Error::msg)
         .context("stored profile slug is invalid")?;
-    let access = access_value
+    let access = parts
+        .access_value
         .parse::<ProfileAccess>()
         .map_err(anyhow::Error::msg)
         .context("stored profile access is invalid")?;
-    let config = serde_json::from_str::<ProfileConfig>(&config_json)
+    let config = serde_json::from_str::<ProfileConfig>(&parts.config_json)
         .context("stored profile config is invalid")?;
-    let config_hash = fixed_hash(config_hash_blob)?;
+    let config_hash = fixed_hash(parts.config_hash_blob)?;
+    let replaced_by_id = parts
+        .replaced_by_id_blob
+        .map(|blob| Uuid::from_slice(&blob).context("stored replacement profile id is not a UUID"))
+        .transpose()?;
     Ok(StoredProfile {
         id,
         slug,
         access,
         config,
         config_hash,
-        last_atomic_value,
+        last_atomic_value: parts.last_atomic_value,
+        created_at_ms: parts.created_at_ms,
+        updated_at_ms: parts.updated_at_ms,
+        replaced_at_ms: parts.replaced_at_ms,
+        replaced_by_id,
     })
 }
 
@@ -1098,6 +1150,21 @@ mod tests {
             )
             .expect("retired value");
         assert_eq!(retired_atomic_value, 1);
+
+        let history = store.list_profile_history(&slug).expect("history");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, original.id);
+        assert_eq!(history[0].last_atomic_value, 1);
+        assert!(history[0].replaced_at_ms.is_some());
+        assert_eq!(history[0].replaced_by_id, Some(replacement.id));
+        assert_eq!(history[1].id, replacement.id);
+        assert!(history[1].replaced_at_ms.is_none());
+        assert_eq!(history[1].replaced_by_id, None);
+
+        let retired = store.load_profile_by_id(original.id).expect("retired");
+        assert_eq!(retired.slug, slug);
+        assert_eq!(retired.config, seed);
+        assert_eq!(retired.last_atomic_value, 1);
     }
 
     #[test]
@@ -1125,10 +1192,17 @@ mod tests {
         store.delete_profile(&slug).expect("delete");
         assert!(store.load_profile(&slug).is_err());
         assert!(store.list_profiles().expect("profiles").is_empty());
+        let deleted_history = store.list_profile_history(&slug).expect("history");
+        assert_eq!(deleted_history.len(), 1);
+        assert!(deleted_history[0].replaced_at_ms.is_some());
+        assert_eq!(deleted_history[0].replaced_by_id, None);
 
         let recreated = store.create_profile(&slug, &seed).expect("recreated");
         assert_ne!(recreated.id, created.id);
         assert_eq!(recreated.last_atomic_value, 0);
+        let recreated_history = store.list_profile_history(&slug).expect("history");
+        assert_eq!(recreated_history.len(), 2);
+        assert_eq!(recreated_history[1].id, recreated.id);
 
         let missing = "missing".parse::<ProfileSlug>().expect("slug");
         assert!(store.delete_profile(&missing).is_err());

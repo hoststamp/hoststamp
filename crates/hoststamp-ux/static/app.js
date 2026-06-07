@@ -2,6 +2,7 @@
 
 const state = {
   profiles: [],
+  profileHistory: null,
   selected: null,
   adminToken: localStorage.getItem("hoststamp.adminToken") || "",
   unlocked: false,
@@ -57,9 +58,11 @@ function setManagementEnabled(enabled) {
 
 function clearProfileState() {
   state.profiles = [];
+  state.profileHistory = null;
   state.selected = null;
   renderProfiles();
   renderProfile();
+  renderProfileHistory(null);
   resetProfileForms();
   renderCapacity(null);
   renderTokens(null);
@@ -267,6 +270,31 @@ function renderCapacity(report) {
   );
 }
 
+function renderProfileHistory(profiles) {
+  const body = el("history-body");
+  body.replaceChildren();
+  if (!profiles) {
+    body.appendChild(emptyRow("No profile selected", 5));
+    return;
+  }
+  if (!profiles.length) {
+    body.appendChild(emptyRow("No history", 5));
+    return;
+  }
+  for (const profile of profiles) {
+    const row = document.createElement("tr");
+    const lifecycle = profile.replaced_at_ms === null ? "active" : "replaced";
+    row.append(
+      cell(lifecycle),
+      cell(profile.id, "mono"),
+      cell(profile.last_atomic_value, "mono"),
+      cell(profile.replaced_at_ms ?? "n/a", "mono"),
+      cell(profile.replaced_by_id ?? "n/a", "mono"),
+    );
+    body.appendChild(row);
+  }
+}
+
 function renderTokens(tokens) {
   const body = el("tokens-body");
   body.replaceChildren();
@@ -326,7 +354,15 @@ async function refreshProfiles() {
   renderProfiles();
   renderProfile();
   if (state.selected) {
-    await Promise.allSettled([refreshCapacity(), refreshTokens()]);
+    await Promise.allSettled([
+      refreshCapacity(),
+      refreshProfileHistory(),
+      refreshTokens(),
+    ]);
+  } else {
+    renderCapacity(null);
+    renderProfileHistory(null);
+    renderTokens(null);
   }
 }
 
@@ -347,7 +383,11 @@ async function selectProfile(slug) {
   resetProfileForms();
   renderProfiles();
   renderProfile();
-  await Promise.allSettled([refreshCapacity(), refreshTokens()]);
+  await Promise.allSettled([
+    refreshCapacity(),
+    refreshProfileHistory(),
+    refreshTokens(),
+  ]);
 }
 
 async function createProfile(event) {
@@ -372,6 +412,13 @@ async function refreshCapacity() {
     `/api/capacity?profile=${slugPath(state.selected)}`,
   );
   renderCapacity(payload);
+}
+
+async function refreshProfileHistory() {
+  if (!state.unlocked || !state.selected) return;
+  const payload = await api(`/api/profiles/${slugPath(state.selected)}/history`);
+  state.profileHistory = payload.profiles;
+  renderProfileHistory(state.profileHistory);
 }
 
 async function generate() {
@@ -590,6 +637,7 @@ wire("save-token", "click", async () => {
 });
 wire("refresh-profiles", "click", refreshProfiles);
 wire("refresh-capacity", "click", refreshCapacity);
+wire("refresh-history", "click", refreshProfileHistory);
 wire("create-profile", "submit", createProfile);
 wire("generate", "click", generate);
 wire("regenerate", "click", regenerate);

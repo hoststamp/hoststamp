@@ -26,6 +26,7 @@ cargo run -p hoststamp -- health
 - API capacity: `http://127.0.0.1:8080/api/capacity?profile=_`
 - API regenerate: `http://127.0.0.1:8080/api/regenerate?atomic_value=42&count=3`
 - API regenerate JSON: `http://127.0.0.1:8080/api/regenerate?profile=_&atomic_value=42&count=3&format=json`
+- API regenerate by profile ID: `http://127.0.0.1:8080/api/regenerate?profile_id=<uuid>&atomic_value=42&format=json`
 - API lookup: `http://127.0.0.1:8080/api/lookup?hostname=brief-cobra-db50d`
 - API random: `http://127.0.0.1:8080/api/random?count=3&word1_lengths=4&word2_lengths=4`
 - API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
@@ -61,9 +62,11 @@ regeneration also include `profile` and `atomic_value`.
 the server's active profile. `/api/capacity` accepts `profile` and returns the
 selected profile's current name-space report without incrementing the counter;
 `hoststamp --capacity --json` returns the same report locally.
-`/api/regenerate` accepts `format`, `profile`, `atomic_value`, and `count`;
-`profile` defaults to the server's active profile. It is read-only, does not
-increment the counter, and rejects ranges beyond the selected profile's
+`/api/regenerate` accepts `format`, `profile`, `profile_id`, `atomic_value`,
+and `count`; `profile` defaults to the server's active profile. Use
+`profile_id` instead of `profile` to regenerate from a replaced profile row;
+that mode requires the admin bearer token. Regeneration is read-only, does not
+increment the counter, and rejects ranges beyond the selected profile row's
 `last_atomic_value`. `/api/lookup` accepts `hostname`, optional `profile`, and
 optional `format=json`; `profile` defaults to the server's active profile. It
 decodes the suffix and returns JSON with `profile`, `atomic_value`, and
@@ -125,6 +128,7 @@ Admin API endpoints mirror the profile/config CLI operations:
 | `GET` | `/api/profiles` | list active profiles |
 | `POST` | `/api/profiles` | create a profile with default config |
 | `GET` | `/api/profiles/{slug}` | show one active profile |
+| `GET` | `/api/profiles/{slug}/history` | list active and replaced profile rows |
 | `DELETE` | `/api/profiles/{slug}` | delete an active profile |
 | `GET` | `/api/profiles/{slug}/export` | export profile identity, counter, access, and config |
 | `POST` | `/api/profiles/import` | import an exported profile |

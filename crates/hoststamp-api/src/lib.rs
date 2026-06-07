@@ -154,6 +154,7 @@ pub struct RandomQuery {
 pub struct RegenerateQuery {
     pub format: Option<GenerateFormat>,
     pub profile: Option<String>,
+    pub profile_id: Option<String>,
     pub atomic_value: i64,
     pub count: Option<usize>,
 }
@@ -189,6 +190,10 @@ pub struct ProfileResponse {
     pub slug: String,
     pub access: ProfileAccess,
     pub last_atomic_value: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub replaced_at_ms: Option<i64>,
+    pub replaced_by_id: Option<String>,
     pub config_hash: String,
     pub config: ProfileConfig,
 }
@@ -200,6 +205,10 @@ impl From<StoredProfile> for ProfileResponse {
             slug: profile.slug.as_str().to_owned(),
             access: profile.access,
             last_atomic_value: profile.last_atomic_value,
+            created_at_ms: profile.created_at_ms,
+            updated_at_ms: profile.updated_at_ms,
+            replaced_at_ms: profile.replaced_at_ms,
+            replaced_by_id: profile.replaced_by_id.map(|id| id.to_string()),
             config_hash: hex_string(&profile.config_hash),
             config: profile.config,
         }
@@ -417,6 +426,7 @@ pub fn app_with_mode(
                 "/api/profiles/{slug}",
                 get(admin_show_profile).delete(admin_delete_profile),
             )
+            .route("/api/profiles/{slug}/history", get(admin_profile_history))
             .route("/api/profiles/{slug}/export", get(admin_export_profile))
             .route("/api/profiles/import", post(admin_import_profile))
             .route(
@@ -607,6 +617,29 @@ async fn admin_show_profile(
     Ok(Json(ProfileEnvelope {
         profile: profile.into(),
     }))
+}
+
+async fn admin_profile_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+) -> Result<Json<ProfilesResponse>, Response> {
+    let slug = parse_slug(&slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let store = store.lock().await;
+    let profiles = store
+        .list_profile_history(&slug)
+        .map_err(admin_internal_response)?;
+    if profiles.is_empty() {
+        return Err(admin_bad_request_response(format!(
+            "profile {:?} does not exist",
+            slug.as_str()
+        )));
+    }
+    let profiles = profiles.into_iter().map(Into::into).collect();
+
+    Ok(Json(ProfilesResponse { profiles }))
 }
 
 async fn admin_create_profile(
@@ -1031,20 +1064,36 @@ async fn regenerate_with_state(
         .checked_add(count_offset)
         .ok_or_else(|| GenerateError::BadRequest("atomic value range is too large".to_owned()))?;
 
-    let profile_slug = match query.profile.as_deref() {
-        Some(profile) => profile.parse().map_err(GenerateError::BadRequest)?,
-        None => atomic.profile_slug.clone(),
-    };
-
     let mut store = atomic.store.lock().await;
-    let profile = match store.load_profile(&profile_slug) {
-        Ok(profile) => profile,
-        Err(error) => {
-            authorize_missing_profile_request(headers, &state.auth)?;
-            return Err(GenerateError::BadRequest(error.to_string()));
+    let profile = if let Some(profile_id) = query.profile_id.as_deref() {
+        if query.profile.is_some() {
+            return Err(GenerateError::BadRequest(
+                "regenerate accepts either profile or profile_id, not both".to_owned(),
+            ));
         }
+        authorize_admin_generate_request(headers, &state.auth)?;
+        let profile_id = Uuid::parse_str(profile_id).map_err(|error| {
+            GenerateError::BadRequest(format!("profile_id is invalid: {error}"))
+        })?;
+        store
+            .load_profile_by_id(profile_id)
+            .map_err(|error| GenerateError::BadRequest(error.to_string()))?
+    } else {
+        let profile_slug = match query.profile.as_deref() {
+            Some(profile) => profile.parse().map_err(GenerateError::BadRequest)?,
+            None => atomic.profile_slug.clone(),
+        };
+
+        let profile = match store.load_profile(&profile_slug) {
+            Ok(profile) => profile,
+            Err(error) => {
+                authorize_missing_profile_request(headers, &state.auth)?;
+                return Err(GenerateError::BadRequest(error.to_string()));
+            }
+        };
+        authorize_profile_request(headers, &state.auth, &mut store, &profile)?;
+        profile
     };
-    authorize_profile_request(headers, &state.auth, &mut store, &profile)?;
     if !profile.config.suffix.enabled {
         return Err(GenerateError::BadRequest(format!(
             "profile {:?} cannot regenerate hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
@@ -1380,6 +1429,31 @@ fn authorize_missing_profile_request(
 
     Err(GenerateError::Unauthorized(
         "authorization bearer token is invalid".to_owned(),
+    ))
+}
+
+fn authorize_admin_generate_request(
+    headers: &HeaderMap,
+    auth: &ApiAuthConfig,
+) -> Result<(), GenerateError> {
+    let Some(admin_token) = auth.admin_token.as_ref() else {
+        return Err(GenerateError::BadRequest(
+            "profile_id regeneration requires a configured admin token".to_owned(),
+        ));
+    };
+
+    let Some(token) = bearer_token(headers) else {
+        return Err(GenerateError::Unauthorized(
+            "admin authorization bearer token is required".to_owned(),
+        ));
+    };
+
+    if constant_time_eq(token, admin_token.expose()) {
+        return Ok(());
+    }
+
+    Err(GenerateError::Unauthorized(
+        "admin authorization bearer token is invalid".to_owned(),
     ))
 }
 

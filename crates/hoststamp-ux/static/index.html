@@ -98,6 +98,31 @@
 
             <section class="panel">
               <div class="panel-head">
+                <h3>History</h3>
+                <button id="refresh-history" type="button">Refresh</button>
+              </div>
+              <div class="panel-body">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>State</th>
+                      <th>Profile ID</th>
+                      <th>Last Atomic</th>
+                      <th>Replaced At</th>
+                      <th>Replaced By</th>
+                    </tr>
+                  </thead>
+                  <tbody id="history-body">
+                    <tr>
+                      <td class="empty" colspan="5">No profile selected</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
                 <h3>Generate</h3>
               </div>
               <div class="panel-body stack">
