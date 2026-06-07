@@ -77,7 +77,7 @@ impl GenerateArgs {
         self.capacity
     }
 
-    fn has_unsupported_lookup_options(&self) -> bool {
+    fn has_capacity_or_count_options(&self) -> bool {
         self.capacity || self.count.is_some()
     }
 
@@ -174,6 +174,16 @@ struct RandomArgs {
     config: ConfigSetArgs,
 }
 
+#[derive(Args, Debug, Clone)]
+struct ValidateArgs {
+    /// Hostname to validate.
+    hostname: Option<String>,
+
+    /// Read newline-delimited hostnames from a file.
+    #[arg(long, value_name = "PATH")]
+    file: Option<PathBuf>,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Generate hostnames.
@@ -191,6 +201,8 @@ enum Command {
         /// Hostname to validate.
         hostname: String,
     },
+    /// Validate profile-backed hostnames for CI and bulk checks.
+    Validate(ValidateArgs),
     /// Inspect or manage Hoststamp configuration.
     Config {
         #[command(subcommand)]
@@ -642,7 +654,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Lookup { hostname } => {
-            if cli.generate.has_unsupported_lookup_options() {
+            if cli.generate.has_capacity_or_count_options() {
                 anyhow::bail!("lookup only supports --profile and --json");
             }
             let settings = config::load(Overrides {
@@ -652,29 +664,42 @@ async fn main() -> anyhow::Result<()> {
             })?;
             let mut store = ProfileStore::open(&settings.database_url)?;
             let profile = store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
-            if !profile.config.suffix.enabled {
-                anyhow::bail!(
-                    "profile {:?} cannot lookup hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
-                    profile.slug.as_str()
-                );
-            }
-            ensure_profile_generation_contract_is_current(&profile)?;
-            let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
-            let lookup = generator::lookup_profile_hostname(
-                &hostname,
-                &options,
-                profile.id,
-                &profile.config_hash,
-            )?;
-            let response = server::LookupResponse::profile_backed(
-                &profile.slug,
-                lookup,
-                profile.last_atomic_value,
-            );
+            let response = lookup_hostname_response(&hostname, &profile)?;
             if cli.generate.json {
                 println!("{}", serde_json::to_string_pretty(&response)?);
             } else {
                 print_lookup_response(&response);
+            }
+            Ok(())
+        }
+        Command::Validate(args) => {
+            if cli.generate.has_capacity_or_count_options() {
+                anyhow::bail!("validate only supports --profile, --file, and --json");
+            }
+            let settings = config::load(Overrides {
+                config_path: cli.config.clone(),
+                addr: None,
+                database_url: cli.database_url.clone(),
+            })?;
+            let mut store = ProfileStore::open(&settings.database_url)?;
+            let profile = store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+            let hostnames = validate_input_hostnames(&args)?;
+            let results = hostnames
+                .iter()
+                .map(|hostname| {
+                    lookup_hostname_response(hostname, &profile).map(|response| ValidateResult {
+                        hostname: hostname.clone(),
+                        response,
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            print_validate_results(&results, cli.generate.json)?;
+            let invalid_count = results
+                .iter()
+                .filter(|result| !result.response.valid)
+                .count();
+            if invalid_count > 0 {
+                anyhow::bail!("validation failed for {invalid_count} hostname(s)");
             }
             Ok(())
         }
@@ -739,6 +764,94 @@ fn generate_with_profile(
             .map(server::GeneratedHostname::plain)
             .collect()
     })
+}
+
+fn lookup_hostname_response(
+    hostname: &str,
+    profile: &StoredProfile,
+) -> anyhow::Result<server::LookupResponse> {
+    if !profile.config.suffix.enabled {
+        anyhow::bail!(
+            "profile {:?} cannot lookup hostnames because suffixes are disabled; atomic values are only tracked when suffixes are enabled",
+            profile.slug.as_str()
+        );
+    }
+    ensure_profile_generation_contract_is_current(profile)?;
+    let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
+    let lookup =
+        generator::lookup_profile_hostname(hostname, &options, profile.id, &profile.config_hash)?;
+    Ok(server::LookupResponse::profile_backed(
+        &profile.slug,
+        lookup,
+        profile.last_atomic_value,
+    ))
+}
+
+fn validate_input_hostnames(args: &ValidateArgs) -> anyhow::Result<Vec<String>> {
+    match (&args.hostname, &args.file) {
+        (Some(hostname), None) => Ok(vec![hostname.clone()]),
+        (None, Some(path)) => {
+            let contents = fs::read_to_string(path)
+                .with_context(|| format!("failed to read validation input {}", path.display()))?;
+            let hostnames = contents
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if hostnames.is_empty() {
+                anyhow::bail!(
+                    "validation input {} does not contain any hostnames",
+                    path.display()
+                );
+            }
+            Ok(hostnames)
+        }
+        _ => anyhow::bail!("validate requires exactly one hostname or --file <path>"),
+    }
+}
+
+struct ValidateResult {
+    hostname: String,
+    response: server::LookupResponse,
+}
+
+fn print_validate_results(results: &[ValidateResult], json: bool) -> anyhow::Result<()> {
+    if json {
+        let results = results
+            .iter()
+            .map(|result| {
+                serde_json::json!({
+                    "hostname": result.hostname,
+                    "profile": result.response.profile,
+                    "atomic_value": result.response.atomic_value,
+                    "valid": result.response.valid,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "results": results }))?
+        );
+        return Ok(());
+    }
+
+    println!("hostname\tvalid\tprofile\tatomic_value");
+    for result in results {
+        println!(
+            "{}\t{}\t{}\t{}",
+            result.hostname,
+            result.response.valid,
+            result.response.profile,
+            result
+                .response
+                .atomic_value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned())
+        );
+    }
+
+    Ok(())
 }
 
 fn print_capacity_report(options: &GenerateOptions, json: bool) -> anyhow::Result<()> {
