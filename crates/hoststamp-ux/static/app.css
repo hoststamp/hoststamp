@@ -259,6 +259,13 @@ main {
   gap: 0.625rem;
 }
 
+.event-controls {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
 .command-control button {
   width: 100%;
 }
@@ -377,6 +384,8 @@ main {
 
   .layout,
   .config-grid,
+  .command-grid,
+  .event-controls,
   .form-grid {
     grid-template-columns: 1fr;
   }

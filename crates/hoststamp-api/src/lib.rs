@@ -18,7 +18,10 @@ use hoststamp_core::{
         self, GenerateOptions, GenerateOverrides, ProfileGeneratedHostname, ProfileLookup,
     },
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
-    storage::{ProfileStore, StoredProfile, StoredProfileToken, config_hash},
+    storage::{
+        EventFilter, NewEvent, ProfileStore, StoredEvent, StoredProfile, StoredProfileToken,
+        config_hash,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,6 +31,7 @@ use uuid::Uuid;
 
 pub const PROFILE_EXPORT_FORMAT: &str = "hoststamp-profile-v1";
 pub const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
+const EVENT_SOURCE_API: &str = "api";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -167,6 +171,18 @@ pub struct LookupQuery {
     pub hostname: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventsQuery {
+    pub profile: Option<String>,
+    pub action: Option<String>,
+    pub source: Option<String>,
+    pub token_name: Option<String>,
+    pub since_ms: Option<i64>,
+    pub until_ms: Option<i64>,
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum GenerateFormat {
@@ -252,6 +268,44 @@ impl From<StoredProfileToken> for ProfileTokenResponse {
             expires_at_ms: token.expires_at_ms,
             last_used_at_ms: token.last_used_at_ms,
             revoked_at_ms: token.revoked_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventsResponse {
+    pub events: Vec<EventResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventResponse {
+    pub id: String,
+    pub created_at_ms: i64,
+    pub source: String,
+    pub action: String,
+    pub profile_slug: Option<String>,
+    pub profile_id: Option<String>,
+    pub token_id: Option<String>,
+    pub token_name: Option<String>,
+    pub atomic_start: Option<i64>,
+    pub atomic_end: Option<i64>,
+    pub metadata: Value,
+}
+
+impl From<StoredEvent> for EventResponse {
+    fn from(event: StoredEvent) -> Self {
+        Self {
+            id: event.id.to_string(),
+            created_at_ms: event.created_at_ms,
+            source: event.source,
+            action: event.action,
+            profile_slug: event.profile_slug.map(|slug| slug.as_str().to_owned()),
+            profile_id: event.profile_id.map(|id| id.to_string()),
+            token_id: event.token_id,
+            token_name: event.token_name,
+            atomic_start: event.atomic_start,
+            atomic_end: event.atomic_end,
+            metadata: event.metadata,
         }
     }
 }
@@ -418,6 +472,7 @@ pub fn app_with_mode(
             .route("/api/regenerate", get(regenerate_one))
             .route("/api/lookup", get(lookup_one))
             .route("/api/random", get(random_one))
+            .route("/api/events", get(admin_list_events))
             .route(
                 "/api/profiles",
                 get(admin_list_profiles).post(admin_create_profile),
@@ -619,6 +674,25 @@ async fn admin_show_profile(
     }))
 }
 
+async fn admin_list_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<EventsQuery>,
+) -> Result<Json<EventsResponse>, Response> {
+    authorize_admin_request(&headers, &state.auth)?;
+    let filter = event_filter_from_query(query)?;
+    let store = admin_store(&state)?;
+    let store = store.lock().await;
+    let events = store
+        .list_events(&filter)
+        .map_err(admin_internal_response)?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+
+    Ok(Json(EventsResponse { events }))
+}
+
 async fn admin_profile_history(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -654,6 +728,12 @@ async fn admin_create_profile(
     let profile = store
         .create_profile(&slug, &ProfileConfig::default())
         .map_err(admin_bad_request_response)?;
+    record_api_profile_event(
+        &mut store,
+        "profile.create",
+        &profile,
+        serde_json::json!({ "access": profile.access.to_string() }),
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -671,10 +751,16 @@ async fn admin_export_profile(
     let slug = parse_slug(&slug)?;
     authorize_admin_request(&headers, &state.auth)?;
     let store = admin_store(&state)?;
-    let store = store.lock().await;
+    let mut store = store.lock().await;
     let profile = store
         .load_profile(&slug)
         .map_err(admin_bad_request_response)?;
+    record_api_profile_event(
+        &mut store,
+        "profile.export",
+        &profile,
+        serde_json::json!({ "last_atomic_value": profile.last_atomic_value }),
+    );
 
     Ok(Json(ProfileExport {
         format: PROFILE_EXPORT_FORMAT,
@@ -717,6 +803,7 @@ async fn admin_import_profile(
     } else {
         StatusCode::CREATED
     };
+    let replaced_profile_id = existing.as_ref().map(|profile| profile.id.to_string());
     let profile = store
         .import_profile(
             &slug,
@@ -726,6 +813,15 @@ async fn admin_import_profile(
             request.last_atomic_value,
         )
         .map_err(admin_bad_request_response)?;
+    record_api_profile_event(
+        &mut store,
+        "profile.import",
+        &profile,
+        serde_json::json!({
+            "replaced_profile_id": replaced_profile_id,
+            "last_atomic_value": profile.last_atomic_value,
+        }),
+    );
 
     Ok((
         status,
@@ -746,9 +842,18 @@ async fn admin_delete_profile(
     confirm_admin_action(&request.confirmation, &slug, "delete")?;
     let store = admin_store(&state)?;
     let mut store = store.lock().await;
+    let profile = store
+        .load_profile(&slug)
+        .map_err(admin_bad_request_response)?;
     store
         .delete_profile(&slug)
         .map_err(admin_bad_request_response)?;
+    record_api_profile_event(
+        &mut store,
+        "profile.delete",
+        &profile,
+        serde_json::json!({ "last_atomic_value": profile.last_atomic_value }),
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -780,9 +885,20 @@ async fn admin_update_profile_config(
         AdminError::BadRequest("profile config replacement requires confirmation".to_owned())
     })?;
     confirm_admin_action(confirmation, &slug, "replace")?;
+    let previous_profile = profile;
     let profile = store
         .replace_profile_config(&slug, &desired_config)
         .map_err(admin_bad_request_response)?;
+    record_api_profile_event(
+        &mut store,
+        "profile.config.replace",
+        &profile,
+        serde_json::json!({
+            "previous_profile_id": previous_profile.id.to_string(),
+            "previous_config_hash": hex_string(&previous_profile.config_hash),
+            "config_hash": hex_string(&profile.config_hash),
+        }),
+    );
 
     Ok(Json(ProfileEnvelope {
         profile: profile.into(),
@@ -802,6 +918,12 @@ async fn admin_update_profile_access(
     let profile = store
         .set_profile_access(&slug, request.access)
         .map_err(admin_bad_request_response)?;
+    record_api_profile_event(
+        &mut store,
+        "profile.access.set",
+        &profile,
+        serde_json::json!({ "access": profile.access.to_string() }),
+    );
 
     Ok(Json(ProfileEnvelope {
         profile: profile.into(),
@@ -861,6 +983,13 @@ async fn admin_create_profile_token(
             request.expires_at_ms,
         )
         .map_err(admin_bad_request_response)?;
+    record_api_profile_token_event(
+        &mut store,
+        "profile.token.create",
+        &profile,
+        &token,
+        serde_json::json!({ "expires_at_ms": token.expires_at_ms }),
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -886,6 +1015,13 @@ async fn admin_revoke_profile_token(
     let token = store
         .revoke_profile_token(profile.id, &token_id)
         .map_err(admin_bad_request_response)?;
+    record_api_profile_token_event(
+        &mut store,
+        "profile.token.revoke",
+        &profile,
+        &token,
+        serde_json::json!({ "revoked_at_ms": token.revoked_at_ms }),
+    );
 
     Ok(Json(ProfileTokenEnvelope {
         token: token.into(),
@@ -911,6 +1047,12 @@ async fn admin_reset_atomic_value(
     let profile = store
         .reset_atomic_value(&slug, request.atomic_value)
         .map_err(admin_bad_request_response)?;
+    record_api_profile_event(
+        &mut store,
+        "profile.atomic.reset",
+        &profile,
+        serde_json::json!({ "atomic_value": request.atomic_value }),
+    );
 
     Ok(Json(ProfileEnvelope {
         profile: profile.into(),
@@ -1119,7 +1261,7 @@ async fn regenerate_with_state(
     let options = profile.config.to_generate_options(generator::DEFAULT_COUNT);
     generator::validate_generate_options(&options)
         .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
-    (query.atomic_value..=final_atomic_value)
+    let hostnames = (query.atomic_value..=final_atomic_value)
         .map(|atomic_value| {
             let hostname = generator::generate_profile_hostname(
                 &options,
@@ -1136,7 +1278,9 @@ async fn regenerate_with_state(
                 },
             ))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    record_api_generation_event(&mut store, "regenerate", &profile, &hostnames);
+    Ok(hostnames)
 }
 
 async fn lookup_with_state(
@@ -1267,34 +1411,50 @@ async fn generate_with_state(
                 generator::validate_generate_options(&options)
                     .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
 
+                let profile_for_event = profile.clone();
                 let profile_id = profile.id;
-                let profile_slug = profile.slug;
+                let profile_slug = profile.slug.clone();
                 let config_hash = profile.config_hash;
                 let profile_slug_for_output = profile_slug.clone();
-                return generator::generate_profile_many(options, profile_id, &config_hash, || {
-                    store
-                        .increment_atomic_value(&profile_slug)
-                        .map_err(AtomicStorageError)
-                        .map_err(Into::into)
-                })
+                let hostnames =
+                    generator::generate_profile_many(options, profile_id, &config_hash, || {
+                        store
+                            .increment_atomic_value(&profile_slug)
+                            .map_err(AtomicStorageError)
+                            .map_err(Into::into)
+                    })
+                    .map(|hostnames| {
+                        hostnames
+                            .into_iter()
+                            .map(|hostname| {
+                                GeneratedHostname::profile_backed(
+                                    &profile_slug_for_output,
+                                    hostname,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|error| {
+                        if error.downcast_ref::<AtomicStorageError>().is_some() {
+                            GenerateError::Internal(error)
+                        } else {
+                            GenerateError::BadRequest(error.to_string())
+                        }
+                    })?;
+                record_api_generation_event(&mut store, "generate", &profile_for_event, &hostnames);
+                return Ok(hostnames);
+            }
+
+            let hostnames = generator::generate_many(options)
                 .map(|hostnames| {
                     hostnames
                         .into_iter()
-                        .map(|hostname| {
-                            GeneratedHostname::profile_backed(&profile_slug_for_output, hostname)
-                        })
-                        .collect()
+                        .map(GeneratedHostname::plain)
+                        .collect::<Vec<_>>()
                 })
-                .map_err(|error| {
-                    if error.downcast_ref::<AtomicStorageError>().is_some() {
-                        GenerateError::Internal(error)
-                    } else {
-                        GenerateError::BadRequest(error.to_string())
-                    }
-                });
-            }
-
-            options
+                .map_err(|error| GenerateError::BadRequest(error.to_string()))?;
+            record_api_generation_event(&mut store, "generate", &profile, &hostnames);
+            return Ok(hostnames);
         }
         None => state.generate.with_overrides(overrides),
     };
@@ -1497,6 +1657,37 @@ fn parse_slug(value: &str) -> Result<ProfileSlug, AdminError> {
         .map_err(|error: String| AdminError::BadRequest(error))
 }
 
+fn event_filter_from_query(query: EventsQuery) -> Result<EventFilter, AdminError> {
+    let profile_slug = query
+        .profile
+        .as_deref()
+        .map(ProfileSlug::from_str)
+        .transpose()
+        .map_err(AdminError::BadRequest)?;
+    let limit = query.limit.unwrap_or(50);
+    if limit == 0 || limit > 500 {
+        return Err(AdminError::BadRequest(
+            "event limit must be between 1 and 500".to_owned(),
+        ));
+    }
+    if let (Some(since_ms), Some(until_ms)) = (query.since_ms, query.until_ms)
+        && since_ms > until_ms
+    {
+        return Err(AdminError::BadRequest(
+            "event since_ms must be less than or equal to until_ms".to_owned(),
+        ));
+    }
+    Ok(EventFilter {
+        profile_slug,
+        action: query.action,
+        source: query.source,
+        token_name: query.token_name,
+        since_ms: query.since_ms,
+        until_ms: query.until_ms,
+        limit,
+    })
+}
+
 fn confirm_admin_action(
     confirmation: &AdminConfirmation,
     slug: &ProfileSlug,
@@ -1510,6 +1701,64 @@ fn confirm_admin_action(
         )));
     }
     Ok(())
+}
+
+fn record_api_profile_event(
+    store: &mut ProfileStore,
+    action: &'static str,
+    profile: &StoredProfile,
+    metadata: Value,
+) {
+    let mut event = NewEvent::new(EVENT_SOURCE_API, action);
+    event.profile_slug = Some(profile.slug.clone());
+    event.profile_id = Some(profile.id);
+    event.metadata = metadata;
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action, error = %error, "failed to record audit event");
+    }
+}
+
+fn record_api_profile_token_event(
+    store: &mut ProfileStore,
+    action: &'static str,
+    profile: &StoredProfile,
+    token: &StoredProfileToken,
+    metadata: Value,
+) {
+    let mut event = NewEvent::new(EVENT_SOURCE_API, action);
+    event.profile_slug = Some(profile.slug.clone());
+    event.profile_id = Some(profile.id);
+    event.token_id = Some(token.token_id.clone());
+    event.token_name = Some(token.name.clone());
+    event.metadata = metadata;
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action, error = %error, "failed to record audit event");
+    }
+}
+
+fn record_api_generation_event(
+    store: &mut ProfileStore,
+    action: &'static str,
+    profile: &StoredProfile,
+    hostnames: &[GeneratedHostname],
+) {
+    let mut event = NewEvent::new(EVENT_SOURCE_API, action);
+    event.profile_slug = Some(profile.slug.clone());
+    event.profile_id = Some(profile.id);
+    if let (Some(first), Some(last)) = (
+        hostnames.iter().find_map(|hostname| hostname.atomic_value),
+        hostnames
+            .iter()
+            .rev()
+            .find_map(|hostname| hostname.atomic_value),
+    ) {
+        event.atomic_start = Some(first);
+        event.atomic_end = Some(last);
+    }
+    event.metadata = serde_json::json!({ "count": hostnames.len() });
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action, error = %error, "failed to record audit event");
+    }
 }
 
 fn admin_bad_request_response(error: impl ToString) -> Response {

@@ -1051,6 +1051,77 @@ fn generate_json_prints_atomic_metadata() {
 }
 
 #[test]
+fn events_command_lists_filtered_audit_events() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+
+    let mut create = command_for_database(&database);
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let mut generate = command_for_database(&database);
+    generate
+        .args(["--profile", "team-a", "generate", "--count", "2"])
+        .assert()
+        .success();
+
+    let mut token = command_for_database(&database);
+    token
+        .env("HOSTSTAMP_TOKEN_HASH_KEY", "hash-key")
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "token",
+            "create",
+            "--name",
+            "deploy",
+        ])
+        .assert()
+        .success();
+
+    let mut events = command_for_database(&database);
+    events
+        .args(["events", "--profile-slug", "team-a"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("created_at_ms\tsource\taction")
+                .and(predicate::str::contains("profile.create"))
+                .and(predicate::str::contains("generate"))
+                .and(predicate::str::contains("profile.token.create"))
+                .and(predicate::str::contains("deploy"))
+                .and(predicate::str::contains("1-2")),
+        );
+
+    let mut filtered = command_for_database(&database);
+    let assert = filtered
+        .args([
+            "--json",
+            "events",
+            "--profile-slug",
+            "team-a",
+            "--action",
+            "generate",
+        ])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let events = payload["events"].as_array().expect("events");
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["source"], "cli");
+    assert_eq!(events[0]["action"], "generate");
+    assert_eq!(events[0]["profile_slug"], "team-a");
+    assert_eq!(events[0]["atomic_start"], 1);
+    assert_eq!(events[0]["atomic_end"], 2);
+    assert_eq!(events[0]["metadata"]["count"], 2);
+}
+
+#[test]
 fn regenerate_recreates_profile_hostname_without_incrementing_counter() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");

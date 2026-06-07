@@ -267,8 +267,59 @@
             <section class="panel">
               <div class="panel-head">
                 <h3>Events</h3>
+                <button id="refresh-events" type="button">Refresh</button>
               </div>
-              <div class="panel-body">
+              <div class="panel-body stack">
+                <div class="event-controls">
+                  <label>
+                    Profile
+                    <select id="event-profile-scope">
+                      <option value="selected">selected</option>
+                      <option value="all">all</option>
+                    </select>
+                  </label>
+                  <label>
+                    Action
+                    <input id="event-action" placeholder="generate" />
+                  </label>
+                  <label>
+                    Source
+                    <input id="event-source" placeholder="api" />
+                  </label>
+                  <label>
+                    Token
+                    <input id="event-token-name" placeholder="deploy" />
+                  </label>
+                  <label>
+                    Since
+                    <input id="event-since-ms" type="number" min="0" />
+                  </label>
+                  <label>
+                    Until
+                    <input id="event-until-ms" type="number" min="0" />
+                  </label>
+                  <label>
+                    Limit
+                    <input id="event-limit" type="number" min="1" max="500" value="25" />
+                  </label>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Action</th>
+                      <th>Profile</th>
+                      <th>Source</th>
+                      <th>Token</th>
+                      <th>Range</th>
+                    </tr>
+                  </thead>
+                  <tbody id="events-body">
+                    <tr>
+                      <td class="empty" colspan="6">No events loaded</td>
+                    </tr>
+                  </tbody>
+                </table>
                 <div id="message" class="muted">Ready</div>
               </div>
             </section>

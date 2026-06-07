@@ -10,7 +10,9 @@ use hoststamp_core::{
     generator::{self, GenerateOptions, ProfileGeneratedHostname},
     notices,
     profile::{self, ProfileAccess, ProfileConfig, ProfileSlug},
-    storage::{self, ProfileStore, StoredProfile, StoredProfileToken},
+    storage::{
+        self, EventFilter, NewEvent, ProfileStore, StoredEvent, StoredProfile, StoredProfileToken,
+    },
 };
 use std::{
     fs::{self, OpenOptions},
@@ -19,6 +21,8 @@ use std::{
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
+
+const EVENT_SOURCE_CLI: &str = "cli";
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -185,6 +189,51 @@ struct ValidateArgs {
     file: Option<PathBuf>,
 }
 
+#[derive(Args, Debug, Clone)]
+struct EventsArgs {
+    /// Filter events to a profile slug.
+    #[arg(long, value_name = "SLUG", value_parser = profile::parse_profile_slug)]
+    profile_slug: Option<ProfileSlug>,
+
+    /// Filter events by action.
+    #[arg(long)]
+    action: Option<String>,
+
+    /// Filter events by source.
+    #[arg(long)]
+    source: Option<String>,
+
+    /// Filter events by token name.
+    #[arg(long)]
+    token_name: Option<String>,
+
+    /// Include events at or after this Unix timestamp in milliseconds.
+    #[arg(long)]
+    since_ms: Option<i64>,
+
+    /// Include events at or before this Unix timestamp in milliseconds.
+    #[arg(long)]
+    until_ms: Option<i64>,
+
+    /// Maximum number of events to print.
+    #[arg(long, default_value_t = 50, value_parser = parse_event_limit)]
+    limit: usize,
+}
+
+impl EventsArgs {
+    fn filter(self) -> EventFilter {
+        EventFilter {
+            profile_slug: self.profile_slug,
+            action: self.action,
+            source: self.source,
+            token_name: self.token_name,
+            since_ms: self.since_ms,
+            until_ms: self.until_ms,
+            limit: self.limit,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Generate hostnames.
@@ -217,6 +266,8 @@ enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Inspect audit events.
+    Events(EventsArgs),
     /// Print a shell completion script.
     Completions {
         /// Shell to generate completions for.
@@ -425,7 +476,19 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
                 confirm_profile_config_replacement(&profile, &desired_config)?;
-                let profile = store.replace_profile_config(&profile.slug, &desired_config)?;
+                let slug = profile.slug.clone();
+                let previous_profile = profile;
+                let profile = store.replace_profile_config(&slug, &desired_config)?;
+                record_profile_event(
+                    &mut store,
+                    "profile.config.replace",
+                    &profile,
+                    serde_json::json!({
+                        "previous_profile_id": previous_profile.id.to_string(),
+                        "previous_config_hash": hex_string(&previous_profile.config_hash),
+                        "config_hash": hex_string(&profile.config_hash),
+                    }),
+                );
                 print_profile_show(&profile);
                 Ok(())
             }
@@ -460,6 +523,12 @@ async fn main() -> anyhow::Result<()> {
                 }
                 ProfileCommand::New => {
                     let profile = store.create_profile(&cli.profile, &ProfileConfig::default())?;
+                    record_profile_event(
+                        &mut store,
+                        "profile.create",
+                        &profile,
+                        serde_json::json!({ "access": profile.access.to_string() }),
+                    );
                     print_profile_show(&profile);
                     Ok(())
                 }
@@ -467,11 +536,23 @@ async fn main() -> anyhow::Result<()> {
                     let profile = store.load_profile(&cli.profile)?;
                     confirm_profile_delete(&profile)?;
                     store.delete_profile(&cli.profile)?;
+                    record_profile_event(
+                        &mut store,
+                        "profile.delete",
+                        &profile,
+                        serde_json::json!({ "last_atomic_value": profile.last_atomic_value }),
+                    );
                     println!("deleted profile {:?}", cli.profile.as_str());
                     Ok(())
                 }
                 ProfileCommand::Export => {
                     let profile = store.load_profile(&cli.profile)?;
+                    record_profile_event(
+                        &mut store,
+                        "profile.export",
+                        &profile,
+                        serde_json::json!({ "last_atomic_value": profile.last_atomic_value }),
+                    );
                     let export = server::ProfileExport {
                         format: server::PROFILE_EXPORT_FORMAT,
                         id: profile.id.to_string(),
@@ -492,12 +573,32 @@ async fn main() -> anyhow::Result<()> {
                         .with_context(|| {
                             format!("failed to parse profile import {}", path.display())
                         })?;
+                    let existing = request
+                        .slug
+                        .parse::<ProfileSlug>()
+                        .ok()
+                        .and_then(|slug| store.load_profile(&slug).ok());
                     let profile = import_profile_request(&mut store, request)?;
+                    record_profile_event(
+                        &mut store,
+                        "profile.import",
+                        &profile,
+                        serde_json::json!({
+                            "replaced_profile_id": existing.map(|profile| profile.id.to_string()),
+                            "last_atomic_value": profile.last_atomic_value,
+                        }),
+                    );
                     print_profile_show(&profile);
                     Ok(())
                 }
                 ProfileCommand::SetAccess { access } => {
                     let profile = store.set_profile_access(&cli.profile, access)?;
+                    record_profile_event(
+                        &mut store,
+                        "profile.access.set",
+                        &profile,
+                        serde_json::json!({ "access": profile.access.to_string() }),
+                    );
                     print_profile_show(&profile);
                     Ok(())
                 }
@@ -523,6 +624,13 @@ async fn main() -> anyhow::Result<()> {
                             token_hash,
                             expires_at_ms,
                         )?;
+                        record_profile_token_event(
+                            &mut store,
+                            "profile.token.create",
+                            &profile,
+                            &token,
+                            serde_json::json!({ "expires_at_ms": token.expires_at_ms }),
+                        );
                         print_profile_token(&token);
                         println!("token = {:?}", generated.token);
                         Ok(())
@@ -535,6 +643,13 @@ async fn main() -> anyhow::Result<()> {
                     ProfileTokenCommand::Revoke { token_id } => {
                         let profile = store.load_profile(&cli.profile)?;
                         let token = store.revoke_profile_token(profile.id, &token_id)?;
+                        record_profile_token_event(
+                            &mut store,
+                            "profile.token.revoke",
+                            &profile,
+                            &token,
+                            serde_json::json!({ "revoked_at_ms": token.revoked_at_ms }),
+                        );
                         print_profile_token(&token);
                         Ok(())
                     }
@@ -543,10 +658,34 @@ async fn main() -> anyhow::Result<()> {
                     let profile = store.load_profile(&cli.profile)?;
                     confirm_atomic_value_reset(&profile, atomic_value)?;
                     let profile = store.reset_atomic_value(&cli.profile, atomic_value)?;
+                    record_profile_event(
+                        &mut store,
+                        "profile.atomic.reset",
+                        &profile,
+                        serde_json::json!({ "atomic_value": atomic_value }),
+                    );
                     print_profile_show(&profile);
                     Ok(())
                 }
             }
+        }
+        Command::Events(args) => {
+            let (_settings, store) =
+                load_profile_store(cli.config.clone(), cli.database_url.clone())?;
+            let events = store.list_events(&args.filter())?;
+            if cli.generate.json {
+                let events = events
+                    .into_iter()
+                    .map(server::EventResponse::from)
+                    .collect::<Vec<_>>();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&server::EventsResponse { events })?
+                );
+            } else {
+                print_event_list(&events)?;
+            }
+            Ok(())
         }
         Command::Generate => {
             let settings = config::load(Overrides {
@@ -565,6 +704,7 @@ async fn main() -> anyhow::Result<()> {
             ensure_profile_generation_contract_is_current(&profile)?;
             generator::validate_generate_options(&options)?;
             let hostnames = generate_with_profile(options, &mut store, &profile)?;
+            record_generation_event(&mut store, "generate", &profile, &hostnames);
             if cli.generate.json {
                 println!(
                     "{}",
@@ -625,6 +765,7 @@ async fn main() -> anyhow::Result<()> {
                 None => store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?,
             };
             let hostnames = regenerate_profile_hostnames(&profile, atomic_value, count)?;
+            record_generation_event(&mut store, "regenerate", &profile, &hostnames);
             if cli.generate.json {
                 println!(
                     "{}",
@@ -1013,6 +1154,64 @@ fn import_profile_request(
     )
 }
 
+fn record_profile_event(
+    store: &mut ProfileStore,
+    action: &'static str,
+    profile: &StoredProfile,
+    metadata: serde_json::Value,
+) {
+    let mut event = NewEvent::new(EVENT_SOURCE_CLI, action);
+    event.profile_slug = Some(profile.slug.clone());
+    event.profile_id = Some(profile.id);
+    event.metadata = metadata;
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action, error = %error, "failed to record audit event");
+    }
+}
+
+fn record_profile_token_event(
+    store: &mut ProfileStore,
+    action: &'static str,
+    profile: &StoredProfile,
+    token: &StoredProfileToken,
+    metadata: serde_json::Value,
+) {
+    let mut event = NewEvent::new(EVENT_SOURCE_CLI, action);
+    event.profile_slug = Some(profile.slug.clone());
+    event.profile_id = Some(profile.id);
+    event.token_id = Some(token.token_id.clone());
+    event.token_name = Some(token.name.clone());
+    event.metadata = metadata;
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action, error = %error, "failed to record audit event");
+    }
+}
+
+fn record_generation_event(
+    store: &mut ProfileStore,
+    action: &'static str,
+    profile: &StoredProfile,
+    hostnames: &[server::GeneratedHostname],
+) {
+    let mut event = NewEvent::new(EVENT_SOURCE_CLI, action);
+    event.profile_slug = Some(profile.slug.clone());
+    event.profile_id = Some(profile.id);
+    if let (Some(first), Some(last)) = (
+        hostnames.iter().find_map(|hostname| hostname.atomic_value),
+        hostnames
+            .iter()
+            .rev()
+            .find_map(|hostname| hostname.atomic_value),
+    ) {
+        event.atomic_start = Some(first);
+        event.atomic_end = Some(last);
+    }
+    event.metadata = serde_json::json!({ "count": hostnames.len() });
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action, error = %error, "failed to record audit event");
+    }
+}
+
 const INITIAL_CONFIG_TEMPLATE: &str = r#"# Hoststamp bootstrap configuration.
 #
 # Generator profile settings live in the Hoststamp profile database. This file
@@ -1251,6 +1450,42 @@ fn print_profile_token(token: &StoredProfileToken) {
     );
 }
 
+fn print_event_list(events: &[StoredEvent]) -> anyhow::Result<()> {
+    println!(
+        "created_at_ms\tsource\taction\tprofile_slug\tprofile_id\ttoken_name\ttoken_id\tatomic_range\tmetadata"
+    );
+    for event in events {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            event.created_at_ms,
+            event.source,
+            event.action,
+            event
+                .profile_slug
+                .as_ref()
+                .map(ProfileSlug::as_str)
+                .unwrap_or("n/a"),
+            event
+                .profile_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
+            event.token_name.as_deref().unwrap_or("n/a"),
+            event.token_id.as_deref().unwrap_or("n/a"),
+            format_atomic_range(event.atomic_start, event.atomic_end),
+            serde_json::to_string(&event.metadata)?,
+        );
+    }
+    Ok(())
+}
+
+fn format_atomic_range(start: Option<i64>, end: Option<i64>) -> String {
+    match (start, end) {
+        (Some(start), Some(end)) if start == end => start.to_string(),
+        (Some(start), Some(end)) => format!("{start}-{end}"),
+        _ => "n/a".to_owned(),
+    }
+}
+
 fn print_profile_config(prefix: &str, config: &ProfileConfig) {
     println!("[{prefix}]");
     println!("engine = {:?}", config.engine.to_string());
@@ -1396,6 +1631,16 @@ fn parse_token_expiration(value: &str) -> Result<i64, String> {
         );
     }
     Ok(expires_at_ms)
+}
+
+fn parse_event_limit(value: &str) -> Result<usize, String> {
+    let limit = value
+        .parse::<usize>()
+        .map_err(|source| format!("invalid event limit {value:?}: {source}"))?;
+    if limit == 0 || limit > 500 {
+        return Err("event limit must be between 1 and 500".to_owned());
+    }
+    Ok(limit)
 }
 
 fn parse_profile_access(value: &str) -> Result<ProfileAccess, String> {

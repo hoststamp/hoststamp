@@ -3,6 +3,7 @@
 const state = {
   profiles: [],
   profileHistory: null,
+  events: null,
   selected: null,
   adminToken: localStorage.getItem("hoststamp.adminToken") || "",
   unlocked: false,
@@ -59,10 +60,12 @@ function setManagementEnabled(enabled) {
 function clearProfileState() {
   state.profiles = [];
   state.profileHistory = null;
+  state.events = null;
   state.selected = null;
   renderProfiles();
   renderProfile();
   renderProfileHistory(null);
+  renderEvents(null);
   resetProfileForms();
   renderCapacity(null);
   renderTokens(null);
@@ -325,6 +328,38 @@ function renderTokens(tokens) {
   }
 }
 
+function renderEvents(events) {
+  const body = el("events-body");
+  body.replaceChildren();
+  if (!events) {
+    body.appendChild(emptyRow("No events loaded", 6));
+    return;
+  }
+  if (!events.length) {
+    body.appendChild(emptyRow("No events", 6));
+    return;
+  }
+  for (const event of events) {
+    const row = document.createElement("tr");
+    row.append(
+      cell(event.created_at_ms, "mono"),
+      cell(event.action),
+      cell(event.profile_slug ?? "n/a", "mono"),
+      cell(event.source),
+      cell(event.token_name ?? "n/a"),
+      cell(formatAtomicRange(event.atomic_start, event.atomic_end), "mono"),
+    );
+    body.appendChild(row);
+  }
+}
+
+function formatAtomicRange(start, end) {
+  if (start === null || start === undefined || end === null || end === undefined) {
+    return "n/a";
+  }
+  return start === end ? String(start) : `${start}-${end}`;
+}
+
 async function refreshHealth() {
   const dot = el("status-dot");
   const text = el("status-text");
@@ -358,11 +393,13 @@ async function refreshProfiles() {
       refreshCapacity(),
       refreshProfileHistory(),
       refreshTokens(),
+      refreshEvents(),
     ]);
   } else {
     renderCapacity(null);
     renderProfileHistory(null);
     renderTokens(null);
+    renderEvents(null);
   }
 }
 
@@ -387,6 +424,7 @@ async function selectProfile(slug) {
     refreshCapacity(),
     refreshProfileHistory(),
     refreshTokens(),
+    refreshEvents(),
   ]);
 }
 
@@ -421,6 +459,30 @@ async function refreshProfileHistory() {
   renderProfileHistory(state.profileHistory);
 }
 
+async function refreshEvents() {
+  if (!state.unlocked) return;
+  const params = new URLSearchParams();
+  if (el("event-profile-scope").value === "selected" && state.selected) {
+    params.set("profile", state.selected);
+  }
+  const fields = [
+    ["action", "event-action"],
+    ["source", "event-source"],
+    ["token_name", "event-token-name"],
+    ["since_ms", "event-since-ms"],
+    ["until_ms", "event-until-ms"],
+    ["limit", "event-limit"],
+  ];
+  for (const [key, id] of fields) {
+    const value = el(id).value.trim();
+    if (value) params.set(key, value);
+  }
+  const suffix = params.toString();
+  const payload = await api(`/api/events${suffix ? `?${suffix}` : ""}`);
+  state.events = payload.events;
+  renderEvents(state.events);
+}
+
 async function generate() {
   if (!state.unlocked || !state.selected) return;
   const count = el("generate-count").value || "1";
@@ -441,6 +503,7 @@ async function regenerate() {
     `/api/regenerate?format=json&profile=${slugPath(state.selected)}&atomic_value=${encodeURIComponent(value)}&count=${encodeURIComponent(count)}`,
   );
   renderResults(payload.hostnames);
+  await refreshEvents();
   setMessage("regenerated", "ok-text");
 }
 
@@ -469,6 +532,7 @@ async function exportProfile() {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+  await refreshEvents();
   setMessage(`exported ${payload.slug}`, "ok-text");
 }
 
@@ -599,6 +663,7 @@ async function createToken(event) {
   el("token-expires-at-ms").value = "";
   el("created-token").textContent = payload.profile_token;
   await refreshTokens();
+  await refreshEvents();
 }
 
 async function revokeToken(tokenId) {
@@ -608,6 +673,7 @@ async function revokeToken(tokenId) {
     { method: "DELETE" },
   );
   await refreshTokens();
+  await refreshEvents();
 }
 
 function wire(id, event, handler) {
@@ -638,6 +704,7 @@ wire("save-token", "click", async () => {
 wire("refresh-profiles", "click", refreshProfiles);
 wire("refresh-capacity", "click", refreshCapacity);
 wire("refresh-history", "click", refreshProfileHistory);
+wire("refresh-events", "click", refreshEvents);
 wire("create-profile", "submit", createProfile);
 wire("generate", "click", generate);
 wire("regenerate", "click", regenerate);

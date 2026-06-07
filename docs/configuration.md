@@ -98,6 +98,8 @@ hoststamp --profile team-a profile token create --name deploy --expires-at-ms 18
 hoststamp --profile team-a profile token list
 hoststamp --profile team-a profile token revoke <token-id>
 hoststamp --profile team-a profile reset-atomic-value --atomic-value 999
+hoststamp events --profile-slug team-a --limit 25
+hoststamp --json events --profile-slug team-a --action generate
 ```
 
 `profile export` writes portable JSON containing the profile UUID, slug, access
@@ -131,6 +133,24 @@ including each immutable profile UUID, replacement timestamp, and
 `replaced_by_id` link. Use `hoststamp regenerate --profile-id <uuid>` when a
 hostname must be reproduced from a replaced profile row instead of the active
 slug.
+
+## Audit Events
+
+Hoststamp stores audit events in the profile database. `hoststamp events`
+prints the newest events first and accepts `--profile-slug`, `--action`,
+`--source`, `--token-name`, `--since-ms`, `--until-ms`, and `--limit`
+(`1..=500`, default `50`). Pass `--json` for a structured `events` array.
+The database keeps the newest 10,000 events and prunes older rows during event
+recording.
+
+Events are recorded for profile creation, deletion, imports, exports, config
+replacement, access changes, token creation/revocation, atomic resets,
+generation batches, and regeneration batches. Generation and regeneration use
+one event per command or API request with `atomic_start` and `atomic_end` when
+profile-backed atomic values are involved. Profile token secrets are never
+stored in events. Event writes are best-effort: if recording fails after the
+audited action has completed, Hoststamp logs a warning and still returns the
+action's real result.
 
 ## Shell Integration
 
