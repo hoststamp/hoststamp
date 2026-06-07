@@ -117,11 +117,13 @@ digit. Active token names cannot be duplicated within one profile.
 Profile-backed suffix generation treats the selected profile config as part of
 the identity used for deterministic suffixes. Persistent generator settings are
 changed with `hoststamp config set`, which asks for two confirmations before
-replacing the active profile row. Replacement creates a new profile UUID and
-resets that profile's atomic counter. `--count` is a request option only and
-does not trigger profile replacement. API generation requests cannot override
-stored profile config; use the admin config endpoint or CLI to replace profile
-config deliberately.
+replacing the active profile row. Before prompting, the CLI prints a replacement
+preview with the changed config fields, current profile UUID, replacement UUID
+placeholder, config hashes, atomic counter reset, and profile-token invalidation
+warning. Replacement creates a new profile UUID and resets that profile's atomic
+counter. `--count` is a request option only and does not trigger profile
+replacement. API generation requests cannot override stored profile config; use
+the admin config endpoint or CLI to replace profile config deliberately.
 
 ## Shell Integration
 

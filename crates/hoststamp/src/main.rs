@@ -418,7 +418,7 @@ async fn main() -> anyhow::Result<()> {
                     print_profile_show(&profile);
                     return Ok(());
                 }
-                confirm_profile_config_replacement(&profile)?;
+                confirm_profile_config_replacement(&profile, &desired_config)?;
                 let profile = store.replace_profile_config(&profile.slug, &desired_config)?;
                 print_profile_show(&profile);
                 Ok(())
@@ -1474,7 +1474,10 @@ fn confirm_profile_import_replacement(slug: &ProfileSlug) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn confirm_profile_config_replacement(profile: &StoredProfile) -> anyhow::Result<()> {
+fn confirm_profile_config_replacement(
+    profile: &StoredProfile,
+    desired_config: &ProfileConfig,
+) -> anyhow::Result<()> {
     let mut stderr = io::stderr();
     writeln!(
         stderr,
@@ -1487,8 +1490,9 @@ fn confirm_profile_config_replacement(profile: &StoredProfile) -> anyhow::Result
     )?;
     writeln!(
         stderr,
-        "Replacing it will create a new profile UUID and reset the atomic counter."
+        "Replacing it will create a new profile UUID, reset the atomic counter, and invalidate existing profile tokens."
     )?;
+    print_profile_config_replacement_preview(&mut stderr, profile, desired_config)?;
     write!(
         stderr,
         "Type the profile slug ({}) to continue: ",
@@ -1520,6 +1524,121 @@ fn confirm_profile_config_replacement(profile: &StoredProfile) -> anyhow::Result
     }
 
     Ok(())
+}
+
+fn print_profile_config_replacement_preview(
+    writer: &mut impl Write,
+    profile: &StoredProfile,
+    desired_config: &ProfileConfig,
+) -> anyhow::Result<()> {
+    let desired_hash = storage::config_hash(desired_config)?;
+    writeln!(writer)?;
+    writeln!(writer, "[profile.config.replacement]")?;
+    writeln!(writer, "slug = {:?}", profile.slug.as_str())?;
+    writeln!(writer, "current_profile_id = {:?}", profile.id.to_string())?;
+    writeln!(writer, "replacement_profile_id = \"new\"")?;
+    writeln!(
+        writer,
+        "current_last_atomic_value = {}",
+        profile.last_atomic_value
+    )?;
+    writeln!(writer, "replacement_last_atomic_value = 0")?;
+    writeln!(
+        writer,
+        "current_config_hash = {:?}",
+        hex_string(&profile.config_hash)
+    )?;
+    writeln!(
+        writer,
+        "replacement_config_hash = {:?}",
+        hex_string(&desired_hash)
+    )?;
+    writeln!(writer, "existing_profile_tokens = \"invalidated\"")?;
+    writeln!(writer)?;
+    writeln!(writer, "[profile.config.diff]")?;
+    writeln!(writer, "field\tcurrent\treplacement")?;
+    for row in profile_config_diff_rows(&profile.config, desired_config)? {
+        writeln!(
+            writer,
+            "{}\t{}\t{}",
+            row.field, row.current, row.replacement
+        )?;
+    }
+    writeln!(writer)?;
+    Ok(())
+}
+
+struct ProfileConfigDiffRow {
+    field: String,
+    current: String,
+    replacement: String,
+}
+
+fn profile_config_diff_rows(
+    current: &ProfileConfig,
+    replacement: &ProfileConfig,
+) -> anyhow::Result<Vec<ProfileConfigDiffRow>> {
+    let current = serde_json::to_value(current)?;
+    let replacement = serde_json::to_value(replacement)?;
+    let mut rows = Vec::new();
+    push_json_diff_rows(&mut rows, "", current, replacement);
+    Ok(rows)
+}
+
+fn push_json_diff_rows(
+    rows: &mut Vec<ProfileConfigDiffRow>,
+    prefix: &str,
+    current: serde_json::Value,
+    replacement: serde_json::Value,
+) {
+    if current == replacement {
+        return;
+    }
+
+    match (current, replacement) {
+        (serde_json::Value::Object(current), serde_json::Value::Object(replacement)) => {
+            let mut keys = std::collections::BTreeSet::new();
+            keys.extend(current.keys().cloned());
+            keys.extend(replacement.keys().cloned());
+            for key in keys {
+                let field = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                push_json_diff_rows(
+                    rows,
+                    &field,
+                    current
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    replacement
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                );
+            }
+        }
+        (current, replacement) => {
+            if is_hidden_profile_config_diff_field(prefix) {
+                return;
+            }
+            rows.push(ProfileConfigDiffRow {
+                field: prefix.to_owned(),
+                current: format_json_value(current),
+                replacement: format_json_value(replacement),
+            });
+        }
+    }
+}
+
+fn is_hidden_profile_config_diff_field(field: &str) -> bool {
+    field == "pool_hash" || field.ends_with(".pool_hash")
+}
+
+fn format_json_value(value: serde_json::Value) -> String {
+    serde_json::to_string(&value).unwrap_or_else(|_| "null".to_owned())
 }
 
 #[cfg(test)]

@@ -1470,7 +1470,21 @@ fn config_set_replacement_requires_confirmation() {
         .write_stdin("team-a\nreplace\n")
         .assert()
         .success()
-        .stderr(predicate::str::contains("reset the atomic counter"));
+        .stderr(
+            predicate::str::contains("reset the atomic counter")
+                .and(predicate::str::contains("[profile.config.replacement]"))
+                .and(predicate::str::contains("replacement_profile_id = \"new\""))
+                .and(predicate::str::contains(
+                    "replacement_last_atomic_value = 0",
+                ))
+                .and(predicate::str::contains(
+                    "existing_profile_tokens = \"invalidated\"",
+                ))
+                .and(predicate::str::contains("[profile.config.diff]"))
+                .and(predicate::str::contains("field\tcurrent\treplacement"))
+                .and(predicate::str::contains("word1.lengths\t[5]\t[4]"))
+                .and(predicate::str::contains("word1.pool_hash\t").not()),
+        );
 
     let mut reused = command_for_database(&database);
     let assert = reused
