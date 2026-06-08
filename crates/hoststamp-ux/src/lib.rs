@@ -14,6 +14,7 @@ use std::{
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const APP_CSS: &str = include_str!("../static/app.css");
 const APP_JS: &str = include_str!("../static/app.js");
+const PROFILE_HEALTH_JS: &str = include_str!("../static/profile-health.js");
 #[cfg(debug_assertions)]
 const DEV_RELOAD_JS: &str = include_str!("../static/dev-reload.js");
 #[cfg(debug_assertions)]
@@ -42,6 +43,14 @@ pub async fn stylesheet() -> Response {
 pub async fn script() -> Response {
     static_response(
         static_file("app.js", APP_JS),
+        "text/javascript; charset=utf-8",
+        None,
+    )
+}
+
+pub async fn profile_health_script() -> Response {
+    static_response(
+        static_file("profile-health.js", PROFILE_HEALTH_JS),
         "text/javascript; charset=utf-8",
         None,
     )
@@ -141,14 +150,20 @@ fn dev_static_version() -> Result<Cow<'static, str>, &'static str> {
 
 #[cfg(debug_assertions)]
 fn dev_static_version_from_dir(dev_static_dir: &Path) -> Result<Cow<'static, str>, &'static str> {
-    let version = ["index.html", "app.css", "app.js", "dev-reload.js"]
-        .into_iter()
-        .map(|filename| asset_mtime_ms(&dev_static_dir.join(filename)))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .map(|mtime| mtime.to_string())
-        .collect::<Vec<_>>()
-        .join(".");
+    let version = [
+        "index.html",
+        "app.css",
+        "profile-health.js",
+        "app.js",
+        "dev-reload.js",
+    ]
+    .into_iter()
+    .map(|filename| asset_mtime_ms(&dev_static_dir.join(filename)))
+    .collect::<Result<Vec<_>, _>>()?
+    .into_iter()
+    .map(|mtime| mtime.to_string())
+    .collect::<Vec<_>>()
+    .join(".");
 
     Ok(Cow::Owned(version))
 }
@@ -242,19 +257,28 @@ mod tests {
     fn embedded_static_files_are_available() {
         let index = static_file_from_dev_dir(None, "index.html", INDEX_HTML).expect("index");
         let css = static_file_from_dev_dir(None, "app.css", APP_CSS).expect("css");
+        let health_js =
+            static_file_from_dev_dir(None, "profile-health.js", PROFILE_HEALTH_JS).expect("health");
         let js = static_file_from_dev_dir(None, "app.js", APP_JS).expect("js");
         let reload =
             static_file_from_dev_dir(None, "dev-reload.js", DEV_RELOAD_JS).expect("reload");
 
         assert!(index.contains("Hoststamp"));
         assert!(index.contains("/assets/app.css"));
+        assert!(index.contains("/assets/profile-health.js"));
         assert!(index.contains("/assets/app.js"));
         assert!(index.contains("event-detail"));
         assert!(index.contains("reset-events"));
+        assert!(index.contains("profile-health"));
+        assert!(index.contains("refresh-profile-health"));
         assert!(css.contains(":root"));
         assert!(css.contains(".event-detail"));
+        assert!(css.contains(".health-list"));
+        assert!(health_js.contains("HoststampProfileHealth"));
+        assert!(health_js.contains("profileHealthWarnings"));
         assert!(js.contains("const state"));
         assert!(js.contains("renderEventDetail"));
+        assert!(js.contains("renderProfileHealth"));
         assert!(reload.contains("checkForUpdate"));
     }
 
@@ -299,13 +323,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hoststamp-ux-version-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
-        for filename in ["index.html", "app.css", "app.js", "dev-reload.js"] {
+        for filename in [
+            "index.html",
+            "app.css",
+            "profile-health.js",
+            "app.js",
+            "dev-reload.js",
+        ] {
             std::fs::write(dir.join(filename), filename).expect("write asset");
         }
 
         let version = dev_static_version_from_dir(&dir).expect("version");
         std::fs::remove_dir_all(&dir).expect("remove dir");
 
-        assert_eq!(version.split('.').count(), 4);
+        assert_eq!(version.split('.').count(), 5);
     }
 }

@@ -289,6 +289,50 @@ main {
   background: #eefaf8;
 }
 
+.health-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+.health-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr);
+  gap: 0.5rem;
+  min-height: 2rem;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.875rem;
+}
+
+.health-row > :first-child {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.health-warnings {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.health-warnings li {
+  padding: 0.5rem 0.625rem;
+  border-left: 0.25rem solid var(--warn);
+  background: #fff8eb;
+  color: var(--ink);
+  font-size: 0.875rem;
+}
+
+.health-warnings li.ok-text {
+  border-left-color: var(--ok);
+  background: #eefbf2;
+  color: var(--ok);
+}
+
 .event-detail {
   display: grid;
   gap: 0.875rem;
@@ -449,7 +493,9 @@ main {
   .command-grid,
   .event-controls,
   .event-detail dl,
-  .form-grid {
+  .form-grid,
+  .health-list,
+  .health-row {
     grid-template-columns: 1fr;
   }
 }

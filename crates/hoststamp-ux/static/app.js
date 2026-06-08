@@ -3,6 +3,8 @@
 const state = {
   profiles: [],
   profileHistory: null,
+  capacity: null,
+  tokens: null,
   events: null,
   selectedEventId: null,
   selected: null,
@@ -11,6 +13,10 @@ const state = {
 };
 
 const el = (id) => document.getElementById(id);
+const profileHealth = globalThis.HoststampProfileHealth;
+if (!profileHealth) {
+  throw new Error("profile health helpers failed to load");
+}
 
 function headers(json = false) {
   const value = {};
@@ -61,11 +67,14 @@ function setManagementEnabled(enabled) {
 function clearProfileState() {
   state.profiles = [];
   state.profileHistory = null;
+  state.capacity = null;
+  state.tokens = null;
   state.events = null;
   state.selectedEventId = null;
   state.selected = null;
   renderProfiles();
   renderProfile();
+  renderProfileHealth();
   renderProfileHistory(null);
   renderEvents(null);
   resetProfileForms();
@@ -192,6 +201,7 @@ function renderProfile() {
   el("profile-access").value = profile?.access || "private";
   if (!profile) {
     el("profile-meta").textContent = "No profile selected";
+    renderProfileHealth();
     return;
   }
   const meta = el("profile-meta");
@@ -213,6 +223,90 @@ function renderProfile() {
   el("word2-categories").value = config.word2.categories.join(",");
   el("suffix-enabled").value = String(config.suffix.enabled);
   el("suffix-min-length").value = config.suffix.min_length;
+  renderProfileHealth();
+}
+
+function healthRow(label, value, className) {
+  const row = document.createElement("div");
+  row.className = "health-row";
+  const key = document.createElement("span");
+  key.textContent = label;
+  const detail = document.createElement("span");
+  detail.textContent = String(value);
+  if (className) detail.className = className;
+  row.append(key, detail);
+  return row;
+}
+
+function emptyBlock(text) {
+  const empty = document.createElement("div");
+  empty.className = "empty";
+  empty.textContent = text;
+  return empty;
+}
+
+function renderProfileHealth() {
+  const root = el("profile-health");
+  const warnings = el("profile-warnings");
+  root.replaceChildren();
+  warnings.replaceChildren();
+
+  const profile = selectedProfile();
+  if (!profile) {
+    root.appendChild(emptyBlock("No profile selected"));
+    return;
+  }
+
+  const capacityState = profileHealth.capacityHealth(profile, state.capacity);
+  const tokenState = profileHealth.tokenHealth(state.tokens);
+  const nextAtomic = profileHealth.integerBigInt(profile.last_atomic_value);
+  const entries = [
+    ["profile_id", profile.id, "mono"],
+    ["access", profile.access],
+    ["engine", profile.config.engine],
+    ["dictionary_version", profile.config.dictionary_version, "mono"],
+    ["dictionary_hash", profile.config.dictionary_version_hash, "mono"],
+    ["blocklist_version", profile.config.blocklist_version, "mono"],
+    ["blocklist_hash", profile.config.blocklist_version_hash, "mono"],
+    ["config_hash", profile.config_hash, "mono"],
+    ["last_atomic_value", profile.last_atomic_value, "mono"],
+    [
+      "next_atomic_value",
+      nextAtomic === null ? "not available" : (nextAtomic + 1n).toString(),
+      "mono",
+    ],
+    ["total_variants", capacityState.total, "mono"],
+    ["remaining_variants", capacityState.remaining, "mono"],
+    ["tokens", tokenState.summary],
+    ["expired_tokens", tokenState.expired],
+    ["revoked_tokens", tokenState.revoked],
+    ["history", profileHealth.historyHealth(state.profileHistory)],
+  ];
+
+  root.append(
+    ...entries.map(([label, value, className]) =>
+      healthRow(label, value, className),
+    ),
+  );
+
+  const healthWarnings = profileHealth.profileHealthWarnings(
+    profile,
+    state.capacity,
+    state.tokens,
+    state.profileHistory,
+  );
+  if (!healthWarnings.length) {
+    const item = document.createElement("li");
+    item.className = "ok-text";
+    item.textContent = "No warnings";
+    warnings.appendChild(item);
+    return;
+  }
+  for (const warning of healthWarnings) {
+    const item = document.createElement("li");
+    item.textContent = warning;
+    warnings.appendChild(item);
+  }
 }
 
 async function copyResult(value) {
@@ -266,8 +360,11 @@ function renderResults(hostnames) {
 function renderCapacity(report) {
   if (!report) {
     el("capacity-body").replaceChildren(emptyRow("No profile selected", 2));
+    state.capacity = null;
+    renderProfileHealth();
     return;
   }
+  state.capacity = report;
   const rows = [
     ["word1_words", report.word1_count ?? "disabled"],
     ["word2_words", report.word2_count ?? "disabled"],
@@ -285,9 +382,11 @@ function renderCapacity(report) {
       return row;
     }),
   );
+  renderProfileHealth();
 }
 
 function renderProfileHistory(profiles) {
+  state.profileHistory = profiles;
   const body = el("history-body");
   body.replaceChildren();
   if (!profiles) {
@@ -313,6 +412,7 @@ function renderProfileHistory(profiles) {
 }
 
 function renderTokens(tokens) {
+  state.tokens = tokens;
   const body = el("tokens-body");
   body.replaceChildren();
   if (!tokens) {
@@ -465,6 +565,7 @@ async function refreshHealth() {
 
 async function refreshProfiles() {
   const payload = await api("/api/profiles");
+  const previousSelected = state.selected;
   state.profiles = payload.profiles;
   unlockManagement();
   if (!state.selected && state.profiles.length) {
@@ -476,6 +577,11 @@ async function refreshProfiles() {
   ) {
     state.selected = state.profiles[0]?.slug || null;
   }
+  if (state.selected !== previousSelected) {
+    state.capacity = null;
+    state.profileHistory = null;
+    state.tokens = null;
+  }
   renderProfiles();
   renderProfile();
   if (state.selected) {
@@ -486,10 +592,14 @@ async function refreshProfiles() {
       refreshEvents(),
     ]);
   } else {
+    state.capacity = null;
+    state.profileHistory = null;
+    state.tokens = null;
     renderCapacity(null);
     renderProfileHistory(null);
     renderTokens(null);
     renderEvents(null);
+    renderProfileHealth();
   }
 }
 
@@ -507,9 +617,13 @@ async function validateAdminToken() {
 async function selectProfile(slug) {
   if (!state.unlocked) return;
   state.selected = slug;
+  state.capacity = null;
+  state.profileHistory = null;
+  state.tokens = null;
   resetProfileForms();
   renderProfiles();
   renderProfile();
+  renderProfileHealth();
   await Promise.allSettled([
     refreshCapacity(),
     refreshProfileHistory(),
@@ -561,8 +675,20 @@ async function refreshCapacity() {
 async function refreshProfileHistory() {
   if (!state.unlocked || !state.selected) return;
   const payload = await api(`/api/profiles/${slugPath(state.selected)}/history`);
-  state.profileHistory = payload.profiles;
-  renderProfileHistory(state.profileHistory);
+  renderProfileHistory(payload.profiles);
+}
+
+async function refreshProfileHealth() {
+  if (!state.unlocked || !state.selected) return;
+  const results = await Promise.allSettled([
+    refreshCapacity(),
+    refreshProfileHistory(),
+    refreshTokens(),
+  ]);
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
+  renderProfileHealth();
+  setMessage("health refreshed", "ok-text");
 }
 
 async function refreshEvents() {
@@ -813,6 +939,7 @@ wire("save-token", "click", async () => {
   await validateAdminToken();
 });
 wire("refresh-profiles", "click", refreshProfiles);
+wire("refresh-profile-health", "click", refreshProfileHealth);
 wire("refresh-capacity", "click", refreshCapacity);
 wire("refresh-history", "click", refreshProfileHistory);
 wire("refresh-events", "click", refreshEvents);
