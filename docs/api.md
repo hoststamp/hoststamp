@@ -225,5 +225,7 @@ admin surfaces.
 The root UX is a local operations interface. It requires the configured admin
 bearer token before profile management is unlocked. The served HTML includes
 security headers (`nosniff`, frame denial, no referrer, a restrictive CSP, and
-basic permissions policy). The CSP pins the bundled inline script and style by
-SHA-256 hash.
+basic permissions policy). The CSP allows only self-hosted scripts and styles.
+The profile health panel summarizes the selected profile's engine, dictionary
+and blocklist versions, config hash, counter, capacity, token status,
+replacement history, and local warnings.

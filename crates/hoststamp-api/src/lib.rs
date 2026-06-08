@@ -471,6 +471,10 @@ pub fn app_with_mode(
         router = router
             .route("/", get(hoststamp_ux::index))
             .route("/assets/app.css", get(hoststamp_ux::stylesheet))
+            .route(
+                "/assets/profile-health.js",
+                get(hoststamp_ux::profile_health_script),
+            )
             .route("/assets/app.js", get(hoststamp_ux::script));
         #[cfg(debug_assertions)]
         {

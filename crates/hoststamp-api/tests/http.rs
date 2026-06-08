@@ -400,7 +400,9 @@ async fn root_serves_local_ux() {
 
     assert!(html.contains("Hoststamp"));
     assert!(html.contains("/assets/app.css"));
+    assert!(html.contains("/assets/profile-health.js"));
     assert!(html.contains("/assets/app.js"));
+    assert!(html.contains("profile-health"));
     assert!(!html.contains("<style>"));
     assert!(!html.contains("<script>"));
 }
@@ -435,6 +437,31 @@ async fn local_ux_assets_are_served() {
     );
     assert!(response_text(css).await.contains(":root"));
 
+    let health_js = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/assets/profile-health.js")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(health_js.status(), http::StatusCode::OK);
+    assert_eq!(health_js.headers()["x-content-type-options"], "nosniff");
+    assert!(
+        health_js.headers()[http::header::CONTENT_TYPE]
+            .to_str()
+            .expect("content type")
+            .starts_with("text/javascript")
+    );
+    assert!(
+        response_text(health_js)
+            .await
+            .contains("HoststampProfileHealth")
+    );
+
     let js = app
         .oneshot(
             http::Request::builder()
@@ -456,6 +483,7 @@ async fn local_ux_assets_are_served() {
     let js = response_text(js).await;
     assert!(js.contains("const state"));
     assert!(js.contains("/api/health"));
+    assert!(js.contains("renderProfileHealth"));
 }
 
 #[cfg(debug_assertions)]
@@ -473,6 +501,11 @@ async fn all_and_ux_modes_serve_dev_reload_routes_when_static_dir_is_enabled() {
         ":root { color-scheme: light; }",
     )
     .expect("write css");
+    std::fs::write(
+        tempdir.path().join("profile-health.js"),
+        "const HoststampProfileHealth = {};",
+    )
+    .expect("write health js");
     std::fs::write(tempdir.path().join("app.js"), "const state = {};").expect("write js");
     std::fs::write(
         tempdir.path().join("dev-reload.js"),
@@ -523,7 +556,7 @@ async fn all_and_ux_modes_serve_dev_reload_routes_when_static_dir_is_enabled() {
         );
         let version = response_text(version).await;
         let version_parts = version.split('.').collect::<Vec<_>>();
-        assert_eq!(version_parts.len(), 4);
+        assert_eq!(version_parts.len(), 5);
         assert!(
             version_parts
                 .iter()

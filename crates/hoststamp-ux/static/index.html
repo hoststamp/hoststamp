@@ -106,6 +106,19 @@
 
             <section class="panel">
               <div class="panel-head">
+                <h3>Health</h3>
+                <button id="refresh-profile-health" type="button">Refresh</button>
+              </div>
+              <div class="panel-body stack">
+                <div id="profile-health" class="health-list">
+                  <div class="empty">No profile selected</div>
+                </div>
+                <ul id="profile-warnings" class="health-warnings"></ul>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
                 <h3>History</h3>
                 <button id="refresh-history" type="button">Refresh</button>
               </div>
@@ -342,6 +355,7 @@
       </main>
     </div>
 
+    <script src="/assets/profile-health.js"></script>
     <script src="/assets/app.js"></script>
   </body>
 </html>
