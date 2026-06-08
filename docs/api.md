@@ -33,6 +33,7 @@ cargo run -p hoststamp -- health
 - API random: `http://127.0.0.1:8080/api/random?count=3&word1_lengths=4&word2_lengths=4`
 - API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
 - Admin profiles: `http://127.0.0.1:8080/api/profiles`
+- Admin profile clone: `POST http://127.0.0.1:8080/api/profiles/team-a/clone`
 - Admin events: `http://127.0.0.1:8080/api/events?profile=_&limit=25`
 - Container health: `http://127.0.0.1:8080/healthz`
 
@@ -142,6 +143,7 @@ Admin API endpoints mirror the profile/config CLI operations:
 | `GET` | `/api/profiles/{slug}/history` | list active and replaced profile rows |
 | `DELETE` | `/api/profiles/{slug}` | delete an active profile |
 | `GET` | `/api/profiles/{slug}/export` | export profile identity, counter, access, and config |
+| `POST` | `/api/profiles/{slug}/clone` | copy profile config to a new private profile |
 | `POST` | `/api/profiles/import` | import an exported profile |
 | `PATCH` | `/api/profiles/{slug}/config` | replace profile config |
 | `PATCH` | `/api/profiles/{slug}/access` | set `public` or `private` |
@@ -149,6 +151,11 @@ Admin API endpoints mirror the profile/config CLI operations:
 | `POST` | `/api/profiles/{slug}/tokens` | create a profile token |
 | `DELETE` | `/api/profiles/{slug}/tokens/{token_id}` | revoke a token |
 | `POST` | `/api/profiles/{slug}/reset-atomic-value` | reset the stored counter |
+
+`POST /api/profiles/{slug}/clone` accepts `{"target_slug":"team-a-test"}`.
+The clone receives a fresh profile UUID, copies only the stored config, starts
+with `private` access and `last_atomic_value = 0`, and does not copy profile
+tokens.
 
 Destructive admin endpoints use explicit JSON confirmation instead of
 interactive prompts:

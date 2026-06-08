@@ -380,6 +380,10 @@ main {
   margin-top: 1rem;
 }
 
+.profile-clone {
+  margin-top: 1rem;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

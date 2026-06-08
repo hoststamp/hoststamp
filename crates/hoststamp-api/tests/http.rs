@@ -280,6 +280,7 @@ fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
         "/api/profiles/{slug}",
         "/api/profiles/{slug}/history",
         "/api/profiles/{slug}/export",
+        "/api/profiles/{slug}/clone",
         "/api/profiles/import",
         "/api/profiles/{slug}/config",
         "/api/profiles/{slug}/access",
@@ -307,6 +308,7 @@ fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
         ("/api/profiles/{slug}", BTreeSet::from(["delete", "get"])),
         ("/api/profiles/{slug}/history", BTreeSet::from(["get"])),
         ("/api/profiles/{slug}/export", BTreeSet::from(["get"])),
+        ("/api/profiles/{slug}/clone", BTreeSet::from(["post"])),
         ("/api/profiles/import", BTreeSet::from(["post"])),
         ("/api/profiles/{slug}/config", BTreeSet::from(["patch"])),
         ("/api/profiles/{slug}/access", BTreeSet::from(["patch"])),
@@ -2058,6 +2060,58 @@ async fn admin_profile_endpoints_manage_profiles() {
     assert_eq!(access.status(), http::StatusCode::OK);
     let access = response_json(access).await;
     assert_eq!(access["profile"]["access"], "public");
+
+    let cloned = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/team-a/clone",
+            json!({ "target_slug": "team-a-test" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(cloned.status(), http::StatusCode::CREATED);
+    let cloned = response_json(cloned).await;
+    assert_ne!(cloned["profile"]["id"], access["profile"]["id"]);
+    assert_eq!(cloned["profile"]["slug"], "team-a-test");
+    assert_eq!(cloned["profile"]["access"], "private");
+    assert_eq!(cloned["profile"]["last_atomic_value"], 0);
+    assert_eq!(cloned["profile"]["config"], access["profile"]["config"]);
+    assert_eq!(
+        cloned["profile"]["config_hash"],
+        access["profile"]["config_hash"]
+    );
+
+    let duplicate_clone = app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/team-a/clone",
+            json!({ "target_slug": "team-a-test" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(duplicate_clone.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(duplicate_clone).await;
+    assert!(message.contains("already exists"));
+
+    let clone_events = app
+        .clone()
+        .oneshot(admin_get_request(
+            "/api/events?profile=team-a-test&action=profile.clone",
+        ))
+        .await
+        .expect("response");
+    assert_eq!(clone_events.status(), http::StatusCode::OK);
+    let clone_events = response_json(clone_events).await;
+    let events = clone_events["events"].as_array().expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["source"], "api");
+    assert_eq!(events[0]["action"], "profile.clone");
+    assert_eq!(events[0]["profile_slug"], "team-a-test");
+    assert_eq!(events[0]["metadata"]["source_profile_slug"], "team-a");
+    assert_eq!(events[0]["metadata"]["source_access"], "public");
+    assert_eq!(events[0]["metadata"]["access"], "private");
 
     let empty_config = app
         .clone()

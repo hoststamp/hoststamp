@@ -393,6 +393,12 @@ pub struct CreateProfileRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CloneProfileRequest {
+    pub target_slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateProfileAccessRequest {
     pub access: ProfileAccess,
 }
@@ -501,6 +507,7 @@ pub fn app_with_mode(
             )
             .route("/api/profiles/{slug}/history", get(admin_profile_history))
             .route("/api/profiles/{slug}/export", get(admin_export_profile))
+            .route("/api/profiles/{slug}/clone", post(admin_clone_profile))
             .route("/api/profiles/import", post(admin_import_profile))
             .route(
                 "/api/profiles/{slug}/config",
@@ -864,6 +871,25 @@ fn build_openapi_document() -> Value {
                     "security": admin_security(),
                     "responses": {
                         "200": json_response("ProfileExport"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}/clone": {
+                "parameters": [
+                    slug_path_parameter()
+                ],
+                "post": {
+                    "tags": ["admin"],
+                    "operationId": "cloneProfile",
+                    "summary": "Clone profile config to a new private profile",
+                    "description": "Copies the selected profile config to a fresh profile UUID. The clone starts private, with no tokens, and last_atomic_value set to 0.",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("CloneProfileRequest"),
+                    "responses": {
+                        "201": json_response("ProfileEnvelope"),
                         "400": text_response("Bad request"),
                         "401": text_response("Unauthorized"),
                         "503": text_response("Admin API unavailable")
@@ -1414,6 +1440,12 @@ fn openapi_schemas() -> Value {
                 ("slug", json!({"type": "string"}))
             ],
         ),
+        "CloneProfileRequest": object_schema(
+            ["target_slug"],
+            [
+                ("target_slug", json!({"type": "string"}))
+            ],
+        ),
         "UpdateProfileAccessRequest": object_schema(
             ["access"],
             [
@@ -1727,6 +1759,45 @@ async fn admin_create_profile(
         "profile.create",
         &profile,
         serde_json::json!({ "access": profile.access.to_string() }),
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ProfileEnvelope {
+            profile: profile.into(),
+        }),
+    ))
+}
+
+async fn admin_clone_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Json(request): Json<CloneProfileRequest>,
+) -> Result<(StatusCode, Json<ProfileEnvelope>), Response> {
+    let source_slug = parse_slug(&slug)?;
+    let target_slug = parse_slug(&request.target_slug)?;
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let source = store
+        .load_profile(&source_slug)
+        .map_err(admin_bad_request_response)?;
+    let profile = store
+        .clone_profile(&source_slug, &target_slug)
+        .map_err(admin_bad_request_response)?;
+    record_api_profile_event(
+        &mut store,
+        "profile.clone",
+        &profile,
+        serde_json::json!({
+            "source_profile_slug": source.slug.as_str(),
+            "source_profile_id": source.id.to_string(),
+            "source_access": source.access.to_string(),
+            "source_config_hash": hex_string(&source.config_hash),
+            "config_hash": hex_string(&profile.config_hash),
+            "access": profile.access.to_string(),
+        }),
     );
 
     Ok((
