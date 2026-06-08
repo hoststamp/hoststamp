@@ -68,3 +68,10 @@ hoststamp --profile team-a validate --file infrastructure/hostnames.txt --json
 `hoststamp validate` exits non-zero if any hostname is invalid, so no extra JSON
 parsing is required to fail the workflow. Keep the `--json` flag when downstream
 workflow steps need machine-readable validation details.
+
+For larger inventories, use `hoststamp fleet audit --file <path> --json`
+instead. Fleet audit accepts newline-delimited text, CSV with a `hostname`
+column, JSON arrays of hostnames or objects, or a JSON object with a
+`hostnames` array. It reports the same validity and atomic-value details, adds
+duplicate detection, and exits non-zero when the inventory contains invalid or
+repeated hostnames.

@@ -88,6 +88,7 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("random"))
             .and(predicate::str::contains("regenerate"))
             .and(predicate::str::contains("lookup"))
+            .and(predicate::str::contains("fleet"))
             .and(predicate::str::contains("profile"))
             .and(predicate::str::contains("config"))
             .and(predicate::str::contains("completions"))
@@ -1674,6 +1675,125 @@ fn validate_file_json_reports_invalid_hostnames_and_fails() {
     assert_eq!(results[1]["profile"], "_");
     assert_eq!(results[1]["atomic_value"], 1);
     assert_eq!(results[1]["valid"], false);
+}
+
+#[test]
+fn fleet_audit_json_reports_invalid_hostnames_and_duplicates() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate.arg("generate").assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.trim();
+    let mut parts = generated.split('-').collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3);
+    parts[0] = "zzzzz";
+    let tampered = parts.join("-");
+    let input = tempdir.path().join("inventory.txt");
+    fs::write(&input, format!("{generated}\n{generated}\n{tampered}\n")).expect("write input");
+
+    let mut audit = command_for_database(&database);
+    let assert = audit
+        .args([
+            "fleet",
+            "audit",
+            "--file",
+            input.to_str().expect("path"),
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "fleet audit found 1 invalid hostname(s) and 1 duplicate hostname(s)",
+        ));
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let results = payload["results"].as_array().expect("results");
+
+    assert_eq!(payload["summary"]["total"], 3);
+    assert_eq!(payload["summary"]["unique"], 2);
+    assert_eq!(payload["summary"]["valid"], 2);
+    assert_eq!(payload["summary"]["invalid"], 1);
+    assert_eq!(payload["summary"]["duplicate_hostnames"], 1);
+    assert_eq!(payload["summary"]["duplicate_rows"], 2);
+    assert_eq!(results[0]["hostname"], generated);
+    assert_eq!(results[0]["valid"], true);
+    assert_eq!(results[0]["duplicate"], true);
+    assert_eq!(results[0]["duplicate_count"], 2);
+    assert_eq!(results[2]["hostname"], tampered);
+    assert_eq!(results[2]["valid"], false);
+    assert_eq!(results[2]["duplicate"], false);
+}
+
+#[test]
+fn fleet_audit_reads_csv_hostname_column() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate.arg("generate").assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.trim();
+    let input = tempdir.path().join("inventory.csv");
+    fs::write(
+        &input,
+        format!("owner,hostname\n\"ops\nprod\",{generated}\n"),
+    )
+    .expect("write input");
+
+    let mut audit = command_for_database(&database);
+    audit
+        .args(["fleet", "audit", "--file", input.to_str().expect("path")])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("hostname\tvalid\tprofile\tatomic_value\tduplicate_count")
+                .and(predicate::str::contains(format!(
+                    "{generated}\ttrue\t_\t1\t1"
+                )))
+                .and(predicate::str::contains(
+                    "summary\ttotal=1\tunique=1\tvalid=1\tinvalid=0",
+                )),
+        );
+}
+
+#[test]
+fn fleet_audit_reads_json_inventory_objects() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database = tempdir.path().join("hoststamp.db");
+    let mut generate = command_for_database(&database);
+
+    let assert = generate.arg("generate").assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let generated = output.trim();
+    let input = tempdir.path().join("inventory.json");
+    fs::write(
+        &input,
+        serde_json::json!({ "hostnames": [{ "name": generated }] }).to_string(),
+    )
+    .expect("write input");
+
+    let mut audit = command_for_database(&database);
+    let assert = audit
+        .args([
+            "fleet",
+            "audit",
+            "--file",
+            input.to_str().expect("path"),
+            "--hostname-field",
+            "name",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+
+    assert_eq!(payload["summary"]["total"], 1);
+    assert_eq!(payload["summary"]["invalid"], 0);
+    assert_eq!(payload["results"][0]["hostname"], generated);
+    assert_eq!(payload["results"][0]["valid"], true);
 }
 
 #[test]
