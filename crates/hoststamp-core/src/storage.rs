@@ -99,6 +99,13 @@ pub struct StoredEvent {
 }
 
 #[derive(Debug, Clone)]
+pub struct BackupSnapshot {
+    pub profiles: Vec<StoredProfile>,
+    pub profile_tokens: Vec<StoredProfileToken>,
+    pub events: Vec<StoredEvent>,
+}
+
+#[derive(Debug, Clone)]
 pub struct NewEvent {
     pub source: &'static str,
     pub action: &'static str,
@@ -729,6 +736,54 @@ impl ProfileStore {
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(events)
+    }
+
+    pub fn backup_snapshot(&mut self) -> Result<BackupSnapshot> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)?;
+
+        let profiles = {
+            let mut statement = tx.prepare(
+                "SELECT id, slug, access, config_json, config_hash, last_atomic_value,
+                        created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
+                 FROM hoststamp_profiles
+                 ORDER BY slug ASC, created_at_ms ASC, updated_at_ms ASC, id ASC",
+            )?;
+            statement
+                .query_map([], profile_from_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let profile_tokens = {
+            let mut statement = tx.prepare(
+                "SELECT token_id, profile_id, name, created_at_ms, expires_at_ms, last_used_at_ms, revoked_at_ms
+                 FROM hoststamp_profile_tokens
+                 ORDER BY created_at_ms ASC, token_id ASC",
+            )?;
+            statement
+                .query_map([], profile_token_from_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let events = {
+            let mut statement = tx.prepare(
+                "SELECT id, created_at_ms, source, action, profile_slug, profile_id,
+                        token_id, token_name, atomic_start, atomic_end, metadata_json
+                 FROM hoststamp_events
+                 ORDER BY created_at_ms ASC, id ASC",
+            )?;
+            statement
+                .query_map([], event_from_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        tx.commit()?;
+        Ok(BackupSnapshot {
+            profiles,
+            profile_tokens,
+            events,
+        })
     }
 
     fn open_sqlite(path: &Path) -> Result<Self> {
@@ -1704,6 +1759,67 @@ mod tests {
             .expect("recent events");
         assert!(!recent_events.is_empty());
         assert!(recent_events.len() <= 2);
+    }
+
+    #[test]
+    fn backup_snapshot_includes_retained_rows() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let original = store
+            .create_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+        store
+            .create_profile_token(original.id, "token-id", "deploy", [7_u8; 32], None)
+            .expect("token");
+
+        let replacement_config = ProfileConfig::from(&GenerateOptions {
+            word1_lengths: Some(vec![4]),
+            ..GenerateOptions::default()
+        });
+        let replacement = store
+            .replace_profile_config(&slug, &replacement_config)
+            .expect("replacement");
+
+        let mut created = NewEvent::new("cli", "profile.create");
+        created.profile_slug = Some(slug.clone());
+        created.profile_id = Some(original.id);
+        let created = store.record_event(created).expect("created event");
+        let mut backup = NewEvent::new("cli", "backup.export");
+        backup.metadata = serde_json::json!({ "profile_count": 2 });
+        let backup = store.record_event(backup).expect("backup event");
+        for (timestamp, id) in [(1_i64, created.id), (2_i64, backup.id)] {
+            store
+                .connection
+                .execute(
+                    "UPDATE hoststamp_events SET created_at_ms = ?1 WHERE id = ?2",
+                    params![timestamp, id.as_bytes().as_slice()],
+                )
+                .expect("timestamp");
+        }
+
+        let active_profiles = store.list_profiles().expect("active profiles");
+        assert_eq!(active_profiles.len(), 1);
+        assert_eq!(active_profiles[0].id, replacement.id);
+
+        let snapshot = store.backup_snapshot().expect("snapshot");
+        assert_eq!(snapshot.profiles.len(), 2);
+        assert_eq!(snapshot.profiles[0].id, original.id);
+        assert_eq!(snapshot.profiles[1].id, replacement.id);
+
+        assert_eq!(snapshot.profile_tokens.len(), 1);
+        assert_eq!(snapshot.profile_tokens[0].token_id, "token-id");
+        assert_eq!(snapshot.profile_tokens[0].profile_id, original.id);
+
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            vec![created.id, backup.id]
+        );
     }
 
     #[test]
