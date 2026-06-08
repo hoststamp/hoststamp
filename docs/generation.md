@@ -166,3 +166,12 @@ are ignored, and any invalid hostname makes the command exit non-zero. Pass
 `--json` to print a `results` array with `hostname`, `profile`, `atomic_value`,
 and `valid` fields. See [Integrations](./integrations.md) for a GitHub Actions
 validation workflow example.
+
+For inventory imports, use `hoststamp fleet audit --file <path>`. The audit
+accepts newline-delimited text, CSV with a `hostname` column, or JSON arrays of
+strings or objects, plus JSON objects with a `hostnames` array. Use
+`--input-format lines|csv|json` to override detection and
+`--hostname-field <name>` when CSV or JSON objects use a different column or
+field. The command reports validity, decoded atomic values, duplicate counts,
+and a summary. It exits non-zero when any hostname is invalid or duplicated,
+and `--json` emits machine-readable `summary` and `results` fields.

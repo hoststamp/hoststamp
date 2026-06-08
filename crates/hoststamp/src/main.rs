@@ -16,6 +16,7 @@ use hoststamp_core::{
     },
 };
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::{self, Write},
     net::SocketAddr,
@@ -191,6 +192,21 @@ struct ValidateArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+struct FleetAuditArgs {
+    /// Inventory file containing hostnames to audit.
+    #[arg(long, value_name = "PATH")]
+    file: PathBuf,
+
+    /// Input format for the inventory file.
+    #[arg(long, value_enum, default_value_t = FleetInputFormat::Auto)]
+    input_format: FleetInputFormat,
+
+    /// Hostname field name for CSV and JSON object inventories.
+    #[arg(long, default_value = "hostname")]
+    hostname_field: String,
+}
+
+#[derive(Args, Debug, Clone)]
 struct EventsArgs {
     /// Filter events to a profile slug.
     #[arg(long, value_name = "SLUG", value_parser = profile::parse_profile_slug)]
@@ -257,6 +273,11 @@ enum Command {
     },
     /// Validate profile-backed hostnames for CI and bulk checks.
     Validate(ValidateArgs),
+    /// Audit existing hostname inventories against a Hoststamp profile.
+    Fleet {
+        #[command(subcommand)]
+        command: FleetCommand,
+    },
     /// Inspect or manage Hoststamp configuration.
     Config {
         #[command(subcommand)]
@@ -386,6 +407,24 @@ enum ProfileCommand {
 enum BackupCommand {
     /// Export profiles, token metadata, and retained audit events as JSON.
     Export,
+}
+
+#[derive(Subcommand, Debug)]
+enum FleetCommand {
+    /// Import and audit a hostname inventory.
+    Audit(FleetAuditArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum FleetInputFormat {
+    /// Detect the input format from extension and content.
+    Auto,
+    /// One hostname per line.
+    Lines,
+    /// CSV with a header row and hostname column.
+    Csv,
+    /// JSON array, or object with a hostnames array.
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -750,6 +789,29 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Fleet { command } => match command {
+            FleetCommand::Audit(args) => {
+                if cli.generate.has_capacity_or_count_options() {
+                    anyhow::bail!("fleet audit only supports --profile and --json");
+                }
+                let (_settings, mut store) =
+                    load_profile_store(cli.config.clone(), cli.database_url.clone())?;
+                let profile =
+                    store.load_or_seed_profile(&cli.profile, &ProfileConfig::default())?;
+                let hostnames = fleet_audit_input_hostnames(&args)?;
+                let results = fleet_audit_results(hostnames, &profile)?;
+                let summary = FleetAuditSummary::from_results(&results);
+                print_fleet_audit_results(&results, &summary, cli.generate.json)?;
+                if summary.invalid > 0 || summary.duplicate_hostnames > 0 {
+                    anyhow::bail!(
+                        "fleet audit found {} invalid hostname(s) and {} duplicate hostname(s)",
+                        summary.invalid,
+                        summary.duplicate_hostnames
+                    );
+                }
+                Ok(())
+            }
+        },
         Command::Backup { command } => match command {
             BackupCommand::Export => {
                 let (_settings, mut store) =
@@ -1067,9 +1129,260 @@ fn validate_input_hostnames(args: &ValidateArgs) -> anyhow::Result<Vec<String>> 
     }
 }
 
+fn fleet_audit_input_hostnames(args: &FleetAuditArgs) -> anyhow::Result<Vec<String>> {
+    let contents = fs::read_to_string(&args.file)
+        .with_context(|| format!("failed to read fleet audit input {}", args.file.display()))?;
+    let format = resolve_fleet_input_format(args.input_format, &args.file, &contents);
+    let hostnames = match format {
+        FleetInputFormat::Auto => unreachable!("auto format should be resolved"),
+        FleetInputFormat::Lines => parse_line_hostnames(&contents),
+        FleetInputFormat::Csv => parse_csv_hostnames(&contents, &args.hostname_field)?,
+        FleetInputFormat::Json => parse_json_hostnames(&contents, &args.hostname_field)?,
+    };
+    if hostnames.is_empty() {
+        anyhow::bail!(
+            "fleet audit input {} does not contain any hostnames",
+            args.file.display()
+        );
+    }
+    Ok(hostnames)
+}
+
+fn resolve_fleet_input_format(
+    format: FleetInputFormat,
+    path: &Path,
+    contents: &str,
+) -> FleetInputFormat {
+    if format != FleetInputFormat::Auto {
+        return format;
+    }
+
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("csv") => FleetInputFormat::Csv,
+        Some(extension) if extension.eq_ignore_ascii_case("json") => FleetInputFormat::Json,
+        _ => {
+            let first = contents.trim_start().chars().next();
+            match first {
+                Some('[' | '{') => FleetInputFormat::Json,
+                _ => FleetInputFormat::Lines,
+            }
+        }
+    }
+}
+
+fn parse_line_hostnames(contents: &str) -> Vec<String> {
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn parse_csv_hostnames(contents: &str, hostname_field: &str) -> anyhow::Result<Vec<String>> {
+    let mut records = parse_csv_records(contents)?.into_iter();
+    let header = records
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("CSV fleet audit input is empty"))?;
+    let column = header
+        .iter()
+        .position(|field| field == hostname_field)
+        .ok_or_else(|| {
+            anyhow::anyhow!("CSV fleet audit input is missing {hostname_field:?} column")
+        })?;
+    let mut hostnames = Vec::new();
+    for (index, fields) in records.enumerate() {
+        if fields.len() <= column {
+            anyhow::bail!(
+                "CSV fleet audit row {} is missing {hostname_field:?} column",
+                index + 2
+            );
+        }
+        let hostname = fields[column].trim();
+        if hostname.is_empty() {
+            continue;
+        }
+        hostnames.push(hostname.to_owned());
+    }
+    Ok(hostnames)
+}
+
+fn parse_csv_records(contents: &str) -> anyhow::Result<Vec<Vec<String>>> {
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut chars = contents.chars().peekable();
+    let mut quoted = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            '"' if quoted => quoted = false,
+            '"' if field.trim().is_empty() => {
+                quoted = true;
+                field.clear();
+            }
+            ',' if !quoted => {
+                fields.push(trim_csv_field(&field));
+                field.clear();
+            }
+            '\n' if !quoted => {
+                push_csv_record(&mut records, &mut fields, &mut field);
+            }
+            '\r' if !quoted => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                push_csv_record(&mut records, &mut fields, &mut field);
+            }
+            _ => field.push(ch),
+        }
+    }
+
+    if quoted {
+        anyhow::bail!("CSV fleet audit input has an unterminated quoted field");
+    }
+    push_csv_record(&mut records, &mut fields, &mut field);
+    Ok(records)
+}
+
+fn push_csv_record(records: &mut Vec<Vec<String>>, fields: &mut Vec<String>, field: &mut String) {
+    if fields.is_empty() && field.trim().is_empty() {
+        field.clear();
+        return;
+    }
+
+    fields.push(trim_csv_field(field));
+    if fields.iter().any(|field| !field.is_empty()) {
+        records.push(std::mem::take(fields));
+    } else {
+        fields.clear();
+    }
+    field.clear();
+}
+
+fn trim_csv_field(field: &str) -> String {
+    field.trim().to_owned()
+}
+
+fn parse_json_hostnames(contents: &str, hostname_field: &str) -> anyhow::Result<Vec<String>> {
+    let value: serde_json::Value = serde_json::from_str(contents)?;
+    match value {
+        serde_json::Value::Array(items) => parse_json_hostname_array(&items, hostname_field),
+        serde_json::Value::Object(object) => {
+            let hostnames = object.get("hostnames").ok_or_else(|| {
+                anyhow::anyhow!("JSON fleet audit input must be an array or object with hostnames")
+            })?;
+            let items = hostnames.as_array().ok_or_else(|| {
+                anyhow::anyhow!("JSON fleet audit hostnames field must be an array")
+            })?;
+            parse_json_hostname_array(items, hostname_field)
+        }
+        _ => anyhow::bail!("JSON fleet audit input must be an array or object with hostnames"),
+    }
+}
+
+fn parse_json_hostname_array(
+    items: &[serde_json::Value],
+    hostname_field: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut hostnames = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let hostname = match item {
+            serde_json::Value::String(hostname) => hostname.as_str(),
+            serde_json::Value::Object(object) => object
+                .get(hostname_field)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "JSON fleet audit item {} is missing string field {hostname_field:?}",
+                        index + 1
+                    )
+                })?,
+            _ => {
+                anyhow::bail!(
+                    "JSON fleet audit item {} must be a string or object",
+                    index + 1
+                )
+            }
+        };
+        let hostname = hostname.trim();
+        if !hostname.is_empty() {
+            hostnames.push(hostname.to_owned());
+        }
+    }
+    Ok(hostnames)
+}
+
 struct ValidateResult {
     hostname: String,
     response: server::LookupResponse,
+}
+
+struct FleetAuditResult {
+    hostname: String,
+    response: server::LookupResponse,
+    duplicate_count: usize,
+}
+
+struct FleetAuditSummary {
+    total: usize,
+    unique: usize,
+    valid: usize,
+    invalid: usize,
+    duplicate_hostnames: usize,
+    duplicate_rows: usize,
+}
+
+impl FleetAuditSummary {
+    fn from_results(results: &[FleetAuditResult]) -> Self {
+        let mut counts = BTreeMap::new();
+        let mut valid = 0;
+        for result in results {
+            if result.response.valid {
+                valid += 1;
+            }
+            counts
+                .entry(&result.hostname)
+                .or_insert(result.duplicate_count);
+        }
+        Self {
+            total: results.len(),
+            unique: counts.len(),
+            valid,
+            invalid: results.len() - valid,
+            duplicate_hostnames: counts.values().filter(|count| **count > 1).count(),
+            duplicate_rows: results
+                .iter()
+                .filter(|result| result.duplicate_count > 1)
+                .count(),
+        }
+    }
+}
+
+fn fleet_audit_results(
+    hostnames: Vec<String>,
+    profile: &StoredProfile,
+) -> anyhow::Result<Vec<FleetAuditResult>> {
+    let mut counts = BTreeMap::new();
+    for hostname in &hostnames {
+        *counts.entry(hostname.clone()).or_insert(0usize) += 1;
+    }
+
+    hostnames
+        .into_iter()
+        .map(|hostname| {
+            let duplicate_count = counts.get(&hostname).copied().unwrap_or(1);
+            lookup_hostname_response(&hostname, profile).map(|response| FleetAuditResult {
+                hostname,
+                response,
+                duplicate_count,
+            })
+        })
+        .collect()
 }
 
 fn print_validate_results(results: &[ValidateResult], json: bool) -> anyhow::Result<()> {
@@ -1107,6 +1420,69 @@ fn print_validate_results(results: &[ValidateResult], json: bool) -> anyhow::Res
         );
     }
 
+    Ok(())
+}
+
+fn print_fleet_audit_results(
+    results: &[FleetAuditResult],
+    summary: &FleetAuditSummary,
+    json: bool,
+) -> anyhow::Result<()> {
+    if json {
+        let results = results
+            .iter()
+            .map(|result| {
+                serde_json::json!({
+                    "hostname": result.hostname,
+                    "profile": result.response.profile,
+                    "atomic_value": result.response.atomic_value,
+                    "valid": result.response.valid,
+                    "duplicate": result.duplicate_count > 1,
+                    "duplicate_count": result.duplicate_count,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "summary": {
+                    "total": summary.total,
+                    "unique": summary.unique,
+                    "valid": summary.valid,
+                    "invalid": summary.invalid,
+                    "duplicate_hostnames": summary.duplicate_hostnames,
+                    "duplicate_rows": summary.duplicate_rows,
+                },
+                "results": results,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("hostname\tvalid\tprofile\tatomic_value\tduplicate_count");
+    for result in results {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            result.hostname,
+            result.response.valid,
+            result.response.profile,
+            result
+                .response
+                .atomic_value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
+            result.duplicate_count
+        );
+    }
+    println!(
+        "summary\ttotal={}\tunique={}\tvalid={}\tinvalid={}\tduplicate_hostnames={}\tduplicate_rows={}",
+        summary.total,
+        summary.unique,
+        summary.valid,
+        summary.invalid,
+        summary.duplicate_hostnames,
+        summary.duplicate_rows
+    );
     Ok(())
 }
 
