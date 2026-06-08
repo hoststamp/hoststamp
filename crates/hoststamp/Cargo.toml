@@ -28,4 +28,5 @@ uuid.workspace = true
 assert_cmd = "2"
 predicates = "3"
 rusqlite.workspace = true
+serde_yaml_ng.workspace = true
 tempfile = "3"

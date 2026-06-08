@@ -11,7 +11,10 @@ use hoststamp_core::{
 use http_body_util::BodyExt;
 use rusqlite::Connection;
 use serde_json::json;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::ServiceExt;
 
@@ -106,6 +109,25 @@ async fn response_json(response: http::Response<Body>) -> serde_json::Value {
     serde_json::from_slice(&body).expect("json")
 }
 
+fn collect_schema_refs(value: &serde_json::Value, refs: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(reference)) = map.get("$ref") {
+                refs.push(reference.clone());
+            }
+            for child in map.values() {
+                collect_schema_refs(child, refs);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                collect_schema_refs(child, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn json_request(method: http::Method, uri: &str, body: serde_json::Value) -> http::Request<Body> {
     http::Request::builder()
         .method(method)
@@ -168,6 +190,168 @@ async fn healthz_returns_ok_payload() {
 
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["service"], "hoststamp");
+}
+
+#[tokio::test]
+async fn openapi_document_is_public_and_describes_api_routes() {
+    let response = server::app_with_auth(GenerateOptions::default(), None, auth_config())
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/openapi.json")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+
+    let payload = response_json(response).await;
+    assert_eq!(payload["openapi"], "3.1.0");
+    assert_eq!(payload["info"]["title"], "Hoststamp API");
+    assert!(payload["paths"].get("/api/generate").is_some());
+    assert!(
+        payload["paths"]
+            .get("/api/profiles/{slug}/tokens/{token_id}")
+            .is_some()
+    );
+    assert_eq!(
+        payload["paths"]["/api/generate"]["post"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/GenerateResponse"
+    );
+    assert_eq!(
+        payload["components"]["schemas"]["ProfileResponse"]["properties"]["config"]["$ref"],
+        "#/components/schemas/ProfileConfig"
+    );
+    assert!(
+        payload["components"]["securitySchemes"]
+            .get("adminBearer")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn openapi_yaml_aliases_are_public_and_describe_api_routes() {
+    for uri in ["/api/openapi.yaml", "/api/openapi.yml"] {
+        let response = server::app_with_auth(GenerateOptions::default(), None, auth_config())
+            .oneshot(
+                http::Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(
+            response.headers()[http::header::CONTENT_TYPE],
+            "application/yaml; charset=utf-8"
+        );
+
+        let body = response_text(response).await;
+        let payload: serde_json::Value = serde_yaml_ng::from_str(&body).expect("yaml");
+        assert_eq!(payload["openapi"], "3.1.0");
+        assert_eq!(payload["info"]["title"], "Hoststamp API");
+        assert!(payload["paths"].get("/api/openapi.yaml").is_some());
+        assert!(payload["paths"].get("/api/openapi.yml").is_some());
+        assert!(payload["paths"].get("/api/generate").is_some());
+    }
+}
+
+#[test]
+fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
+    let document = server::openapi_document();
+    let paths = document["paths"].as_object().expect("paths");
+    let expected_paths = BTreeSet::from([
+        "/healthz",
+        "/api/health",
+        "/api/openapi.json",
+        "/api/openapi.yaml",
+        "/api/openapi.yml",
+        "/api/generate",
+        "/api/random",
+        "/api/capacity",
+        "/api/regenerate",
+        "/api/lookup",
+        "/api/events",
+        "/api/profiles",
+        "/api/profiles/{slug}",
+        "/api/profiles/{slug}/history",
+        "/api/profiles/{slug}/export",
+        "/api/profiles/import",
+        "/api/profiles/{slug}/config",
+        "/api/profiles/{slug}/access",
+        "/api/profiles/{slug}/tokens",
+        "/api/profiles/{slug}/tokens/{token_id}",
+        "/api/profiles/{slug}/reset-atomic-value",
+    ]);
+    let actual_paths = paths.keys().map(String::as_str).collect::<BTreeSet<_>>();
+
+    assert_eq!(actual_paths, expected_paths);
+
+    for (path, expected_methods) in [
+        ("/healthz", BTreeSet::from(["get"])),
+        ("/api/health", BTreeSet::from(["get"])),
+        ("/api/openapi.json", BTreeSet::from(["get"])),
+        ("/api/openapi.yaml", BTreeSet::from(["get"])),
+        ("/api/openapi.yml", BTreeSet::from(["get"])),
+        ("/api/generate", BTreeSet::from(["get", "post"])),
+        ("/api/random", BTreeSet::from(["get"])),
+        ("/api/capacity", BTreeSet::from(["get"])),
+        ("/api/regenerate", BTreeSet::from(["get"])),
+        ("/api/lookup", BTreeSet::from(["get"])),
+        ("/api/events", BTreeSet::from(["get"])),
+        ("/api/profiles", BTreeSet::from(["get", "post"])),
+        ("/api/profiles/{slug}", BTreeSet::from(["delete", "get"])),
+        ("/api/profiles/{slug}/history", BTreeSet::from(["get"])),
+        ("/api/profiles/{slug}/export", BTreeSet::from(["get"])),
+        ("/api/profiles/import", BTreeSet::from(["post"])),
+        ("/api/profiles/{slug}/config", BTreeSet::from(["patch"])),
+        ("/api/profiles/{slug}/access", BTreeSet::from(["patch"])),
+        (
+            "/api/profiles/{slug}/tokens",
+            BTreeSet::from(["get", "post"]),
+        ),
+        (
+            "/api/profiles/{slug}/tokens/{token_id}",
+            BTreeSet::from(["delete"]),
+        ),
+        (
+            "/api/profiles/{slug}/reset-atomic-value",
+            BTreeSet::from(["post"]),
+        ),
+    ] {
+        let actual_methods = paths[path]
+            .as_object()
+            .expect("path item")
+            .keys()
+            .filter_map(|method| (method != "parameters").then_some(method.as_str()))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual_methods, expected_methods, "{path}");
+    }
+
+    let schemas = document["components"]["schemas"]
+        .as_object()
+        .expect("schemas");
+    let mut refs = Vec::new();
+    collect_schema_refs(&document["paths"], &mut refs);
+    assert!(!refs.is_empty());
+    for reference in refs {
+        let schema_name = reference
+            .strip_prefix("#/components/schemas/")
+            .expect("schema ref");
+        assert!(
+            schemas.contains_key(schema_name),
+            "missing schema {schema_name} for {reference}"
+        );
+    }
+
+    assert_eq!(
+        schemas["CreateProfileTokenRequest"]["properties"]["name"]["pattern"],
+        "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$"
+    );
 }
 
 #[tokio::test]
