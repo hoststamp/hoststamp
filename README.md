@@ -22,6 +22,7 @@ The server binds to `127.0.0.1:8080` by default. Open:
 
 - UX: `http://127.0.0.1:8080/`
 - API health: `http://127.0.0.1:8080/api/health`
+- OpenAPI JSON: `http://127.0.0.1:8080/api/openapi.json`
 
 Generate names from the default profile:
 
@@ -65,6 +66,7 @@ cargo run -p hoststamp -- config show
 Print shell integration artifacts, including the top-level man page:
 
 ```sh
+cargo run -p hoststamp -- openapi
 cargo run -p hoststamp -- completions bash
 cargo run -p hoststamp -- completions zsh
 cargo run -p hoststamp -- completions fish
@@ -109,6 +111,7 @@ Common local endpoints:
 - `GET /api/random?count=3`
 - `GET /api/capacity?profile=_`
 - `GET /api/profiles`
+- `GET /api/openapi.json`
 
 `POST /api/generate` returns newline-delimited `text/plain` by default so shell
 clients can pipe the response directly. Pass `format=json` for structured

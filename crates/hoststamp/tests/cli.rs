@@ -91,7 +91,25 @@ fn help_prints_generation_flags() {
             .and(predicate::str::contains("profile"))
             .and(predicate::str::contains("config"))
             .and(predicate::str::contains("completions"))
+            .and(predicate::str::contains("openapi"))
             .and(predicate::str::contains("man")),
+    );
+}
+
+#[test]
+fn openapi_prints_api_contract() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+    let assert = cmd.arg("openapi").assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+
+    assert_eq!(payload["openapi"], "3.1.0");
+    assert_eq!(payload["info"]["title"], "Hoststamp API");
+    assert!(payload["paths"].get("/api/openapi.json").is_some());
+    assert!(payload["paths"].get("/api/generate").is_some());
+    assert_eq!(
+        payload["components"]["schemas"]["GenerateResponse"]["properties"]["hostnames"]["items"]["$ref"],
+        "#/components/schemas/GeneratedHostname"
     );
 }
 

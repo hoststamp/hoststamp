@@ -24,8 +24,13 @@ use hoststamp_core::{
     },
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
+use serde_json::{Value, json};
+use std::{
+    fmt,
+    net::SocketAddr,
+    str::FromStr,
+    sync::{Arc, OnceLock},
+};
 use tokio::{net::TcpListener, signal, sync::Mutex};
 use uuid::Uuid;
 
@@ -474,6 +479,7 @@ pub fn app_with_mode(
     if matches!(mode, AppMode::All | AppMode::Api) {
         router = router
             .route("/api/health", get(healthz))
+            .route("/api/openapi.json", get(openapi_json))
             .route(
                 "/api/generate",
                 post(generate_one).get(generate_method_not_allowed),
@@ -533,8 +539,926 @@ pub fn health_payload() -> Health {
     }
 }
 
+pub fn openapi_document() -> &'static Value {
+    static DOCUMENT: OnceLock<Value> = OnceLock::new();
+    DOCUMENT.get_or_init(build_openapi_document)
+}
+
+fn build_openapi_document() -> Value {
+    json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Hoststamp API",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Local API for Hoststamp hostname generation, profile administration, and audit events."
+        },
+        "servers": [
+            {
+                "url": "http://127.0.0.1:8080",
+                "description": "Default local server"
+            }
+        ],
+        "paths": {
+            "/healthz": {
+                "get": {
+                    "tags": ["system"],
+                    "operationId": "getContainerHealth",
+                    "summary": "Check container health",
+                    "responses": {
+                        "200": json_response("Health")
+                    }
+                }
+            },
+            "/api/health": {
+                "get": {
+                    "tags": ["system"],
+                    "operationId": "getApiHealth",
+                    "summary": "Check API health",
+                    "responses": {
+                        "200": json_response("Health")
+                    }
+                }
+            },
+            "/api/openapi.json": {
+                "get": {
+                    "tags": ["system"],
+                    "operationId": "getOpenApiDocument",
+                    "summary": "Return this OpenAPI document",
+                    "responses": {
+                        "200": {
+                            "description": "OpenAPI document",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "additionalProperties": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/generate": {
+                "post": {
+                    "tags": ["generation"],
+                    "operationId": "generateHostnames",
+                    "summary": "Generate profile-backed hostnames",
+                    "description": "Returns newline-delimited text by default. Pass format=json for structured metadata.",
+                    "security": profile_security(),
+                    "parameters": [
+                        format_query_parameter(),
+                        profile_query_parameter(),
+                        count_query_parameter()
+                    ],
+                    "responses": {
+                        "200": generated_response(),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized")
+                    }
+                },
+                "get": {
+                    "tags": ["generation"],
+                    "operationId": "generateHostnamesMethodNotAllowed",
+                    "summary": "Reject GET generation requests",
+                    "responses": {
+                        "405": text_response("Use POST /api/generate")
+                    }
+                }
+            },
+            "/api/random": {
+                "get": {
+                    "tags": ["generation"],
+                    "operationId": "generateRandomHostnames",
+                    "summary": "Generate stateless random hostnames",
+                    "parameters": [
+                        format_query_parameter(),
+                        count_query_parameter(),
+                        optional_query_parameter("word1_enabled", "Enable the first word segment.", json!({"type": "boolean"})),
+                        optional_query_parameter("word1_lengths", "Comma-separated first-word lengths, or any.", json!({"type": "string"})),
+                        optional_query_parameter("word1_categories", "Comma-separated first-word categories.", json!({"type": "string"})),
+                        optional_query_parameter("word2_enabled", "Enable the second word segment.", json!({"type": "boolean"})),
+                        optional_query_parameter("word2_lengths", "Comma-separated second-word lengths, or any.", json!({"type": "string"})),
+                        optional_query_parameter("word2_categories", "Comma-separated second-word categories.", json!({"type": "string"})),
+                        optional_query_parameter("suffix_enabled", "Enable the suffix segment.", json!({"type": "boolean"})),
+                        optional_query_parameter("suffix_min_length", "Minimum suffix length.", json!({"type": "integer", "minimum": 1}))
+                    ],
+                    "responses": {
+                        "200": generated_response(),
+                        "400": text_response("Bad request")
+                    }
+                }
+            },
+            "/api/capacity": {
+                "get": {
+                    "tags": ["generation"],
+                    "operationId": "getCapacity",
+                    "summary": "Report the selected profile namespace capacity",
+                    "security": profile_security(),
+                    "parameters": [
+                        profile_query_parameter()
+                    ],
+                    "responses": {
+                        "200": json_response("CapacityReport"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized")
+                    }
+                }
+            },
+            "/api/regenerate": {
+                "get": {
+                    "tags": ["generation"],
+                    "operationId": "regenerateHostnames",
+                    "summary": "Regenerate profile-backed hostnames from an atomic value",
+                    "security": profile_security(),
+                    "parameters": [
+                        format_query_parameter(),
+                        profile_query_parameter(),
+                        optional_query_parameter("profile_id", "Immutable profile UUID. Requires the admin bearer token.", json!({"type": "string", "format": "uuid"})),
+                        required_query_parameter("atomic_value", "First stored atomic value to regenerate.", json!({"type": "integer", "format": "int64", "minimum": 1})),
+                        count_query_parameter()
+                    ],
+                    "responses": {
+                        "200": generated_response(),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized")
+                    }
+                }
+            },
+            "/api/lookup": {
+                "get": {
+                    "tags": ["generation"],
+                    "operationId": "lookupHostname",
+                    "summary": "Look up a profile-backed hostname",
+                    "security": profile_security(),
+                    "parameters": [
+                        optional_query_parameter("format", "Only json is supported.", json!({"type": "string", "enum": ["json"]})),
+                        profile_query_parameter(),
+                        required_query_parameter("hostname", "Hostname to inspect.", json!({"type": "string"}))
+                    ],
+                    "responses": {
+                        "200": json_response("LookupResponse"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized")
+                    }
+                }
+            },
+            "/api/events": {
+                "get": {
+                    "tags": ["admin"],
+                    "operationId": "listEvents",
+                    "summary": "List audit events",
+                    "security": admin_security(),
+                    "parameters": [
+                        profile_query_parameter(),
+                        optional_query_parameter("action", "Filter by event action.", json!({"type": "string"})),
+                        optional_query_parameter("source", "Filter by event source.", json!({"type": "string"})),
+                        optional_query_parameter("token_name", "Filter by token name.", json!({"type": "string"})),
+                        optional_query_parameter("since_ms", "Include events at or after this Unix timestamp in milliseconds.", json!({"type": "integer", "format": "int64"})),
+                        optional_query_parameter("until_ms", "Include events at or before this Unix timestamp in milliseconds.", json!({"type": "integer", "format": "int64"})),
+                        optional_query_parameter("limit", "Maximum events to return.", json!({"type": "integer", "minimum": 1, "maximum": 500, "default": 50}))
+                    ],
+                    "responses": {
+                        "200": json_response("EventsResponse"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles": {
+                "get": {
+                    "tags": ["admin"],
+                    "operationId": "listProfiles",
+                    "summary": "List active profiles",
+                    "security": admin_security(),
+                    "responses": {
+                        "200": json_response("ProfilesResponse"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                },
+                "post": {
+                    "tags": ["admin"],
+                    "operationId": "createProfile",
+                    "summary": "Create a profile with the default generator config",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("CreateProfileRequest"),
+                    "responses": {
+                        "201": json_response("ProfileEnvelope"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}": {
+                "parameters": [
+                    slug_path_parameter()
+                ],
+                "get": {
+                    "tags": ["admin"],
+                    "operationId": "getProfile",
+                    "summary": "Show one active profile",
+                    "security": admin_security(),
+                    "responses": {
+                        "200": json_response("ProfileEnvelope"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                },
+                "delete": {
+                    "tags": ["admin"],
+                    "operationId": "deleteProfile",
+                    "summary": "Delete an active profile",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("DeleteProfileRequest"),
+                    "responses": {
+                        "204": {
+                            "description": "Profile deleted"
+                        },
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}/history": {
+                "parameters": [
+                    slug_path_parameter()
+                ],
+                "get": {
+                    "tags": ["admin"],
+                    "operationId": "listProfileHistory",
+                    "summary": "List active and replaced rows for one profile slug",
+                    "security": admin_security(),
+                    "responses": {
+                        "200": json_response("ProfilesResponse"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}/export": {
+                "parameters": [
+                    slug_path_parameter()
+                ],
+                "get": {
+                    "tags": ["admin"],
+                    "operationId": "exportProfile",
+                    "summary": "Export a portable profile JSON document",
+                    "security": admin_security(),
+                    "responses": {
+                        "200": json_response("ProfileExport"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/import": {
+                "post": {
+                    "tags": ["admin"],
+                    "operationId": "importProfile",
+                    "summary": "Import a portable profile JSON document",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("ImportProfileRequest"),
+                    "responses": {
+                        "200": json_response("ProfileEnvelope"),
+                        "201": json_response("ProfileEnvelope"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}/config": {
+                "parameters": [
+                    slug_path_parameter()
+                ],
+                "patch": {
+                    "tags": ["admin"],
+                    "operationId": "updateProfileConfig",
+                    "summary": "Replace selected profile generator settings",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("UpdateProfileConfigRequest"),
+                    "responses": {
+                        "200": json_response("ProfileEnvelope"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}/access": {
+                "parameters": [
+                    slug_path_parameter()
+                ],
+                "patch": {
+                    "tags": ["admin"],
+                    "operationId": "updateProfileAccess",
+                    "summary": "Set profile API access mode",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("UpdateProfileAccessRequest"),
+                    "responses": {
+                        "200": json_response("ProfileEnvelope"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}/tokens": {
+                "parameters": [
+                    slug_path_parameter()
+                ],
+                "get": {
+                    "tags": ["admin"],
+                    "operationId": "listProfileTokens",
+                    "summary": "List profile token metadata",
+                    "security": admin_security(),
+                    "responses": {
+                        "200": json_response("ProfileTokensResponse"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                },
+                "post": {
+                    "tags": ["admin"],
+                    "operationId": "createProfileToken",
+                    "summary": "Create a profile token and return the secret once",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("CreateProfileTokenRequest"),
+                    "responses": {
+                        "201": json_response("CreatedProfileTokenResponse"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}/tokens/{token_id}": {
+                "parameters": [
+                    slug_path_parameter(),
+                    {
+                        "name": "token_id",
+                        "in": "path",
+                        "required": true,
+                        "description": "Profile token ID.",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "delete": {
+                    "tags": ["admin"],
+                    "operationId": "revokeProfileToken",
+                    "summary": "Revoke a profile token",
+                    "security": admin_security(),
+                    "responses": {
+                        "200": json_response("ProfileTokenEnvelope"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/profiles/{slug}/reset-atomic-value": {
+                "parameters": [
+                    slug_path_parameter()
+                ],
+                "post": {
+                    "tags": ["admin"],
+                    "operationId": "resetProfileAtomicValue",
+                    "summary": "Reset the stored profile atomic counter",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("ResetAtomicValueRequest"),
+                    "responses": {
+                        "200": json_response("ProfileEnvelope"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            }
+        },
+        "components": {
+            "securitySchemes": {
+                "adminBearer": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "Hoststamp admin token",
+                    "description": "Configured with HOSTSTAMP_ADMIN_TOKEN or api.auth.admin_token."
+                },
+                "profileBearer": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "Hoststamp profile token",
+                    "description": "Created with Hoststamp profile token management commands or admin API endpoints."
+                }
+            },
+            "schemas": openapi_schemas()
+        }
+    })
+}
+
+fn schema_ref(name: &str) -> Value {
+    json!({
+        "$ref": format!("#/components/schemas/{name}")
+    })
+}
+
+fn json_response(schema: &str) -> Value {
+    json!({
+        "description": "OK",
+        "content": {
+            "application/json": {
+                "schema": schema_ref(schema)
+            }
+        }
+    })
+}
+
+fn generated_response() -> Value {
+    json!({
+        "description": "Generated hostnames",
+        "headers": {
+            "x-hoststamp-profile": {
+                "description": "Profile slug used for profile-backed generation.",
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "x-hoststamp-atomic-values": {
+                "description": "Comma-separated atomic values allocated or regenerated by the request.",
+                "schema": {
+                    "type": "string"
+                }
+            }
+        },
+        "content": {
+            "text/plain": {
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "application/json": {
+                "schema": schema_ref("GenerateResponse")
+            }
+        }
+    })
+}
+
+fn text_response(description: &str) -> Value {
+    json!({
+        "description": description,
+        "content": {
+            "text/plain": {
+                "schema": {
+                    "type": "string"
+                }
+            }
+        }
+    })
+}
+
+fn json_request_body(schema: &str) -> Value {
+    json!({
+        "required": true,
+        "content": {
+            "application/json": {
+                "schema": schema_ref(schema)
+            }
+        }
+    })
+}
+
+fn admin_security() -> Value {
+    json!([
+        {
+            "adminBearer": []
+        }
+    ])
+}
+
+fn profile_security() -> Value {
+    json!([
+        {},
+        {
+            "adminBearer": []
+        },
+        {
+            "profileBearer": []
+        }
+    ])
+}
+
+fn format_query_parameter() -> Value {
+    optional_query_parameter(
+        "format",
+        "Response format. Defaults to plain.",
+        json!({
+            "type": "string",
+            "enum": ["plain", "json"],
+            "default": "plain"
+        }),
+    )
+}
+
+fn profile_query_parameter() -> Value {
+    optional_query_parameter(
+        "profile",
+        "Profile slug. Defaults to the server active profile.",
+        json!({
+            "type": "string"
+        }),
+    )
+}
+
+fn count_query_parameter() -> Value {
+    optional_query_parameter(
+        "count",
+        "Number of hostnames to generate.",
+        json!({
+            "type": "integer",
+            "minimum": 1
+        }),
+    )
+}
+
+fn slug_path_parameter() -> Value {
+    json!({
+        "name": "slug",
+        "in": "path",
+        "required": true,
+        "description": "Profile slug.",
+        "schema": {
+            "type": "string"
+        }
+    })
+}
+
+fn required_query_parameter(name: &str, description: &str, schema: Value) -> Value {
+    query_parameter(name, description, schema, true)
+}
+
+fn optional_query_parameter(name: &str, description: &str, schema: Value) -> Value {
+    query_parameter(name, description, schema, false)
+}
+
+fn query_parameter(name: &str, description: &str, schema: Value, required: bool) -> Value {
+    json!({
+        "name": name,
+        "in": "query",
+        "required": required,
+        "description": description,
+        "schema": schema
+    })
+}
+
+fn openapi_schemas() -> Value {
+    json!({
+        "Health": object_schema(
+            ["status", "service"],
+            [
+                ("status", json!({"type": "string", "enum": ["ok"]})),
+                ("service", json!({"type": "string", "enum": ["hoststamp"]}))
+            ],
+        ),
+        "GenerateResponse": object_schema(
+            ["hostnames"],
+            [
+                ("hostnames", json!({"type": "array", "items": schema_ref("GeneratedHostname")}))
+            ],
+        ),
+        "GeneratedHostname": object_schema(
+            ["hostname"],
+            [
+                ("hostname", json!({"type": "string"})),
+                ("profile", json!({"type": "string"})),
+                ("atomic_value", json!({"type": "integer", "format": "int64", "minimum": 1}))
+            ],
+        ),
+        "LookupResponse": object_schema(
+            ["profile", "atomic_value", "valid"],
+            [
+                ("profile", json!({"type": "string"})),
+                ("atomic_value", json!({"type": ["integer", "null"], "format": "int64"})),
+                ("valid", json!({"type": "boolean"}))
+            ],
+        ),
+        "CapacityReport": object_schema(
+            [
+                "word1_count",
+                "word2_count",
+                "overlapping_words",
+                "unique_word_combinations",
+                "suffix_enabled",
+                "suffix_min_length",
+                "suffix_variants",
+                "suffix_bits",
+                "random_fallback_max_value",
+                "atomic_storage_max_value",
+                "total_variants"
+            ],
+            [
+                ("word1_count", json!({"type": ["integer", "null"], "minimum": 0})),
+                ("word2_count", json!({"type": ["integer", "null"], "minimum": 0})),
+                ("overlapping_words", json!({"type": "integer", "minimum": 0})),
+                ("unique_word_combinations", json!({"type": "integer", "minimum": 0})),
+                ("suffix_enabled", json!({"type": "boolean"})),
+                ("suffix_min_length", json!({"type": ["integer", "null"], "minimum": 1})),
+                ("suffix_variants", json!({"type": ["string", "null"]})),
+                ("suffix_bits", json!({"type": ["integer", "null"], "minimum": 0})),
+                ("random_fallback_max_value", json!({"type": ["integer", "null"], "format": "int64"})),
+                ("atomic_storage_max_value", json!({"type": ["integer", "null"], "format": "int64"})),
+                ("total_variants", json!({"type": "string"}))
+            ],
+        ),
+        "ProfilesResponse": object_schema(
+            ["profiles"],
+            [
+                ("profiles", json!({"type": "array", "items": schema_ref("ProfileResponse")}))
+            ],
+        ),
+        "ProfileEnvelope": object_schema(
+            ["profile"],
+            [
+                ("profile", schema_ref("ProfileResponse"))
+            ],
+        ),
+        "ProfileResponse": object_schema(
+            [
+                "id",
+                "slug",
+                "access",
+                "last_atomic_value",
+                "created_at_ms",
+                "updated_at_ms",
+                "replaced_at_ms",
+                "replaced_by_id",
+                "config_hash",
+                "config"
+            ],
+            [
+                ("id", json!({"type": "string", "format": "uuid"})),
+                ("slug", json!({"type": "string"})),
+                ("access", schema_ref("ProfileAccess")),
+                ("last_atomic_value", json!({"type": "integer", "format": "int64", "minimum": 0})),
+                ("created_at_ms", json!({"type": "integer", "format": "int64"})),
+                ("updated_at_ms", json!({"type": "integer", "format": "int64"})),
+                ("replaced_at_ms", json!({"type": ["integer", "null"], "format": "int64"})),
+                ("replaced_by_id", json!({"type": ["string", "null"], "format": "uuid"})),
+                ("config_hash", json!({"type": "string"})),
+                ("config", schema_ref("ProfileConfig"))
+            ],
+        ),
+        "ProfileAccess": {
+            "type": "string",
+            "enum": ["public", "private"]
+        },
+        "ProfileConfig": object_schema(
+            [
+                "engine",
+                "dictionary_version",
+                "dictionary_version_hash",
+                "blocklist_version",
+                "blocklist_version_hash",
+                "word1",
+                "word2",
+                "suffix"
+            ],
+            [
+                ("engine", json!({"type": "string", "enum": ["atomic-v1"]})),
+                ("dictionary_version", json!({"type": "integer", "minimum": 1})),
+                ("dictionary_version_hash", json!({"type": "string"})),
+                ("blocklist_version", json!({"type": "integer", "minimum": 1})),
+                ("blocklist_version_hash", json!({"type": "string"})),
+                ("word1", schema_ref("WordProfileConfig")),
+                ("word2", schema_ref("WordProfileConfig")),
+                ("suffix", schema_ref("SuffixProfileConfig"))
+            ],
+        ),
+        "WordProfileConfig": object_schema(
+            ["enabled", "lengths", "categories", "pool_hash"],
+            [
+                ("enabled", json!({"type": "boolean"})),
+                ("lengths", json!({"type": ["array", "null"], "items": {"type": "integer", "minimum": 1}})),
+                ("categories", json!({"type": "array", "items": {"type": "string"}})),
+                ("pool_hash", json!({"type": ["string", "null"]}))
+            ],
+        ),
+        "SuffixProfileConfig": object_schema(
+            ["enabled", "min_length"],
+            [
+                ("enabled", json!({"type": "boolean"})),
+                ("min_length", json!({"type": "integer", "minimum": 1}))
+            ],
+        ),
+        "ProfileTokensResponse": object_schema(
+            ["tokens"],
+            [
+                ("tokens", json!({"type": "array", "items": schema_ref("ProfileTokenResponse")}))
+            ],
+        ),
+        "CreatedProfileTokenResponse": object_schema(
+            ["token", "profile_token"],
+            [
+                ("token", schema_ref("ProfileTokenResponse")),
+                ("profile_token", json!({"type": "string"}))
+            ],
+        ),
+        "ProfileTokenEnvelope": object_schema(
+            ["token"],
+            [
+                ("token", schema_ref("ProfileTokenResponse"))
+            ],
+        ),
+        "ProfileTokenResponse": object_schema(
+            [
+                "token_id",
+                "profile_id",
+                "name",
+                "created_at_ms",
+                "expires_at_ms",
+                "last_used_at_ms",
+                "revoked_at_ms"
+            ],
+            [
+                ("token_id", json!({"type": "string"})),
+                ("profile_id", json!({"type": "string", "format": "uuid"})),
+                ("name", json!({"type": "string"})),
+                ("created_at_ms", json!({"type": "integer", "format": "int64"})),
+                ("expires_at_ms", json!({"type": ["integer", "null"], "format": "int64"})),
+                ("last_used_at_ms", json!({"type": ["integer", "null"], "format": "int64"})),
+                ("revoked_at_ms", json!({"type": ["integer", "null"], "format": "int64"}))
+            ],
+        ),
+        "EventsResponse": object_schema(
+            ["events"],
+            [
+                ("events", json!({"type": "array", "items": schema_ref("EventResponse")}))
+            ],
+        ),
+        "EventResponse": object_schema(
+            [
+                "id",
+                "created_at_ms",
+                "source",
+                "action",
+                "profile_slug",
+                "profile_id",
+                "token_id",
+                "token_name",
+                "atomic_start",
+                "atomic_end",
+                "metadata"
+            ],
+            [
+                ("id", json!({"type": "string", "format": "uuid"})),
+                ("created_at_ms", json!({"type": "integer", "format": "int64"})),
+                ("source", json!({"type": "string"})),
+                ("action", json!({"type": "string"})),
+                ("profile_slug", json!({"type": ["string", "null"]})),
+                ("profile_id", json!({"type": ["string", "null"], "format": "uuid"})),
+                ("token_id", json!({"type": ["string", "null"]})),
+                ("token_name", json!({"type": ["string", "null"]})),
+                ("atomic_start", json!({"type": ["integer", "null"], "format": "int64"})),
+                ("atomic_end", json!({"type": ["integer", "null"], "format": "int64"})),
+                ("metadata", json!({"type": "object", "additionalProperties": true}))
+            ],
+        ),
+        "ProfileExport": object_schema(
+            ["format", "id", "slug", "access", "last_atomic_value", "config_hash", "config"],
+            [
+                ("format", json!({"type": "string", "enum": [PROFILE_EXPORT_FORMAT]})),
+                ("id", json!({"type": "string", "format": "uuid"})),
+                ("slug", json!({"type": "string"})),
+                ("access", schema_ref("ProfileAccess")),
+                ("last_atomic_value", json!({"type": "integer", "format": "int64", "minimum": 0})),
+                ("config_hash", json!({"type": "string"})),
+                ("config", schema_ref("ProfileConfig"))
+            ],
+        ),
+        "ImportProfileRequest": object_schema(
+            ["format", "id", "slug", "access", "last_atomic_value", "config_hash", "config"],
+            [
+                ("format", json!({"type": "string", "enum": [PROFILE_EXPORT_FORMAT]})),
+                ("id", json!({"type": "string", "format": "uuid"})),
+                ("slug", json!({"type": "string"})),
+                ("access", schema_ref("ProfileAccess")),
+                ("last_atomic_value", json!({"type": "integer", "format": "int64", "minimum": 0})),
+                ("config_hash", json!({"type": "string"})),
+                ("config", schema_ref("ProfileConfig")),
+                ("confirmation", json!({"oneOf": [schema_ref("AdminConfirmation"), {"type": "null"}]}))
+            ],
+        ),
+        "CreateProfileRequest": object_schema(
+            ["slug"],
+            [
+                ("slug", json!({"type": "string"}))
+            ],
+        ),
+        "UpdateProfileAccessRequest": object_schema(
+            ["access"],
+            [
+                ("access", schema_ref("ProfileAccess"))
+            ],
+        ),
+        "CreateProfileTokenRequest": object_schema(
+            ["name"],
+            [
+                ("name", json!({"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$"})),
+                ("expires_at_ms", json!({"type": ["integer", "null"], "format": "int64"}))
+            ],
+        ),
+        "DeleteProfileRequest": object_schema(
+            ["confirmation"],
+            [
+                ("confirmation", schema_ref("AdminConfirmation"))
+            ],
+        ),
+        "ResetAtomicValueRequest": object_schema(
+            ["atomic_value", "confirmation"],
+            [
+                ("atomic_value", json!({"type": "integer", "format": "int64", "minimum": 0})),
+                ("confirmation", schema_ref("AdminConfirmation"))
+            ],
+        ),
+        "UpdateProfileConfigRequest": object_schema(
+            [],
+            [
+                ("word1_enabled", json!({"type": "boolean"})),
+                ("word1_lengths", config_lengths_update_schema()),
+                ("word1_categories", json!({"type": "array", "items": {"type": "string"}})),
+                ("word2_enabled", json!({"type": "boolean"})),
+                ("word2_lengths", config_lengths_update_schema()),
+                ("word2_categories", json!({"type": "array", "items": {"type": "string"}})),
+                ("suffix_enabled", json!({"type": "boolean"})),
+                ("suffix_min_length", json!({"type": "integer", "minimum": 1})),
+                ("confirmation", json!({"oneOf": [schema_ref("AdminConfirmation"), {"type": "null"}]}))
+            ],
+        ),
+        "AdminConfirmation": object_schema(
+            ["profile", "action"],
+            [
+                ("profile", json!({"type": "string"})),
+                ("action", json!({"type": "string", "enum": ["delete", "replace", "reset"]}))
+            ],
+        )
+    })
+}
+
+fn object_schema<const R: usize, const P: usize>(
+    required: [&str; R],
+    properties: [(&str, Value); P],
+) -> Value {
+    let required = required
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let properties = properties
+        .into_iter()
+        .map(|(name, schema)| (name.to_owned(), schema))
+        .collect::<serde_json::Map<_, _>>();
+    json!({
+        "type": "object",
+        "required": required,
+        "additionalProperties": false,
+        "properties": properties
+    })
+}
+
+fn config_lengths_update_schema() -> Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "array",
+                "items": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            {
+                "type": "string",
+                "enum": ["any"]
+            },
+            {
+                "type": "null"
+            }
+        ]
+    })
+}
+
 async fn healthz() -> Json<Health> {
     Json(health_payload())
+}
+
+async fn openapi_json() -> Json<&'static Value> {
+    Json(openapi_document())
 }
 
 async fn generate_method_not_allowed() -> Response {

@@ -282,6 +282,8 @@ enum Command {
     },
     /// Print the generated man page.
     Man,
+    /// Print the OpenAPI JSON document.
+    Openapi,
     /// Run the API server and local UX.
     Serve {
         /// Address the server should bind to.
@@ -453,6 +455,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Man => {
             clap_mangen::Man::new(Cli::command()).render(&mut io::stdout())?;
+            Ok(())
+        }
+        Command::Openapi => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(server::openapi_document())?
+            );
             Ok(())
         }
         Command::Config { command } => match command {
