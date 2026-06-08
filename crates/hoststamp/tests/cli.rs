@@ -702,6 +702,101 @@ fn profile_commands_create_show_list_and_delete_profiles() {
 }
 
 #[test]
+fn profile_clone_copies_config_to_private_zero_counter_profile() {
+    let (mut create, tempdir) = command_with_database();
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let database = tempdir.path().join("hoststamp.db");
+    let mut config = command_for_database(&database);
+    config
+        .args([
+            "--profile",
+            "team-a",
+            "config",
+            "set",
+            "--word1-lengths",
+            "4",
+        ])
+        .write_stdin("team-a\nreplace\n")
+        .assert()
+        .success();
+
+    let mut access = command_for_database(&database);
+    access
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "set-access",
+            "--access",
+            "public",
+        ])
+        .assert()
+        .success();
+
+    let mut generate = command_for_database(&database);
+    generate
+        .args(["--profile", "team-a", "generate", "--count", "2"])
+        .assert()
+        .success();
+
+    let mut clone = command_for_database(&database);
+    clone
+        .args(["--profile", "team-a", "profile", "clone", "team-a-test"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r#"slug = "team-a-test""#)
+                .and(predicate::str::contains(r#"access = "private""#))
+                .and(predicate::str::contains("last_atomic_value = 0"))
+                .and(predicate::str::contains("lengths = [4]")),
+        );
+
+    let mut source = command_for_database(&database);
+    source
+        .args(["--profile", "team-a", "profile", "show"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r#"access = "public""#)
+                .and(predicate::str::contains("last_atomic_value = 2")),
+        );
+
+    let mut duplicate = command_for_database(&database);
+    duplicate
+        .args(["--profile", "team-a", "profile", "clone", "team-a-test"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+
+    let mut events = command_for_database(&database);
+    let assert = events
+        .args([
+            "--json",
+            "events",
+            "--profile-slug",
+            "team-a-test",
+            "--action",
+            "profile.clone",
+        ])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let events = payload["events"].as_array().expect("events");
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["action"], "profile.clone");
+    assert_eq!(events[0]["profile_slug"], "team-a-test");
+    assert_eq!(events[0]["metadata"]["source_profile_slug"], "team-a");
+    assert_eq!(events[0]["metadata"]["source_access"], "public");
+    assert_eq!(events[0]["metadata"]["access"], "private");
+}
+
+#[test]
 fn profile_export_import_preserves_profile_identity() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let source_database = tempdir.path().join("source.db");

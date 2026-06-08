@@ -79,6 +79,7 @@ function resetProfileForms() {
   el("regenerate-value").value = "1";
   el("regenerate-count").value = "1";
   el("reset-value").value = "0";
+  el("clone-profile-slug").value = "";
   el("results").replaceChildren();
   el("created-token").textContent = "";
 }
@@ -533,6 +534,22 @@ async function createProfile(event) {
   setMessage(`created ${slug}`, "ok-text");
 }
 
+async function cloneProfile(event) {
+  event.preventDefault();
+  if (!state.unlocked || !state.selected) return;
+  const targetSlug = el("clone-profile-slug").value.trim();
+  if (!targetSlug) return;
+  const cloned = await api(`/api/profiles/${slugPath(state.selected)}/clone`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ target_slug: targetSlug }),
+  });
+  el("clone-profile-slug").value = "";
+  state.selected = cloned.profile.slug;
+  await refreshProfiles();
+  setMessage(`cloned ${cloned.profile.slug}`, "ok-text");
+}
+
 async function refreshCapacity() {
   if (!state.unlocked || !state.selected) return;
   const payload = await api(
@@ -802,6 +819,7 @@ wire("refresh-events", "click", refreshEvents);
 wire("apply-events", "click", refreshEvents);
 wire("reset-events", "click", resetEvents);
 wire("create-profile", "submit", createProfile);
+wire("clone-profile", "submit", cloneProfile);
 wire("generate", "click", generate);
 wire("regenerate", "click", regenerate);
 wire("save-access", "click", saveAccess);

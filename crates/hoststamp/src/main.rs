@@ -348,6 +348,12 @@ enum ProfileCommand {
     Show,
     /// Create the selected profile with default generator settings.
     New,
+    /// Clone the selected profile config to a new private profile.
+    Clone {
+        /// New profile slug to create.
+        #[arg(value_parser = profile::parse_profile_slug)]
+        target: ProfileSlug,
+    },
     /// Delete the selected active profile.
     Delete,
     /// Export the selected active profile as portable JSON.
@@ -566,6 +572,25 @@ async fn main() -> anyhow::Result<()> {
                         "profile.create",
                         &profile,
                         serde_json::json!({ "access": profile.access.to_string() }),
+                    );
+                    print_profile_show(&profile);
+                    Ok(())
+                }
+                ProfileCommand::Clone { target } => {
+                    let source = store.load_profile(&cli.profile)?;
+                    let profile = store.clone_profile(&cli.profile, &target)?;
+                    record_profile_event(
+                        &mut store,
+                        "profile.clone",
+                        &profile,
+                        serde_json::json!({
+                            "source_profile_slug": source.slug.as_str(),
+                            "source_profile_id": source.id.to_string(),
+                            "source_access": source.access.to_string(),
+                            "source_config_hash": hex_string(&source.config_hash),
+                            "config_hash": hex_string(&profile.config_hash),
+                            "access": profile.access.to_string(),
+                        }),
                     );
                     print_profile_show(&profile);
                     Ok(())

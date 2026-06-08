@@ -277,6 +277,42 @@ impl ProfileStore {
         Ok(profile)
     }
 
+    pub fn clone_profile(
+        &mut self,
+        source_slug: &ProfileSlug,
+        target_slug: &ProfileSlug,
+    ) -> Result<StoredProfile> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let source = select_profile(&tx, source_slug)?;
+        if active_profile_exists(&tx, target_slug)? {
+            bail!("profile {:?} already exists", target_slug.as_str());
+        }
+
+        let now = unix_epoch_millis()?;
+        let config_json = serde_json::to_string(&source.config)?;
+        let config_hash = config_hash(&source.config)?;
+        tx.execute(
+            "INSERT INTO hoststamp_profiles (
+                id, slug, access, config_json, config_hash, last_atomic_value, created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6)",
+            params![
+                Uuid::now_v7().as_bytes().as_slice(),
+                target_slug.as_str(),
+                ProfileAccess::Private.to_string(),
+                config_json,
+                config_hash.as_slice(),
+                now,
+            ],
+        )?;
+
+        let profile = select_profile(&tx, target_slug)?;
+        tx.commit()?;
+        Ok(profile)
+    }
+
     pub fn import_profile(
         &mut self,
         slug: &ProfileSlug,
@@ -1516,6 +1552,75 @@ mod tests {
         assert_eq!(retired.slug, slug);
         assert_eq!(retired.config, seed);
         assert_eq!(retired.last_atomic_value, 1);
+    }
+
+    #[test]
+    fn clone_profile_copies_config_with_fresh_private_state() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let url = StorageUrl::Sqlite(tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut store = ProfileStore::open(&url).expect("store");
+        let source_slug = "team-a".parse::<ProfileSlug>().expect("source slug");
+        let target_slug = "team-a-test".parse::<ProfileSlug>().expect("target slug");
+        let config = ProfileConfig::from(&GenerateOptions {
+            word1_lengths: Some(vec![4]),
+            suffix_min_length: 6,
+            ..GenerateOptions::default()
+        });
+        let source = store
+            .create_profile(&source_slug, &config)
+            .expect("source profile");
+        store
+            .set_profile_access(&source_slug, ProfileAccess::Public)
+            .expect("access");
+        store
+            .create_profile_token(source.id, "token-id", "deploy", [7_u8; 32], None)
+            .expect("token");
+        assert_eq!(
+            store.increment_atomic_value(&source_slug).expect("value"),
+            1
+        );
+        assert_eq!(
+            store.increment_atomic_value(&source_slug).expect("value"),
+            2
+        );
+
+        let cloned = store
+            .clone_profile(&source_slug, &target_slug)
+            .expect("cloned profile");
+
+        assert_ne!(cloned.id, source.id);
+        assert_eq!(cloned.slug, target_slug);
+        assert_eq!(cloned.access, ProfileAccess::Private);
+        assert_eq!(cloned.config, config);
+        assert_eq!(cloned.config_hash, config_hash(&config).expect("hash"));
+        assert_eq!(cloned.last_atomic_value, 0);
+        assert!(cloned.replaced_at_ms.is_none());
+        assert_eq!(cloned.replaced_by_id, None);
+        assert!(
+            store
+                .list_profile_tokens(cloned.id)
+                .expect("tokens")
+                .is_empty()
+        );
+
+        let source = store.load_profile(&source_slug).expect("source");
+        assert_eq!(source.access, ProfileAccess::Public);
+        assert_eq!(source.last_atomic_value, 2);
+        assert_eq!(
+            store.list_profile_tokens(source.id).expect("tokens").len(),
+            1
+        );
+
+        let duplicate = store
+            .clone_profile(&source_slug, &target_slug)
+            .expect_err("duplicate target should fail");
+        assert!(duplicate.to_string().contains("already exists"));
+
+        let missing = "missing".parse::<ProfileSlug>().expect("missing slug");
+        let error = store
+            .clone_profile(&missing, &"copy".parse::<ProfileSlug>().expect("slug"))
+            .expect_err("missing source should fail");
+        assert!(error.to_string().contains("does not exist"));
     }
 
     #[test]

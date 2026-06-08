@@ -89,6 +89,7 @@ hoststamp profile list
 hoststamp --profile team-a profile show
 hoststamp --profile team-a profile history
 hoststamp --profile team-a profile new
+hoststamp --profile team-a profile clone team-a-test
 hoststamp --profile team-a profile delete
 hoststamp --profile team-a profile export > team-a.hoststamp-profile.json
 hoststamp profile import team-a.hoststamp-profile.json
@@ -105,8 +106,11 @@ hoststamp --json events --profile-slug team-a --action generate
 `profile export` writes portable JSON containing the profile UUID, slug, access
 mode, last issued atomic value, config hash, and config. `profile import` reads
 that export and restores the same deterministic profile identity on another
-machine. `profile delete`, `profile import` when replacing an existing differing
-profile, and `profile reset-atomic-value` require two interactive confirmations.
+machine. `profile clone <target>` copies the selected active profile's stored
+config to a new profile slug with a fresh UUID, `private` access,
+`last_atomic_value = 0`, no profile tokens, and no copied event history.
+`profile delete`, `profile import` when replacing an existing differing profile,
+and `profile reset-atomic-value` require two interactive confirmations.
 `reset-atomic-value` sets the stored `last_atomic_value`; the next
 profile-backed generation increments first and uses the following value. For
 example, resetting to `999` makes the next generated hostname use atomic value
@@ -143,8 +147,8 @@ prints the newest events first and accepts `--profile-slug`, `--action`,
 The database keeps the newest 10,000 events and prunes older rows during event
 recording.
 
-Events are recorded for profile creation, deletion, imports, exports, config
-replacement, access changes, token creation/revocation, atomic resets,
+Events are recorded for profile creation, cloning, deletion, imports, exports,
+config replacement, access changes, token creation/revocation, atomic resets,
 generation batches, and regeneration batches. Generation and regeneration use
 one event per command or API request with `atomic_start` and `atomic_end` when
 profile-backed atomic values are involved. Profile token secrets are never
