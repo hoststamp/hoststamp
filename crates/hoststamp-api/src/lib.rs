@@ -480,6 +480,8 @@ pub fn app_with_mode(
         router = router
             .route("/api/health", get(healthz))
             .route("/api/openapi.json", get(openapi_json))
+            .route("/api/openapi.yaml", get(openapi_yaml))
+            .route("/api/openapi.yml", get(openapi_yaml))
             .route(
                 "/api/generate",
                 post(generate_one).get(generate_method_not_allowed),
@@ -544,6 +546,16 @@ pub fn openapi_document() -> &'static Value {
     DOCUMENT.get_or_init(build_openapi_document)
 }
 
+pub fn openapi_document_yaml() -> &'static str {
+    static DOCUMENT_YAML: OnceLock<String> = OnceLock::new();
+    DOCUMENT_YAML
+        .get_or_init(|| {
+            serde_yaml_ng::to_string(openapi_document())
+                .expect("OpenAPI document must serialize to YAML")
+        })
+        .as_str()
+}
+
 fn build_openapi_document() -> Value {
     json!({
         "openapi": "3.1.0",
@@ -589,6 +601,46 @@ fn build_openapi_document() -> Value {
                             "description": "OpenAPI document",
                             "content": {
                                 "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "additionalProperties": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/openapi.yaml": {
+                "get": {
+                    "tags": ["system"],
+                    "operationId": "getOpenApiYamlDocument",
+                    "summary": "Return this OpenAPI document as YAML",
+                    "responses": {
+                        "200": {
+                            "description": "OpenAPI document",
+                            "content": {
+                                "application/yaml": {
+                                    "schema": {
+                                        "type": "object",
+                                        "additionalProperties": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/openapi.yml": {
+                "get": {
+                    "tags": ["system"],
+                    "operationId": "getOpenApiYmlDocument",
+                    "summary": "Return this OpenAPI document as YAML",
+                    "responses": {
+                        "200": {
+                            "description": "OpenAPI document",
+                            "content": {
+                                "application/yaml": {
                                     "schema": {
                                         "type": "object",
                                         "additionalProperties": true
@@ -1459,6 +1511,14 @@ async fn healthz() -> Json<Health> {
 
 async fn openapi_json() -> Json<&'static Value> {
     Json(openapi_document())
+}
+
+async fn openapi_yaml() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/yaml; charset=utf-8")],
+        openapi_document_yaml(),
+    )
+        .into_response()
 }
 
 async fn generate_method_not_allowed() -> Response {

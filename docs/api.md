@@ -22,6 +22,7 @@ cargo run -p hoststamp -- health
 - UX: `http://127.0.0.1:8080/`
 - API health: `http://127.0.0.1:8080/api/health`
 - OpenAPI JSON: `http://127.0.0.1:8080/api/openapi.json`
+- OpenAPI YAML: `http://127.0.0.1:8080/api/openapi.yaml`
 - API generate: `POST http://127.0.0.1:8080/api/generate?count=3`
 - API generate JSON: `POST http://127.0.0.1:8080/api/generate?profile=_&count=3&format=json`
 - API capacity: `http://127.0.0.1:8080/api/capacity?profile=_`
@@ -39,6 +40,7 @@ The same API contract can be printed without starting the server:
 
 ```sh
 cargo run -p hoststamp -- openapi
+cargo run -p hoststamp -- openapi --format yaml
 ```
 
 `POST /api/generate` returns newline-delimited `text/plain` by default so

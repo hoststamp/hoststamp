@@ -231,6 +231,35 @@ async fn openapi_document_is_public_and_describes_api_routes() {
     );
 }
 
+#[tokio::test]
+async fn openapi_yaml_aliases_are_public_and_describe_api_routes() {
+    for uri in ["/api/openapi.yaml", "/api/openapi.yml"] {
+        let response = server::app_with_auth(GenerateOptions::default(), None, auth_config())
+            .oneshot(
+                http::Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(
+            response.headers()[http::header::CONTENT_TYPE],
+            "application/yaml; charset=utf-8"
+        );
+
+        let body = response_text(response).await;
+        let payload: serde_json::Value = serde_yaml_ng::from_str(&body).expect("yaml");
+        assert_eq!(payload["openapi"], "3.1.0");
+        assert_eq!(payload["info"]["title"], "Hoststamp API");
+        assert!(payload["paths"].get("/api/openapi.yaml").is_some());
+        assert!(payload["paths"].get("/api/openapi.yml").is_some());
+        assert!(payload["paths"].get("/api/generate").is_some());
+    }
+}
+
 #[test]
 fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
     let document = server::openapi_document();
@@ -239,6 +268,8 @@ fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
         "/healthz",
         "/api/health",
         "/api/openapi.json",
+        "/api/openapi.yaml",
+        "/api/openapi.yml",
         "/api/generate",
         "/api/random",
         "/api/capacity",
@@ -264,6 +295,8 @@ fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
         ("/healthz", BTreeSet::from(["get"])),
         ("/api/health", BTreeSet::from(["get"])),
         ("/api/openapi.json", BTreeSet::from(["get"])),
+        ("/api/openapi.yaml", BTreeSet::from(["get"])),
+        ("/api/openapi.yml", BTreeSet::from(["get"])),
         ("/api/generate", BTreeSet::from(["get", "post"])),
         ("/api/random", BTreeSet::from(["get"])),
         ("/api/capacity", BTreeSet::from(["get"])),

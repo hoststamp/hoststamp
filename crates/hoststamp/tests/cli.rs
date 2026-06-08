@@ -114,6 +114,18 @@ fn openapi_prints_api_contract() {
 }
 
 #[test]
+fn openapi_prints_yaml_contract() {
+    let mut cmd = Command::cargo_bin("hoststamp").expect("binary exists");
+    let assert = cmd.args(["openapi", "--format", "yaml"]).assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_yaml_ng::from_str(&output).expect("yaml");
+
+    assert_eq!(payload["openapi"], "3.1.0");
+    assert!(payload["paths"].get("/api/openapi.yaml").is_some());
+    assert!(payload["paths"].get("/api/openapi.yml").is_some());
+}
+
+#[test]
 fn completions_print_supported_shell_scripts() {
     for (shell, expected) in [
         ("bash", "_hoststamp()"),
