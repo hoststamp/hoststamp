@@ -302,8 +302,12 @@
                     Limit
                     <input id="event-limit" type="number" min="1" max="500" value="25" />
                   </label>
+                  <div class="event-actions">
+                    <button id="apply-events" type="button" class="primary">Apply</button>
+                    <button id="reset-events" type="button">Reset</button>
+                  </div>
                 </div>
-                <table>
+                <table class="events-table">
                   <thead>
                     <tr>
                       <th>Time</th>
@@ -312,14 +316,16 @@
                       <th>Source</th>
                       <th>Token</th>
                       <th>Range</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody id="events-body">
                     <tr>
-                      <td class="empty" colspan="6">No events loaded</td>
+                      <td class="empty" colspan="7">No events loaded</td>
                     </tr>
                   </tbody>
                 </table>
+                <div id="event-detail" class="event-detail"></div>
                 <div id="message" class="muted">Ready</div>
               </div>
             </section>

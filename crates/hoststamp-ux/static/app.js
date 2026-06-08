@@ -4,6 +4,7 @@ const state = {
   profiles: [],
   profileHistory: null,
   events: null,
+  selectedEventId: null,
   selected: null,
   adminToken: localStorage.getItem("hoststamp.adminToken") || "",
   unlocked: false,
@@ -61,6 +62,7 @@ function clearProfileState() {
   state.profiles = [];
   state.profileHistory = null;
   state.events = null;
+  state.selectedEventId = null;
   state.selected = null;
   renderProfiles();
   renderProfile();
@@ -130,6 +132,17 @@ function emptyRow(text, colspan) {
   td.colSpan = colspan;
   row.appendChild(td);
   return row;
+}
+
+function actionCell(event) {
+  const td = document.createElement("td");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "compact";
+  button.textContent = "View";
+  button.addEventListener("click", () => selectEvent(event.id));
+  td.appendChild(button);
+  return td;
 }
 
 function selectedProfile() {
@@ -332,25 +345,79 @@ function renderEvents(events) {
   const body = el("events-body");
   body.replaceChildren();
   if (!events) {
-    body.appendChild(emptyRow("No events loaded", 6));
+    state.selectedEventId = null;
+    body.appendChild(emptyRow("No events loaded", 7));
+    renderEventDetail(null);
     return;
   }
   if (!events.length) {
-    body.appendChild(emptyRow("No events", 6));
+    state.selectedEventId = null;
+    body.appendChild(emptyRow("No events", 7));
+    renderEventDetail(null);
     return;
+  }
+  if (!events.some((event) => event.id === state.selectedEventId)) {
+    state.selectedEventId = events[0].id;
   }
   for (const event of events) {
     const row = document.createElement("tr");
+    row.className =
+      "event-row" + (event.id === state.selectedEventId ? " selected" : "");
     row.append(
-      cell(event.created_at_ms, "mono"),
+      cell(formatTimestamp(event.created_at_ms), "mono"),
       cell(event.action),
       cell(event.profile_slug ?? "n/a", "mono"),
       cell(event.source),
       cell(event.token_name ?? "n/a"),
       cell(formatAtomicRange(event.atomic_start, event.atomic_end), "mono"),
+      actionCell(event),
     );
     body.appendChild(row);
   }
+  renderEventDetail(events.find((event) => event.id === state.selectedEventId));
+}
+
+function selectEvent(id) {
+  state.selectedEventId = id;
+  renderEvents(state.events);
+}
+
+function renderEventDetail(event) {
+  const root = el("event-detail");
+  root.replaceChildren();
+  if (!event) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No event selected";
+    root.appendChild(empty);
+    return;
+  }
+
+  const fields = [
+    ["id", event.id],
+    ["created_at_ms", event.created_at_ms],
+    ["time", formatTimestamp(event.created_at_ms)],
+    ["action", event.action],
+    ["source", event.source],
+    ["profile_slug", event.profile_slug ?? "n/a"],
+    ["profile_id", event.profile_id ?? "n/a"],
+    ["token_name", event.token_name ?? "n/a"],
+    ["token_id", event.token_id ?? "n/a"],
+    ["atomic_range", formatAtomicRange(event.atomic_start, event.atomic_end)],
+  ];
+  const list = document.createElement("dl");
+  for (const [label, value] of fields) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const detail = document.createElement("dd");
+    detail.className = "mono";
+    detail.textContent = String(value);
+    list.append(term, detail);
+  }
+
+  const metadata = document.createElement("pre");
+  metadata.textContent = JSON.stringify(event.metadata ?? {}, null, 2);
+  root.append(list, metadata);
 }
 
 function formatAtomicRange(start, end) {
@@ -358,6 +425,28 @@ function formatAtomicRange(start, end) {
     return "n/a";
   }
   return start === end ? String(start) : `${start}-${end}`;
+}
+
+function formatTimestamp(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp)) return "n/a";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "Z");
+}
+
+function resetEventFilters() {
+  el("event-profile-scope").value = "selected";
+  for (const id of [
+    "event-action",
+    "event-source",
+    "event-token-name",
+    "event-since-ms",
+    "event-until-ms",
+  ]) {
+    el(id).value = "";
+  }
+  el("event-limit").value = "25";
 }
 
 async function refreshHealth() {
@@ -481,6 +570,11 @@ async function refreshEvents() {
   const payload = await api(`/api/events${suffix ? `?${suffix}` : ""}`);
   state.events = payload.events;
   renderEvents(state.events);
+}
+
+async function resetEvents() {
+  resetEventFilters();
+  await refreshEvents();
 }
 
 async function generate() {
@@ -705,6 +799,8 @@ wire("refresh-profiles", "click", refreshProfiles);
 wire("refresh-capacity", "click", refreshCapacity);
 wire("refresh-history", "click", refreshProfileHistory);
 wire("refresh-events", "click", refreshEvents);
+wire("apply-events", "click", refreshEvents);
+wire("reset-events", "click", resetEvents);
 wire("create-profile", "submit", createProfile);
 wire("generate", "click", generate);
 wire("regenerate", "click", regenerate);

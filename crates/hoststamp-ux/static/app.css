@@ -261,9 +261,67 @@ main {
 
 .event-controls {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
   align-items: end;
+}
+
+.events-table th:nth-child(1) {
+  width: 11rem;
+}
+
+.events-table th:nth-child(6),
+.events-table th:nth-child(7) {
+  width: 5rem;
+}
+
+.event-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.event-actions button {
+  flex: 1 1 0;
+}
+
+.event-row.selected td {
+  background: #eefaf8;
+}
+
+.event-detail {
+  display: grid;
+  gap: 0.875rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.event-detail dl {
+  display: grid;
+  grid-template-columns: minmax(7rem, 10rem) minmax(0, 1fr);
+  gap: 0.375rem 0.75rem;
+  margin: 0;
+}
+
+.event-detail dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.event-detail dd {
+  margin: 0;
+}
+
+.event-detail pre {
+  max-height: 18rem;
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  border-radius: 0.375rem;
+  background: var(--code);
+  font: 0.8125rem "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace,
+    monospace;
 }
 
 .command-control button {
@@ -386,6 +444,7 @@ main {
   .config-grid,
   .command-grid,
   .event-controls,
+  .event-detail dl,
   .form-grid {
     grid-template-columns: 1fr;
   }
