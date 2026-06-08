@@ -249,8 +249,12 @@ mod tests {
         assert!(index.contains("Hoststamp"));
         assert!(index.contains("/assets/app.css"));
         assert!(index.contains("/assets/app.js"));
+        assert!(index.contains("event-detail"));
+        assert!(index.contains("reset-events"));
         assert!(css.contains(":root"));
+        assert!(css.contains(".event-detail"));
         assert!(js.contains("const state"));
+        assert!(js.contains("renderEventDetail"));
         assert!(reload.contains("checkForUpdate"));
     }
 
