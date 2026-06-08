@@ -282,6 +282,12 @@ enum Command {
     },
     /// Print the generated man page.
     Man,
+    /// Print the OpenAPI document.
+    Openapi {
+        /// Output format for the OpenAPI document.
+        #[arg(long, value_enum, default_value_t = OpenapiFormat::Json)]
+        format: OpenapiFormat,
+    },
     /// Run the API server and local UX.
     Serve {
         /// Address the server should bind to.
@@ -314,6 +320,12 @@ impl From<CompletionShell> for clap_complete::Shell {
             CompletionShell::Fish => Self::Fish,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OpenapiFormat {
+    Json,
+    Yaml,
 }
 
 #[derive(Subcommand, Debug)]
@@ -453,6 +465,20 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Man => {
             clap_mangen::Man::new(Cli::command()).render(&mut io::stdout())?;
+            Ok(())
+        }
+        Command::Openapi { format } => {
+            match format {
+                OpenapiFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(server::openapi_document())?
+                    );
+                }
+                OpenapiFormat::Yaml => {
+                    print!("{}", server::openapi_document_yaml());
+                }
+            }
             Ok(())
         }
         Command::Config { command } => match command {
