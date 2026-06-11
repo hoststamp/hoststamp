@@ -6,6 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -103,6 +104,13 @@ pub struct BackupSnapshot {
     pub profiles: Vec<StoredProfile>,
     pub profile_tokens: Vec<StoredProfileToken>,
     pub events: Vec<StoredEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupRestoreReport {
+    pub profile_count: usize,
+    pub event_count: usize,
+    pub skipped_profile_token_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -822,6 +830,75 @@ impl ProfileStore {
         })
     }
 
+    pub fn restore_backup(&mut self, snapshot: BackupSnapshot) -> Result<BackupRestoreReport> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        ensure_empty_database(&tx)?;
+        validate_backup_profiles(&snapshot.profiles)?;
+        validate_backup_events(&snapshot.events)?;
+
+        for profile in &snapshot.profiles {
+            let config_json = serde_json::to_string(&profile.config)?;
+            tx.execute(
+                "INSERT INTO hoststamp_profiles (
+                    id, slug, access, config_json, config_hash, last_atomic_value,
+                    created_at_ms, updated_at_ms, replaced_at_ms, replaced_by_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    profile.id.as_bytes().as_slice(),
+                    profile.slug.as_str(),
+                    profile.access.to_string(),
+                    config_json,
+                    profile.config_hash.as_slice(),
+                    profile.last_atomic_value,
+                    profile.created_at_ms,
+                    profile.updated_at_ms,
+                    profile.replaced_at_ms,
+                    profile
+                        .replaced_by_id
+                        .as_ref()
+                        .map(|id| id.as_bytes().to_vec()),
+                ],
+            )?;
+        }
+
+        for event in &snapshot.events {
+            let metadata_json = serde_json::to_string(&event.metadata)?;
+            tx.execute(
+                "INSERT INTO hoststamp_events (
+                    id, created_at_ms, source, action, profile_slug, profile_id,
+                    token_id, token_name, atomic_start, atomic_end, metadata_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    event.id.as_bytes().as_slice(),
+                    event.created_at_ms,
+                    event.source.as_str(),
+                    event.action.as_str(),
+                    event.profile_slug.as_ref().map(ProfileSlug::as_str),
+                    event
+                        .profile_id
+                        .as_ref()
+                        .map(|profile_id| profile_id.as_bytes().to_vec()),
+                    event.token_id.as_deref(),
+                    event.token_name.as_deref(),
+                    event.atomic_start,
+                    event.atomic_end,
+                    metadata_json,
+                ],
+            )?;
+        }
+
+        let report = BackupRestoreReport {
+            profile_count: snapshot.profiles.len(),
+            event_count: snapshot.events.len(),
+            skipped_profile_token_count: snapshot.profile_tokens.len(),
+        };
+        tx.commit()?;
+        Ok(report)
+    }
+
     fn open_sqlite(path: &Path) -> Result<Self> {
         if path != Path::new(":memory:") {
             ensure_database_parent(path)?;
@@ -1014,6 +1091,88 @@ fn validate_atomic_range(atomic_start: Option<i64>, atomic_end: Option<i64>) -> 
         (Some(_), Some(_)) => bail!("event atomic_start must be less than or equal to atomic_end"),
         _ => bail!("event atomic range requires both atomic_start and atomic_end"),
     }
+}
+
+fn ensure_empty_database(connection: &Connection) -> Result<()> {
+    let profiles = count_rows(connection, "hoststamp_profiles")?;
+    let profile_tokens = count_rows(connection, "hoststamp_profile_tokens")?;
+    let events = count_rows(connection, "hoststamp_events")?;
+    if profiles > 0 || profile_tokens > 0 || events > 0 {
+        bail!(
+            "backup import requires an empty database; found {profiles} profile row(s), {profile_tokens} profile token row(s), and {events} event row(s)"
+        );
+    }
+    Ok(())
+}
+
+fn count_rows(connection: &Connection, table: &str) -> Result<i64> {
+    Ok(
+        connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })?,
+    )
+}
+
+fn validate_backup_profiles(profiles: &[StoredProfile]) -> Result<()> {
+    let mut ids = BTreeSet::new();
+    let mut active_slugs = BTreeSet::new();
+    for profile in profiles {
+        if !ids.insert(profile.id) {
+            bail!("backup contains duplicate profile id {}", profile.id);
+        }
+        if profile.last_atomic_value < 0 {
+            bail!(
+                "backup profile {:?} last atomic value must be at least 0",
+                profile.slug.as_str()
+            );
+        }
+        if profile.replaced_at_ms.is_some() != profile.replaced_by_id.is_some() {
+            bail!(
+                "backup profile {:?} must set replaced_at_ms and replaced_by_id together",
+                profile.slug.as_str()
+            );
+        }
+        let expected_hash = config_hash(&profile.config)?;
+        if expected_hash != profile.config_hash {
+            bail!(
+                "backup profile {:?} config_hash does not match config",
+                profile.slug.as_str()
+            );
+        }
+        if profile.replaced_at_ms.is_none()
+            && !active_slugs.insert(profile.slug.as_str().to_owned())
+        {
+            bail!(
+                "backup contains more than one active profile for {:?}",
+                profile.slug.as_str()
+            );
+        }
+    }
+    for profile in profiles {
+        if let Some(replaced_by_id) = profile.replaced_by_id.as_ref()
+            && !ids.contains(replaced_by_id)
+        {
+            bail!(
+                "backup profile {} references missing replacement profile {}",
+                profile.id,
+                replaced_by_id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_backup_events(events: &[StoredEvent]) -> Result<()> {
+    let mut ids = BTreeSet::new();
+    for event in events {
+        if !ids.insert(event.id) {
+            bail!("backup contains duplicate event id {}", event.id);
+        }
+        validate_event_text("event source", &event.source)?;
+        validate_event_text("event action", &event.action)?;
+        validate_atomic_range(event.atomic_start, event.atomic_end)?;
+    }
+    Ok(())
 }
 
 fn prune_events(connection: &Connection, limit: i64) -> Result<()> {
@@ -1925,6 +2084,181 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![created.id, backup.id]
         );
+    }
+
+    #[test]
+    fn restore_backup_imports_profiles_and_events_into_empty_database() {
+        let source_tempdir = tempfile::tempdir().expect("source tempdir");
+        let source_url = StorageUrl::Sqlite(source_tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut source = ProfileStore::open(&source_url).expect("source store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let original = source
+            .create_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+        source
+            .create_profile_token(original.id, "token-id", "deploy", [7_u8; 32], None)
+            .expect("token");
+
+        let replacement_config = ProfileConfig::from(&GenerateOptions {
+            word1_lengths: Some(vec![4]),
+            ..GenerateOptions::default()
+        });
+        let replacement = source
+            .replace_profile_config(&slug, &replacement_config)
+            .expect("replacement");
+
+        let mut created = NewEvent::new("cli", "profile.create");
+        created.profile_slug = Some(slug.clone());
+        created.profile_id = Some(original.id);
+        let created = source.record_event(created).expect("created event");
+
+        let snapshot = source.backup_snapshot().expect("snapshot");
+
+        let target_tempdir = tempfile::tempdir().expect("target tempdir");
+        let target_url = StorageUrl::Sqlite(target_tempdir.path().join(DEFAULT_DATABASE_FILE));
+        let mut target = ProfileStore::open(&target_url).expect("target store");
+        let report = target.restore_backup(snapshot).expect("restore");
+
+        assert_eq!(
+            report,
+            BackupRestoreReport {
+                profile_count: 2,
+                event_count: 1,
+                skipped_profile_token_count: 1,
+            }
+        );
+
+        let history = target.list_profile_history(&slug).expect("history");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, original.id);
+        assert_eq!(history[0].replaced_by_id, Some(replacement.id));
+        assert_eq!(history[1].id, replacement.id);
+        assert_eq!(
+            target.load_profile(&slug).expect("active").id,
+            replacement.id
+        );
+
+        assert!(
+            target
+                .list_profile_tokens(original.id)
+                .expect("tokens")
+                .is_empty()
+        );
+        let events = target.list_events(&EventFilter::default()).expect("events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, created.id);
+        assert_eq!(events[0].profile_id, Some(original.id));
+
+        let empty_snapshot = BackupSnapshot {
+            profiles: Vec::new(),
+            profile_tokens: Vec::new(),
+            events: Vec::new(),
+        };
+        let error = target
+            .restore_backup(empty_snapshot)
+            .expect_err("non-empty target should fail");
+        assert!(error.to_string().contains("requires an empty database"));
+    }
+
+    #[test]
+    fn restore_backup_rejects_invalid_profiles_and_events() {
+        assert_invalid_backup(
+            |snapshot| snapshot.profiles[1].id = snapshot.profiles[0].id,
+            "duplicate profile id",
+        );
+        assert_invalid_backup(
+            |snapshot| snapshot.profiles[0].last_atomic_value = -1,
+            "last atomic value",
+        );
+        assert_invalid_backup(
+            |snapshot| {
+                snapshot.profiles[0].config_hash[0] ^= 0xff;
+            },
+            "config_hash does not match config",
+        );
+        assert_invalid_backup(
+            |snapshot| {
+                snapshot.profiles[0].replaced_at_ms = None;
+                snapshot.profiles[0].replaced_by_id = None;
+            },
+            "more than one active profile",
+        );
+        assert_invalid_backup(
+            |snapshot| {
+                snapshot.profiles[0].replaced_by_id = None;
+            },
+            "must set replaced_at_ms and replaced_by_id together",
+        );
+        assert_invalid_backup(
+            |snapshot| {
+                snapshot.profiles[0].replaced_by_id = Some(Uuid::now_v7());
+            },
+            "references missing replacement profile",
+        );
+        assert_invalid_backup(
+            |snapshot| snapshot.events.push(snapshot.events[0].clone()),
+            "duplicate event id",
+        );
+        assert_invalid_backup(
+            |snapshot| snapshot.events[0].source = "CLI".to_owned(),
+            "event source",
+        );
+        assert_invalid_backup(
+            |snapshot| snapshot.events[0].action = "profile create".to_owned(),
+            "event action",
+        );
+        assert_invalid_backup(
+            |snapshot| {
+                snapshot.events[0].atomic_start = Some(2);
+                snapshot.events[0].atomic_end = Some(1);
+            },
+            "atomic_start",
+        );
+    }
+
+    fn assert_invalid_backup(mutate: impl FnOnce(&mut BackupSnapshot), expected_message: &str) {
+        let mut snapshot = backup_snapshot_for_validation();
+        mutate(&mut snapshot);
+
+        let mut target =
+            ProfileStore::open(&StorageUrl::Sqlite(PathBuf::from(":memory:"))).expect("store");
+        let error = target
+            .restore_backup(snapshot)
+            .expect_err("invalid backup should fail");
+        assert!(
+            error.to_string().contains(expected_message),
+            "expected {expected_message:?} in {error}"
+        );
+    }
+
+    fn backup_snapshot_for_validation() -> BackupSnapshot {
+        let mut store =
+            ProfileStore::open(&StorageUrl::Sqlite(PathBuf::from(":memory:"))).expect("store");
+        let slug = "team-a".parse::<ProfileSlug>().expect("slug");
+        let original = store
+            .create_profile(&slug, &ProfileConfig::default())
+            .expect("profile");
+        let replacement_config = ProfileConfig::from(&GenerateOptions {
+            word1_lengths: Some(vec![4]),
+            ..GenerateOptions::default()
+        });
+        let replacement = store
+            .replace_profile_config(&slug, &replacement_config)
+            .expect("replacement");
+
+        let mut event = NewEvent::new("cli", "generate");
+        event.profile_slug = Some(slug);
+        event.profile_id = Some(replacement.id);
+        event.atomic_start = Some(1);
+        event.atomic_end = Some(1);
+        store.record_event(event).expect("event");
+
+        let snapshot = store.backup_snapshot().expect("snapshot");
+        assert_eq!(snapshot.profiles.len(), 2);
+        assert_eq!(snapshot.profiles[0].id, original.id);
+        assert_eq!(snapshot.profiles[1].id, replacement.id);
+        assert_eq!(snapshot.events.len(), 1);
+        snapshot
     }
 
     #[test]

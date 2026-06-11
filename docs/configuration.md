@@ -166,7 +166,19 @@ secrets are not exported.
 
 After collecting the snapshot, the command records a best-effort
 `backup.export` audit event with exported row counts. Backup restore/import is
-not implemented.
+available for empty profile databases:
+
+```sh
+hoststamp backup import hoststamp-backup.json
+```
+
+Backup import restores profile rows and retained audit events, then records a
+best-effort `backup.import` audit event with imported row counts. It refuses to
+run when the target database already contains profiles, profile tokens, or
+events, so it does not merge or overwrite existing state. Profile-token
+metadata from the bundle is skipped during import because backup bundles do not
+include token hashes or one-time token secrets; create new profile tokens after
+restore.
 
 ## Shell Integration
 

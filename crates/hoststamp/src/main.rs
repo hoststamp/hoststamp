@@ -11,8 +11,8 @@ use hoststamp_core::{
     notices,
     profile::{self, ProfileAccess, ProfileConfig, ProfileSlug},
     storage::{
-        self, BackupSnapshot, EventFilter, NewEvent, ProfileStore, StoredEvent, StoredProfile,
-        StoredProfileToken,
+        self, BackupRestoreReport, BackupSnapshot, EventFilter, NewEvent, ProfileStore,
+        StoredEvent, StoredProfile, StoredProfileToken,
     },
 };
 use std::{
@@ -407,6 +407,11 @@ enum ProfileCommand {
 enum BackupCommand {
     /// Export profiles, token metadata, and retained audit events as JSON.
     Export,
+    /// Import a backup bundle into an empty profile database.
+    Import {
+        /// Path to a JSON backup bundle.
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -830,6 +835,26 @@ async fn main() -> anyhow::Result<()> {
                     }),
                 );
                 println!("{}", serde_json::to_string_pretty(&payload)?);
+                Ok(())
+            }
+            BackupCommand::Import { path } => {
+                let contents = fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read backup import {}", path.display()))?;
+                let bundle: server::BackupBundle = serde_json::from_str(&contents)
+                    .with_context(|| format!("failed to parse backup import {}", path.display()))?;
+                let snapshot = backup_import_snapshot(bundle)?;
+                let (_settings, mut store) =
+                    load_profile_store(cli.config.clone(), cli.database_url.clone())?;
+                let report = store.restore_backup(snapshot)?;
+                record_backup_import_event(
+                    &mut store,
+                    serde_json::json!({
+                        "profile_count": report.profile_count,
+                        "event_count": report.event_count,
+                        "skipped_profile_token_count": report.skipped_profile_token_count,
+                    }),
+                );
+                print_backup_import_report(&report, cli.generate.json)?;
                 Ok(())
             }
         },
@@ -1655,6 +1680,14 @@ fn record_backup_event(store: &mut ProfileStore, metadata: serde_json::Value) {
     }
 }
 
+fn record_backup_import_event(store: &mut ProfileStore, metadata: serde_json::Value) {
+    let mut event = NewEvent::new(EVENT_SOURCE_CLI, "backup.import");
+    event.metadata = metadata;
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action = "backup.import", error = %error, "failed to record audit event");
+    }
+}
+
 fn record_generation_event(
     store: &mut ProfileStore,
     action: &'static str,
@@ -1698,12 +1731,160 @@ fn backup_export_payload(snapshot: BackupSnapshot) -> anyhow::Result<server::Bac
         .collect::<Vec<_>>();
 
     Ok(server::BackupBundle {
-        format: server::BACKUP_EXPORT_FORMAT,
+        format: server::BACKUP_EXPORT_FORMAT.to_owned(),
         exported_at_ms: storage::unix_epoch_millis()?,
         profiles,
         profile_tokens,
         events,
     })
+}
+
+fn backup_import_snapshot(bundle: server::BackupBundle) -> anyhow::Result<BackupSnapshot> {
+    if bundle.format != server::BACKUP_EXPORT_FORMAT {
+        anyhow::bail!(
+            "backup import format must be {:?}, got {:?}",
+            server::BACKUP_EXPORT_FORMAT,
+            bundle.format
+        );
+    }
+
+    let profiles = bundle
+        .profiles
+        .into_iter()
+        .enumerate()
+        .map(|(index, profile)| backup_import_profile(index, profile))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let profile_tokens = bundle
+        .profile_tokens
+        .into_iter()
+        .enumerate()
+        .map(|(index, token)| backup_import_profile_token(index, token))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let events = bundle
+        .events
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| backup_import_event(index, event))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(BackupSnapshot {
+        profiles,
+        profile_tokens,
+        events,
+    })
+}
+
+fn backup_import_profile(
+    index: usize,
+    profile: server::ProfileResponse,
+) -> anyhow::Result<StoredProfile> {
+    let id = Uuid::parse_str(&profile.id)
+        .with_context(|| format!("backup profile {index} has invalid id"))?;
+    let slug = profile
+        .slug
+        .parse::<ProfileSlug>()
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("backup profile {index} has invalid slug"))?;
+    let config_hash = parse_hex_hash(&profile.config_hash)
+        .with_context(|| format!("backup profile {index} has invalid config_hash"))?;
+    let replaced_by_id = profile
+        .replaced_by_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .with_context(|| format!("backup profile {index} has invalid replaced_by_id"))?;
+
+    Ok(StoredProfile {
+        id,
+        slug,
+        access: profile.access,
+        config: profile.config,
+        config_hash,
+        last_atomic_value: profile.last_atomic_value,
+        created_at_ms: profile.created_at_ms,
+        updated_at_ms: profile.updated_at_ms,
+        replaced_at_ms: profile.replaced_at_ms,
+        replaced_by_id,
+    })
+}
+
+fn backup_import_profile_token(
+    index: usize,
+    token: server::ProfileTokenResponse,
+) -> anyhow::Result<StoredProfileToken> {
+    let profile_id = Uuid::parse_str(&token.profile_id)
+        .with_context(|| format!("backup profile token {index} has invalid profile_id"))?;
+
+    Ok(StoredProfileToken {
+        token_id: token.token_id,
+        profile_id,
+        name: token.name,
+        created_at_ms: token.created_at_ms,
+        expires_at_ms: token.expires_at_ms,
+        last_used_at_ms: token.last_used_at_ms,
+        revoked_at_ms: token.revoked_at_ms,
+    })
+}
+
+fn backup_import_event(index: usize, event: server::EventResponse) -> anyhow::Result<StoredEvent> {
+    let id = Uuid::parse_str(&event.id)
+        .with_context(|| format!("backup event {index} has invalid id"))?;
+    let profile_slug = event
+        .profile_slug
+        .map(|slug| {
+            slug.parse::<ProfileSlug>()
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("backup event {index} has invalid profile_slug"))
+        })
+        .transpose()?;
+    let profile_id = event
+        .profile_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .with_context(|| format!("backup event {index} has invalid profile_id"))?;
+
+    Ok(StoredEvent {
+        id,
+        created_at_ms: event.created_at_ms,
+        source: event.source,
+        action: event.action,
+        profile_slug,
+        profile_id,
+        token_id: event.token_id,
+        token_name: event.token_name,
+        atomic_start: event.atomic_start,
+        atomic_end: event.atomic_end,
+        metadata: event.metadata,
+    })
+}
+
+fn print_backup_import_report(report: &BackupRestoreReport, json: bool) -> anyhow::Result<()> {
+    if report.skipped_profile_token_count > 0 {
+        eprintln!(
+            "warning: skipped profile token metadata because backup bundles do not include token secrets or token hashes"
+        );
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "profile_count": report.profile_count,
+                "event_count": report.event_count,
+                "skipped_profile_token_count": report.skipped_profile_token_count,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("imported_profiles = {}", report.profile_count);
+    println!("imported_events = {}", report.event_count);
+    println!(
+        "skipped_profile_tokens = {}",
+        report.skipped_profile_token_count
+    );
+    Ok(())
 }
 
 const INITIAL_CONFIG_TEMPLATE: &str = r#"# Hoststamp bootstrap configuration.
@@ -2079,6 +2260,38 @@ fn hex_string(bytes: &[u8]) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+fn parse_hex_hash(value: &str) -> anyhow::Result<[u8; 32]> {
+    if value.len() != 64 {
+        anyhow::bail!("expected 64 lowercase hexadecimal characters");
+    }
+
+    let mut hash = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_digit(chunk[0]).ok_or_else(|| {
+            anyhow::anyhow!(
+                "expected lowercase hexadecimal character at byte {}",
+                index * 2
+            )
+        })?;
+        let low = hex_digit(chunk[1]).ok_or_else(|| {
+            anyhow::anyhow!(
+                "expected lowercase hexadecimal character at byte {}",
+                index * 2 + 1
+            )
+        })?;
+        hash[index] = (high << 4) | low;
+    }
+    Ok(hash)
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
 }
 
 fn ensure_profile_generation_contract_is_current(profile: &StoredProfile) -> anyhow::Result<()> {
