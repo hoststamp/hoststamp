@@ -3,8 +3,9 @@
 use anyhow::anyhow;
 use axum::{
     Json, Router,
+    body::{Body, to_bytes},
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
@@ -19,8 +20,8 @@ use hoststamp_core::{
     },
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
     storage::{
-        EventFilter, NewEvent, ProfileStore, StoredEvent, StoredProfile, StoredProfileToken,
-        config_hash,
+        BackupSnapshot, EventFilter, NewEvent, ProfileStore, StoredEvent, StoredProfile,
+        StoredProfileToken, config_hash, unix_epoch_millis,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,7 @@ use uuid::Uuid;
 pub const PROFILE_EXPORT_FORMAT: &str = "hoststamp-profile-v1";
 pub const BACKUP_EXPORT_FORMAT: &str = "hoststamp-backup-v1";
 pub const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
+pub const MAX_BACKUP_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 const EVENT_SOURCE_API: &str = "api";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,6 +342,13 @@ pub struct BackupBundle {
     pub events: Vec<EventResponse>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct BackupImportResponse {
+    pub profile_count: usize,
+    pub event_count: usize,
+    pub skipped_profile_token_count: usize,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportProfileRequest {
@@ -387,6 +396,146 @@ pub fn validate_import_profile_request(
     }
 
     Ok(ValidatedImportProfile { id, slug })
+}
+
+pub fn backup_export_payload(snapshot: BackupSnapshot) -> Result<BackupBundle, String> {
+    let profiles = snapshot
+        .profiles
+        .into_iter()
+        .map(ProfileResponse::from)
+        .collect::<Vec<_>>();
+    let profile_tokens = snapshot
+        .profile_tokens
+        .into_iter()
+        .map(ProfileTokenResponse::from)
+        .collect::<Vec<_>>();
+    let events = snapshot
+        .events
+        .into_iter()
+        .map(EventResponse::from)
+        .collect::<Vec<_>>();
+    let exported_at_ms = unix_epoch_millis().map_err(|error| error.to_string())?;
+
+    Ok(BackupBundle {
+        format: BACKUP_EXPORT_FORMAT.to_owned(),
+        exported_at_ms,
+        profiles,
+        profile_tokens,
+        events,
+    })
+}
+
+pub fn backup_import_snapshot(bundle: BackupBundle) -> Result<BackupSnapshot, String> {
+    if bundle.format != BACKUP_EXPORT_FORMAT {
+        return Err(format!(
+            "backup import format must be {BACKUP_EXPORT_FORMAT:?}"
+        ));
+    }
+
+    let profiles = bundle
+        .profiles
+        .into_iter()
+        .enumerate()
+        .map(|(index, profile)| backup_import_profile(index, profile))
+        .collect::<Result<Vec<_>, _>>()?;
+    let profile_tokens = bundle
+        .profile_tokens
+        .into_iter()
+        .enumerate()
+        .map(|(index, token)| backup_import_profile_token(index, token))
+        .collect::<Result<Vec<_>, _>>()?;
+    let events = bundle
+        .events
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| backup_import_event(index, event))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(BackupSnapshot {
+        profiles,
+        profile_tokens,
+        events,
+    })
+}
+
+fn backup_import_profile(index: usize, profile: ProfileResponse) -> Result<StoredProfile, String> {
+    let id = Uuid::parse_str(&profile.id)
+        .map_err(|error| format!("backup profile {index} id is invalid: {error}"))?;
+    let slug = profile
+        .slug
+        .parse::<ProfileSlug>()
+        .map_err(|error| format!("backup profile {index} slug is invalid: {error}"))?;
+    let config_hash = parse_hex_hash(&profile.config_hash)
+        .map_err(|error| format!("backup profile {index} config_hash is invalid: {error}"))?;
+    let replaced_by_id = profile
+        .replaced_by_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|error| format!("backup profile {index} replaced_by_id is invalid: {error}"))?;
+
+    Ok(StoredProfile {
+        id,
+        slug,
+        access: profile.access,
+        config: profile.config,
+        config_hash,
+        last_atomic_value: profile.last_atomic_value,
+        created_at_ms: profile.created_at_ms,
+        updated_at_ms: profile.updated_at_ms,
+        replaced_at_ms: profile.replaced_at_ms,
+        replaced_by_id,
+    })
+}
+
+fn backup_import_profile_token(
+    index: usize,
+    token: ProfileTokenResponse,
+) -> Result<StoredProfileToken, String> {
+    let profile_id = Uuid::parse_str(&token.profile_id)
+        .map_err(|error| format!("backup profile token {index} profile_id is invalid: {error}"))?;
+
+    Ok(StoredProfileToken {
+        token_id: token.token_id,
+        profile_id,
+        name: token.name,
+        created_at_ms: token.created_at_ms,
+        expires_at_ms: token.expires_at_ms,
+        last_used_at_ms: token.last_used_at_ms,
+        revoked_at_ms: token.revoked_at_ms,
+    })
+}
+
+fn backup_import_event(index: usize, event: EventResponse) -> Result<StoredEvent, String> {
+    let id = Uuid::parse_str(&event.id)
+        .map_err(|error| format!("backup event {index} id is invalid: {error}"))?;
+    let profile_slug = event
+        .profile_slug
+        .map(|slug| {
+            slug.parse::<ProfileSlug>()
+                .map_err(|error| format!("backup event {index} profile_slug is invalid: {error}"))
+        })
+        .transpose()?;
+    let profile_id = event
+        .profile_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|error| format!("backup event {index} profile_id is invalid: {error}"))?;
+
+    Ok(StoredEvent {
+        id,
+        created_at_ms: event.created_at_ms,
+        source: event.source,
+        action: event.action,
+        profile_slug,
+        profile_id,
+        token_id: event.token_id,
+        token_name: event.token_name,
+        atomic_start: event.atomic_start,
+        atomic_end: event.atomic_end,
+        metadata: event.metadata,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -505,6 +654,8 @@ pub fn app_with_mode(
             .route("/api/lookup", get(lookup_one))
             .route("/api/random", get(random_one))
             .route("/api/events", get(admin_list_events))
+            .route("/api/backup/export", get(admin_export_backup))
+            .route("/api/backup/import", post(admin_import_backup))
             .route(
                 "/api/profiles",
                 get(admin_list_profiles).post(admin_create_profile),
@@ -787,6 +938,34 @@ fn build_openapi_document() -> Value {
                     ],
                     "responses": {
                         "200": json_response("EventsResponse"),
+                        "400": text_response("Bad request"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/backup/export": {
+                "get": {
+                    "tags": ["admin"],
+                    "operationId": "exportBackup",
+                    "summary": "Export a backup bundle",
+                    "security": admin_security(),
+                    "responses": {
+                        "200": json_response("BackupBundle"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/backup/import": {
+                "post": {
+                    "tags": ["admin"],
+                    "operationId": "importBackup",
+                    "summary": "Import a backup bundle into an empty database",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("BackupBundle"),
+                    "responses": {
+                        "200": json_response("BackupImportResponse"),
                         "400": text_response("Bad request"),
                         "401": text_response("Unauthorized"),
                         "503": text_response("Admin API unavailable")
@@ -1417,6 +1596,24 @@ fn openapi_schemas() -> Value {
                 ("metadata", json!({"type": "object", "additionalProperties": true}))
             ],
         ),
+        "BackupBundle": object_schema(
+            ["format", "exported_at_ms", "profiles", "profile_tokens", "events"],
+            [
+                ("format", json!({"type": "string", "enum": [BACKUP_EXPORT_FORMAT]})),
+                ("exported_at_ms", json!({"type": "integer", "format": "int64"})),
+                ("profiles", json!({"type": "array", "items": schema_ref("ProfileResponse")})),
+                ("profile_tokens", json!({"type": "array", "items": schema_ref("ProfileTokenResponse")})),
+                ("events", json!({"type": "array", "items": schema_ref("EventResponse")}))
+            ],
+        ),
+        "BackupImportResponse": object_schema(
+            ["profile_count", "event_count", "skipped_profile_token_count"],
+            [
+                ("profile_count", json!({"type": "integer", "minimum": 0})),
+                ("event_count", json!({"type": "integer", "minimum": 0})),
+                ("skipped_profile_token_count", json!({"type": "integer", "minimum": 0}))
+            ],
+        ),
         "ProfileExport": object_schema(
             ["format", "id", "slug", "access", "last_atomic_value", "config_hash", "config"],
             [
@@ -1902,6 +2099,75 @@ async fn admin_import_profile(
             profile: profile.into(),
         }),
     ))
+}
+
+async fn admin_export_backup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<BackupBundle>, Response> {
+    authorize_admin_request(&headers, &state.auth)?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let snapshot = store.backup_snapshot().map_err(admin_internal_response)?;
+    let profile_count = snapshot.profiles.len();
+    let profile_token_count = snapshot.profile_tokens.len();
+    let event_count = snapshot.events.len();
+    let payload =
+        backup_export_payload(snapshot).map_err(|error| admin_internal_response(anyhow!(error)))?;
+    record_api_backup_event(
+        &mut store,
+        "backup.export",
+        serde_json::json!({
+            "profile_count": profile_count,
+            "profile_token_count": profile_token_count,
+            "event_count": event_count,
+        }),
+    );
+
+    Ok(Json(payload))
+}
+
+async fn admin_import_backup(
+    State(state): State<AppState>,
+    request: Request<Body>,
+) -> Result<Json<BackupImportResponse>, Response> {
+    let (parts, body) = request.into_parts();
+    authorize_admin_request(&parts.headers, &state.auth)?;
+    let body = to_bytes(body, MAX_BACKUP_REQUEST_BODY_BYTES)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "backup import body exceeds 8 MiB",
+            )
+                .into_response()
+        })?;
+    let bundle: BackupBundle = serde_json::from_slice(&body).map_err(admin_bad_request_response)?;
+    let snapshot = backup_import_snapshot(bundle).map_err(admin_bad_request_response)?;
+    let store = admin_store(&state)?;
+    let mut store = store.lock().await;
+    let report = match store.restore_backup(snapshot) {
+        Ok(report) => report,
+        Err(error) if backup_restore_error_is_client_fault(&error) => {
+            return Err(admin_bad_request_response(error));
+        }
+        Err(error) => return Err(admin_internal_response(error)),
+    };
+    record_api_backup_event(
+        &mut store,
+        "backup.import",
+        serde_json::json!({
+            "profile_count": report.profile_count,
+            "event_count": report.event_count,
+            "skipped_profile_token_count": report.skipped_profile_token_count,
+        }),
+    );
+
+    Ok(Json(BackupImportResponse {
+        profile_count: report.profile_count,
+        event_count: report.event_count,
+        skipped_profile_token_count: report.skipped_profile_token_count,
+    }))
 }
 
 async fn admin_delete_profile(
@@ -2809,6 +3075,25 @@ fn record_api_profile_token_event(
     }
 }
 
+fn record_api_backup_event(store: &mut ProfileStore, action: &'static str, metadata: Value) {
+    let mut event = NewEvent::new(EVENT_SOURCE_API, action);
+    event.metadata = metadata;
+    if let Err(error) = store.record_event(event) {
+        tracing::warn!(action, error = %error, "failed to record audit event");
+    }
+}
+
+fn backup_restore_error_is_client_fault(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.starts_with("backup import requires ")
+        || message.starts_with("backup contains ")
+        || message.starts_with("backup profile ")
+        || message.starts_with("event source ")
+        || message.starts_with("event action ")
+        || message.starts_with("event atomic_")
+        || message.starts_with("event atomic range ")
+}
+
 fn record_api_generation_event(
     store: &mut ProfileStore,
     action: &'static str,
@@ -2861,6 +3146,38 @@ fn hex_string(bytes: &[u8]) -> String {
         let _ = write!(value, "{byte:02x}");
     }
     value
+}
+
+fn parse_hex_hash(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64 {
+        return Err("expected 64 lowercase hexadecimal characters".to_owned());
+    }
+
+    let mut hash = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_digit(chunk[0]).ok_or_else(|| {
+            format!(
+                "expected lowercase hexadecimal character at byte {}",
+                index * 2
+            )
+        })?;
+        let low = hex_digit(chunk[1]).ok_or_else(|| {
+            format!(
+                "expected lowercase hexadecimal character at byte {}",
+                index * 2 + 1
+            )
+        })?;
+        hash[index] = (high << 4) | low;
+    }
+    Ok(hash)
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
 }
 
 fn bad_request_response(error: impl ToString) -> Response {

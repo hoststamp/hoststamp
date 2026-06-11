@@ -164,6 +164,9 @@ includes active and replaced profile rows so regenerated hostnames remain tied
 to their immutable profile UUIDs. Profile-token hashes and one-time token
 secrets are not exported.
 
+The same bundle format is available from the local UX Backup panel and the
+admin `GET /api/backup/export` endpoint.
+
 After collecting the snapshot, the command records a best-effort
 `backup.export` audit event with exported row counts. Backup restore/import is
 available for empty profile databases:
@@ -179,6 +182,8 @@ events, so it does not merge or overwrite existing state. Profile-token
 metadata from the bundle is skipped during import because backup bundles do not
 include token hashes or one-time token secrets; create new profile tokens after
 restore.
+The local UX Backup panel and admin `POST /api/backup/import` endpoint apply
+the same import rules.
 
 ## Shell Integration
 

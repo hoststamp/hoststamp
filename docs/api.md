@@ -34,6 +34,8 @@ cargo run -p hoststamp -- health
 - API random JSON: `http://127.0.0.1:8080/api/random?count=3&format=json`
 - Admin profiles: `http://127.0.0.1:8080/api/profiles`
 - Admin profile clone: `POST http://127.0.0.1:8080/api/profiles/team-a/clone`
+- Admin backup export: `http://127.0.0.1:8080/api/backup/export`
+- Admin backup import: `POST http://127.0.0.1:8080/api/backup/import`
 - Admin events: `http://127.0.0.1:8080/api/events?profile=_&limit=25`
 - Container health: `http://127.0.0.1:8080/healthz`
 
@@ -136,6 +138,8 @@ Admin API endpoints mirror the profile/config CLI operations:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `GET` | `/api/backup/export` | export profile rows, profile-token metadata, and retained events |
+| `POST` | `/api/backup/import` | import a backup bundle into an empty profile database |
 | `GET` | `/api/events` | list audit events |
 | `GET` | `/api/profiles` | list active profiles |
 | `POST` | `/api/profiles` | create a profile with default config |
@@ -182,6 +186,14 @@ instance; importing over an existing slug requires action `replace`. The same
 workflow is available locally with `hoststamp profile export` and
 `hoststamp profile import <path>`.
 
+`GET /api/backup/export` returns a `hoststamp-backup-v1` JSON bundle containing
+profile rows, profile-token metadata, and retained audit events. The export
+records a best-effort `backup.export` audit event after collecting the snapshot,
+so that new audit row is not included in the returned bundle. `POST
+/api/backup/import` restores profile rows and retained audit events into an
+empty profile database, skips profile-token metadata, and records a best-effort
+`backup.import` audit event.
+
 `GET /api/events` returns recent audit events and requires the admin bearer
 token. Optional filters are `profile`, `action`, `source`, `token_name`,
 `since_ms`, `until_ms`, and `limit` (`1..=500`, default `50`). Events include
@@ -216,9 +228,8 @@ event recording.
 }
 ```
 
-JSON request bodies are capped at 256 KiB. That is intentionally larger than
-current profile exports and small enough to avoid accidental large uploads on
-admin surfaces.
+Most JSON request bodies are capped at 256 KiB. Backup import accepts up to 8
+MiB because bundles can include retained audit events.
 
 ## Local UX
 
@@ -228,4 +239,6 @@ security headers (`nosniff`, frame denial, no referrer, a restrictive CSP, and
 basic permissions policy). The CSP allows only self-hosted scripts and styles.
 The profile health panel summarizes the selected profile's engine, dictionary
 and blocklist versions, config hash, counter, capacity, token status,
-replacement history, and local warnings.
+replacement history, and local warnings. The Backup panel can export and import
+full backup bundles with the same empty database and token-skip semantics as
+the admin backup API.

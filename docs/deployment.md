@@ -21,9 +21,8 @@ rate limiting if an exposed deployment needs it.
 
 ## Request Limits And Headers
 
-The API caps JSON request bodies at 256 KiB. Current admin profile exports are
-well below that limit; the cap exists to keep admin import and config endpoints
-bounded.
+Most API JSON request bodies are capped at 256 KiB. Backup import accepts up to
+8 MiB because backup bundles can include retained audit events.
 
 The local UX response sets:
 
