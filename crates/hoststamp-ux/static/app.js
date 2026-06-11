@@ -181,6 +181,10 @@ function downloadJson(payload, filename) {
   URL.revokeObjectURL(url);
 }
 
+function countLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 function renderProfiles() {
   const root = el("profiles");
   root.replaceChildren();
@@ -835,12 +839,22 @@ async function importBackup(event) {
   const file = event.target.files[0];
   if (!file) return;
   const payload = JSON.parse(await file.text());
+  const preview = await api("/api/backup/import/preview", {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(payload),
+  });
+  if (!preview.valid) {
+    setMessage(`backup import blocked: ${preview.blockers.join("; ")}`, "error");
+    return;
+  }
   const accepted = window.confirm(
     [
       "Import backup bundle?",
       "",
-      "The target database must not contain profiles, profile tokens, or events.",
-      "Profile-token metadata is not restored.",
+      countLabel(preview.profile_count, "profile row"),
+      countLabel(preview.event_count, "retained event"),
+      `${countLabel(preview.skipped_profile_token_count, "profile token")} skipped`,
     ].join("\n"),
   );
   if (!accepted) return;

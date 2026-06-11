@@ -182,6 +182,8 @@ events, so it does not merge or overwrite existing state. Profile-token
 metadata from the bundle is skipped during import because backup bundles do not
 include token hashes or one-time token secrets; create new profile tokens after
 restore.
+The local UX Backup panel and admin `POST /api/backup/import/preview` endpoint
+can preview row counts, skipped token metadata, and blockers before import.
 The local UX Backup panel and admin `POST /api/backup/import` endpoint apply
 the same import rules.
 
