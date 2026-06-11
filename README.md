@@ -52,6 +52,7 @@ cargo run -p hoststamp -- --profile team-a generate
 cargo run -p hoststamp -- --profile team-a profile export > team-a.hoststamp-profile.json
 cargo run -p hoststamp -- profile import team-a.hoststamp-profile.json
 cargo run -p hoststamp -- backup export > hoststamp-backup.json
+cargo run -p hoststamp -- backup import hoststamp-backup.json
 cargo run -p hoststamp -- --profile team-a lookup brief-cobra-db50d
 cargo run -p hoststamp -- --profile team-a validate brief-cobra-db50d
 cargo run -p hoststamp -- --profile team-a validate --file hostnames.txt --json

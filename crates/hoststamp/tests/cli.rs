@@ -1331,6 +1331,111 @@ fn backup_export_prints_profiles_token_metadata_and_events_without_secrets() {
 }
 
 #[test]
+fn backup_import_restores_profiles_and_events_into_empty_database() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let source_database = tempdir.path().join("source.db");
+    let target_database = tempdir.path().join("target.db");
+    let json_target_database = tempdir.path().join("json-target.db");
+    let backup_path = tempdir.path().join("hoststamp-backup.json");
+
+    let mut create = command_for_database(&source_database);
+    create
+        .args(["--profile", "team-a", "profile", "new"])
+        .assert()
+        .success();
+
+    let mut generate = command_for_database(&source_database);
+    let assert = generate
+        .args(["--profile", "team-a", "generate", "--count", "2"])
+        .assert()
+        .success();
+    let generated = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let hostnames = generated.lines().collect::<Vec<_>>();
+    assert_eq!(hostnames.len(), 2);
+
+    let mut token = command_for_database(&source_database);
+    token
+        .env("HOSTSTAMP_TOKEN_HASH_KEY", "hash-key")
+        .args([
+            "--profile",
+            "team-a",
+            "profile",
+            "token",
+            "create",
+            "--name",
+            "deploy",
+        ])
+        .assert()
+        .success();
+
+    let mut export = command_for_database(&source_database);
+    let assert = export.args(["backup", "export"]).assert().success();
+    fs::write(&backup_path, &assert.get_output().stdout).expect("backup file");
+
+    let mut import = command_for_database(&target_database);
+    import
+        .args([
+            "backup",
+            "import",
+            backup_path.to_str().expect("backup path"),
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("imported_profiles = 1")
+                .and(predicate::str::contains("imported_events = 3"))
+                .and(predicate::str::contains("skipped_profile_tokens = 1")),
+        )
+        .stderr(predicate::str::contains("skipped profile token metadata"));
+
+    let mut json_import = command_for_database(&json_target_database);
+    json_import
+        .args([
+            "--json",
+            "backup",
+            "import",
+            backup_path.to_str().expect("backup path"),
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r#""profile_count": 1"#)
+                .and(predicate::str::contains(r#""event_count": 3"#))
+                .and(predicate::str::contains(
+                    r#""skipped_profile_token_count": 1"#,
+                )),
+        )
+        .stderr(predicate::str::contains("skipped profile token metadata"));
+
+    let mut regenerate = command_for_database(&target_database);
+    regenerate
+        .args(["--profile", "team-a", "regenerate", "--atomic-value", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(hostnames[0]));
+
+    let mut list_tokens = command_for_database(&target_database);
+    list_tokens
+        .args(["--profile", "team-a", "profile", "token", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy").not());
+
+    let mut events = command_for_database(&target_database);
+    let assert = events
+        .args(["--json", "events", "--action", "backup.import"])
+        .assert()
+        .success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json");
+    let events = payload["events"].as_array().expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["metadata"]["profile_count"], 1);
+    assert_eq!(events[0]["metadata"]["event_count"], 3);
+    assert_eq!(events[0]["metadata"]["skipped_profile_token_count"], 1);
+}
+
+#[test]
 fn regenerate_recreates_profile_hostname_without_incrementing_counter() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database = tempdir.path().join("hoststamp.db");

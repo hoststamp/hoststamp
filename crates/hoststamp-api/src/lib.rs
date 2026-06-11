@@ -196,7 +196,7 @@ pub enum GenerateFormat {
     Json,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ProfilesResponse {
     pub profiles: Vec<ProfileResponse>,
 }
@@ -206,7 +206,8 @@ pub struct ProfileEnvelope {
     pub profile: ProfileResponse,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileResponse {
     pub id: String,
     pub slug: String,
@@ -237,7 +238,7 @@ impl From<StoredProfile> for ProfileResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ProfileTokensResponse {
     pub tokens: Vec<ProfileTokenResponse>,
 }
@@ -253,7 +254,8 @@ pub struct ProfileTokenEnvelope {
     pub token: ProfileTokenResponse,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileTokenResponse {
     pub token_id: String,
     pub profile_id: String,
@@ -278,12 +280,13 @@ impl From<StoredProfileToken> for ProfileTokenResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EventsResponse {
     pub events: Vec<EventResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventResponse {
     pub id: String,
     pub created_at_ms: i64,
@@ -327,9 +330,10 @@ pub struct ProfileExport {
     pub config: ProfileConfig,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackupBundle {
-    pub format: &'static str,
+    pub format: String,
     pub exported_at_ms: i64,
     pub profiles: Vec<ProfileResponse>,
     pub profile_tokens: Vec<ProfileTokenResponse>,
