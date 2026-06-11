@@ -215,6 +215,8 @@ async fn openapi_document_is_public_and_describes_api_routes() {
             .get("/api/profiles/{slug}/tokens/{token_id}")
             .is_some()
     );
+    assert!(payload["paths"].get("/api/backup/export").is_some());
+    assert!(payload["paths"].get("/api/backup/import").is_some());
     assert_eq!(
         payload["paths"]["/api/generate"]["post"]["responses"]["200"]["content"]["application/json"]
             ["schema"]["$ref"],
@@ -223,6 +225,11 @@ async fn openapi_document_is_public_and_describes_api_routes() {
     assert_eq!(
         payload["components"]["schemas"]["ProfileResponse"]["properties"]["config"]["$ref"],
         "#/components/schemas/ProfileConfig"
+    );
+    assert!(
+        payload["components"]["schemas"]
+            .get("BackupImportResponse")
+            .is_some()
     );
     assert!(
         payload["components"]["securitySchemes"]
@@ -276,6 +283,8 @@ fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
         "/api/regenerate",
         "/api/lookup",
         "/api/events",
+        "/api/backup/export",
+        "/api/backup/import",
         "/api/profiles",
         "/api/profiles/{slug}",
         "/api/profiles/{slug}/history",
@@ -304,6 +313,8 @@ fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
         ("/api/regenerate", BTreeSet::from(["get"])),
         ("/api/lookup", BTreeSet::from(["get"])),
         ("/api/events", BTreeSet::from(["get"])),
+        ("/api/backup/export", BTreeSet::from(["get"])),
+        ("/api/backup/import", BTreeSet::from(["post"])),
         ("/api/profiles", BTreeSet::from(["get", "post"])),
         ("/api/profiles/{slug}", BTreeSet::from(["delete", "get"])),
         ("/api/profiles/{slug}/history", BTreeSet::from(["get"])),
@@ -711,6 +722,69 @@ async fn oversized_json_bodies_are_rejected() {
         .expect("response");
 
     assert_eq!(response.status(), http::StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn backup_import_accepts_bodies_above_default_json_limit() {
+    let event_count = 1_500;
+    let events = (0..event_count)
+        .map(|index| {
+            json!({
+                "id": format!("00000000-0000-0000-0000-{index:012x}"),
+                "created_at_ms": 1_780_800_000_000_i64 + i64::from(index),
+                "source": "api",
+                "action": "backup.large-import-test",
+                "profile_slug": null,
+                "profile_id": null,
+                "token_id": null,
+                "token_name": null,
+                "atomic_start": null,
+                "atomic_end": null,
+                "metadata": {
+                    "padding": "x".repeat(160),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let bundle = json!({
+        "format": "hoststamp-backup-v1",
+        "exported_at_ms": 1_780_800_000_000_i64,
+        "profiles": [],
+        "profile_tokens": [],
+        "events": events,
+    });
+    let body = serde_json::to_vec(&bundle).expect("backup body");
+    assert!(body.len() > server::MAX_REQUEST_BODY_BYTES);
+    assert!(body.len() < server::MAX_BACKUP_REQUEST_BODY_BYTES);
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let store = ProfileStore::open(&database_url).expect("store");
+    let response = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(
+            store,
+            ProfileSlug::default_profile(),
+        )),
+        auth_config(),
+    )
+    .oneshot(
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/api/backup/import")
+            .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let response = response_json(response).await;
+    assert_eq!(response["profile_count"], 0);
+    assert_eq!(response["event_count"], event_count);
+    assert_eq!(response["skipped_profile_token_count"], 0);
 }
 
 #[tokio::test]
@@ -2327,6 +2401,192 @@ async fn admin_profile_endpoints_manage_profiles() {
 }
 
 #[tokio::test]
+async fn admin_backup_endpoints_export_and_import_bundles() {
+    let source_tempdir = tempfile::tempdir().expect("source tempdir");
+    let source_database_url = StorageUrl::Sqlite(source_tempdir.path().join("hoststamp.db"));
+    let default_slug = ProfileSlug::default_profile();
+    let source_store = ProfileStore::open(&source_database_url).expect("source store");
+    let source_app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(
+            source_store,
+            default_slug.clone(),
+        )),
+        auth_config(),
+    );
+
+    let created = source_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles",
+            json!({ "slug": "team-a" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(created.status(), http::StatusCode::CREATED);
+
+    let generated = source_app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/generate?format=json&profile=team-a&count=2")
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(generated.status(), http::StatusCode::OK);
+    let generated = response_json(generated).await;
+    let first_hostname = generated["hostnames"][0]["hostname"]
+        .as_str()
+        .expect("hostname")
+        .to_owned();
+
+    let token = source_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/profiles/team-a/tokens",
+            json!({ "name": "deploy" }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(token.status(), http::StatusCode::CREATED);
+
+    let exported = source_app
+        .clone()
+        .oneshot(admin_get_request("/api/backup/export"))
+        .await
+        .expect("response");
+    assert_eq!(exported.status(), http::StatusCode::OK);
+    let bundle = response_json(exported).await;
+    assert_eq!(bundle["format"], "hoststamp-backup-v1");
+    assert_eq!(bundle["profiles"].as_array().expect("profiles").len(), 1);
+    assert_eq!(
+        bundle["profile_tokens"].as_array().expect("tokens").len(),
+        1
+    );
+    assert_eq!(bundle["events"].as_array().expect("events").len(), 3);
+    assert!(
+        !bundle["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| event["action"] == "backup.export")
+    );
+
+    let source_export_events = source_app
+        .clone()
+        .oneshot(admin_get_request("/api/events?action=backup.export"))
+        .await
+        .expect("response");
+    assert_eq!(source_export_events.status(), http::StatusCode::OK);
+    let source_export_events = response_json(source_export_events).await;
+    assert_eq!(
+        source_export_events["events"][0]["metadata"]["profile_count"],
+        1
+    );
+    assert_eq!(
+        source_export_events["events"][0]["metadata"]["profile_token_count"],
+        1
+    );
+    assert_eq!(
+        source_export_events["events"][0]["metadata"]["event_count"],
+        3
+    );
+
+    let target_tempdir = tempfile::tempdir().expect("target tempdir");
+    let target_database_url = StorageUrl::Sqlite(target_tempdir.path().join("hoststamp.db"));
+    let target_store = ProfileStore::open(&target_database_url).expect("target store");
+    let target_app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(target_store, default_slug)),
+        auth_config(),
+    );
+
+    let invalid_bundle = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/backup/import",
+            json!({
+                "format": "not-a-hoststamp-backup",
+                "exported_at_ms": 1_780_800_000_000_i64,
+                "profiles": [],
+                "profile_tokens": [],
+                "events": [],
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(invalid_bundle.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(invalid_bundle).await;
+    assert!(message.contains("backup import format"));
+
+    let imported = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/backup/import",
+            bundle.clone(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(imported.status(), http::StatusCode::OK);
+    let imported = response_json(imported).await;
+    assert_eq!(imported["profile_count"], 1);
+    assert_eq!(imported["event_count"], 3);
+    assert_eq!(imported["skipped_profile_token_count"], 1);
+
+    let regenerated = target_app
+        .clone()
+        .oneshot(admin_get_request(
+            "/api/regenerate?format=json&profile=team-a&atomic_value=1",
+        ))
+        .await
+        .expect("response");
+    assert_eq!(regenerated.status(), http::StatusCode::OK);
+    let regenerated = response_json(regenerated).await;
+    assert_eq!(regenerated["hostnames"][0]["hostname"], first_hostname);
+
+    let target_tokens = target_app
+        .clone()
+        .oneshot(admin_get_request("/api/profiles/team-a/tokens"))
+        .await
+        .expect("response");
+    assert_eq!(target_tokens.status(), http::StatusCode::OK);
+    let target_tokens = response_json(target_tokens).await;
+    assert_eq!(target_tokens["tokens"].as_array().expect("tokens").len(), 0);
+
+    let target_import_events = target_app
+        .clone()
+        .oneshot(admin_get_request("/api/events?action=backup.import"))
+        .await
+        .expect("response");
+    assert_eq!(target_import_events.status(), http::StatusCode::OK);
+    let target_import_events = response_json(target_import_events).await;
+    assert_eq!(
+        target_import_events["events"][0]["metadata"]["skipped_profile_token_count"],
+        1
+    );
+
+    let repeated_import = target_app
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/backup/import",
+            bundle,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(repeated_import.status(), http::StatusCode::BAD_REQUEST);
+    let message = response_text(repeated_import).await;
+    assert!(message.contains("requires an empty database"));
+}
+
+#[tokio::test]
 async fn admin_events_endpoint_lists_filtered_events() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
@@ -2723,6 +2983,98 @@ async fn admin_endpoints_require_admin_token_when_auth_is_required() {
         .await
         .expect("response");
     assert_eq!(admin.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_backup_endpoints_require_admin_token_before_reading_body() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    let profile = store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+    let generated = auth::generate_profile_token();
+    let hash_key = SecretString::new("hash-key".to_owned()).expect("key");
+    let token_hash = auth::profile_token_hash(&hash_key, &generated.secret).expect("hash");
+    store
+        .create_profile_token(profile.id, &generated.token_id, "deploy", token_hash, None)
+        .expect("token");
+
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        ApiAuthConfig {
+            required: true,
+            admin_token: Some(SecretString::new("admin-secret".to_owned()).expect("admin")),
+            token_hash_key: Some(hash_key),
+        },
+    );
+
+    let missing_export = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/backup/export")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(missing_export.status(), http::StatusCode::UNAUTHORIZED);
+
+    let missing_import = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/backup/import")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(missing_import.status(), http::StatusCode::UNAUTHORIZED);
+
+    let profile_token_export = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/api/backup/export")
+                .header(
+                    http::header::AUTHORIZATION,
+                    format!("Bearer {}", generated.token),
+                )
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        profile_token_export.status(),
+        http::StatusCode::UNAUTHORIZED
+    );
+
+    let profile_token_import = app
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/backup/import")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(
+                    http::header::AUTHORIZATION,
+                    format!("Bearer {}", generated.token),
+                )
+                .body(Body::from("{"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        profile_token_import.status(),
+        http::StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]

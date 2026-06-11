@@ -168,6 +168,19 @@ function parseLengthsInput(value) {
   return trimmed.toLowerCase() === "any" ? "any" : trimmed;
 }
 
+function downloadJson(payload, filename) {
+  const data = JSON.stringify(payload, null, 2);
+  const blob = new Blob([data], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function renderProfiles() {
   const root = el("profiles");
   root.replaceChildren();
@@ -759,16 +772,7 @@ async function saveAccess() {
 async function exportProfile() {
   if (!state.unlocked || !state.selected) return;
   const payload = await api(`/api/profiles/${slugPath(state.selected)}/export`);
-  const data = JSON.stringify(payload, null, 2);
-  const blob = new Blob([data], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `hoststamp-${payload.slug}.profile.json`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  downloadJson(payload, `hoststamp-${payload.slug}.profile.json`);
   await refreshEvents();
   setMessage(`exported ${payload.slug}`, "ok-text");
 }
@@ -809,6 +813,51 @@ async function importProfile(event) {
   state.selected = imported.profile.slug;
   await refreshProfiles();
   setMessage(`imported ${imported.profile.slug}`, "ok-text");
+}
+
+async function exportBackup() {
+  if (!state.unlocked) return;
+  const payload = await api("/api/backup/export");
+  downloadJson(payload, "hoststamp-backup.json");
+  await refreshEvents();
+  setMessage("exported backup", "ok-text");
+}
+
+function startImportBackup() {
+  if (!state.unlocked) return;
+  const input = el("import-backup-file");
+  input.value = "";
+  input.click();
+}
+
+async function importBackup(event) {
+  if (!state.unlocked) return;
+  const file = event.target.files[0];
+  if (!file) return;
+  const payload = JSON.parse(await file.text());
+  const accepted = window.confirm(
+    [
+      "Import backup bundle?",
+      "",
+      "The target database must not contain profiles, profile tokens, or events.",
+      "Profile-token metadata is not restored.",
+    ].join("\n"),
+  );
+  if (!accepted) return;
+  const imported = await api("/api/backup/import", {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(payload),
+  });
+  state.selected = null;
+  await refreshProfiles();
+  const skipped = imported.skipped_profile_token_count;
+  setMessage(
+    skipped > 0
+      ? `imported backup; skipped ${skipped} profile token${skipped === 1 ? "" : "s"}`
+      : "imported backup",
+    "ok-text",
+  );
 }
 
 async function saveConfig() {
@@ -953,6 +1002,9 @@ wire("save-access", "click", saveAccess);
 wire("export-profile", "click", exportProfile);
 wire("import-profile", "click", startImportProfile);
 wire("import-profile-file", "change", importProfile);
+wire("export-backup", "click", exportBackup);
+wire("import-backup", "click", startImportBackup);
+wire("import-backup-file", "change", importBackup);
 wire("save-config", "click", saveConfig);
 wire("reset-atomic", "click", resetAtomic);
 wire("refresh-tokens", "click", refreshTokens);
