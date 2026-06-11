@@ -10,6 +10,7 @@ const state = {
   selected: null,
   adminToken: localStorage.getItem("hoststamp.adminToken") || "",
   unlocked: false,
+  backupBusy: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -29,6 +30,25 @@ function setMessage(text, kind = "muted") {
   const message = el("message");
   message.className = kind;
   message.textContent = text;
+}
+
+function setBackupStatus(text, kind = "muted") {
+  const status = el("backup-status");
+  status.className = `backup-status ${kind}`;
+  status.textContent = text;
+}
+
+function renderBackupControls() {
+  const disabled = !state.unlocked || state.backupBusy;
+  el("export-backup").disabled = disabled;
+  el("import-backup").disabled = disabled;
+  el("import-backup-file").disabled = disabled;
+}
+
+function setBackupBusy(busy, statusText) {
+  state.backupBusy = busy;
+  if (statusText) setBackupStatus(statusText);
+  renderBackupControls();
 }
 
 async function api(path, options = {}) {
@@ -62,6 +82,7 @@ function setManagementEnabled(enabled) {
   )) {
     control.disabled = !enabled;
   }
+  renderBackupControls();
 }
 
 function clearProfileState() {
@@ -81,6 +102,7 @@ function clearProfileState() {
   renderCapacity(null);
   renderTokens(null);
   el("created-token").textContent = "";
+  resetBackupPanel();
 }
 
 function resetProfileForms() {
@@ -142,6 +164,58 @@ function emptyRow(text, colspan) {
   td.colSpan = colspan;
   row.appendChild(td);
   return row;
+}
+
+function clearBackupPreview() {
+  const root = el("backup-preview");
+  root.replaceChildren();
+  root.hidden = true;
+}
+
+function resetBackupPanel() {
+  state.backupBusy = false;
+  clearBackupPreview();
+  setBackupStatus("Ready");
+  renderBackupControls();
+}
+
+function appendDefinitionRow(root, name, value) {
+  const term = document.createElement("dt");
+  const description = document.createElement("dd");
+  term.textContent = name;
+  description.textContent = String(value);
+  root.append(term, description);
+}
+
+function renderBackupPreview(preview) {
+  const root = el("backup-preview");
+  const blockers = Array.isArray(preview.blockers) ? preview.blockers : [];
+  const details = document.createElement("dl");
+  appendDefinitionRow(details, "profile_rows", preview.profile_count);
+  appendDefinitionRow(details, "retained_events", preview.event_count);
+  appendDefinitionRow(
+    details,
+    "profile_tokens_skipped",
+    preview.skipped_profile_token_count,
+  );
+  root.replaceChildren(details);
+
+  if (blockers.length) {
+    const list = document.createElement("ul");
+    list.className = "backup-blockers";
+    for (const blocker of blockers) {
+      const item = document.createElement("li");
+      item.textContent = blocker;
+      list.appendChild(item);
+    }
+    root.appendChild(list);
+  }
+
+  root.hidden = false;
+  setBackupStatus(
+    preview.valid ? "Backup preview ready" : "Backup import blocked",
+    preview.valid ? "ok-text" : "error",
+  );
 }
 
 function actionCell(event) {
@@ -820,58 +894,102 @@ async function importProfile(event) {
 }
 
 async function exportBackup() {
-  if (!state.unlocked) return;
-  const payload = await api("/api/backup/export");
-  downloadJson(payload, "hoststamp-backup.json");
-  await refreshEvents();
-  setMessage("exported backup", "ok-text");
+  if (!state.unlocked || state.backupBusy) return;
+  clearBackupPreview();
+  setBackupBusy(true, "Exporting backup");
+  try {
+    const payload = await api("/api/backup/export");
+    downloadJson(payload, "hoststamp-backup.json");
+    await refreshEvents();
+    setBackupStatus("Backup exported", "ok-text");
+    setMessage("exported backup", "ok-text");
+  } catch (error) {
+    setBackupStatus("Backup export failed", "error");
+    throw error;
+  } finally {
+    setBackupBusy(false);
+  }
 }
 
 function startImportBackup() {
-  if (!state.unlocked) return;
+  if (!state.unlocked || state.backupBusy) return;
   const input = el("import-backup-file");
   input.value = "";
   input.click();
 }
 
+async function readBackupJsonFile(file) {
+  let text;
+  try {
+    text = await file.text();
+  } catch (error) {
+    throw new Error("backup import file could not be read");
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error("backup import file is not valid JSON");
+  }
+}
+
 async function importBackup(event) {
-  if (!state.unlocked) return;
+  if (!state.unlocked || state.backupBusy) return;
+  const input = event.target;
   const file = event.target.files[0];
   if (!file) return;
-  const payload = JSON.parse(await file.text());
-  const preview = await api("/api/backup/import/preview", {
-    method: "POST",
-    json: true,
-    body: JSON.stringify(payload),
-  });
-  if (!preview.valid) {
-    setMessage(`backup import blocked: ${preview.blockers.join("; ")}`, "error");
-    return;
+  clearBackupPreview();
+  setBackupBusy(true, "Reading backup");
+  try {
+    const payload = await readBackupJsonFile(file);
+    setBackupStatus("Previewing backup");
+    const preview = await api("/api/backup/import/preview", {
+      method: "POST",
+      json: true,
+      body: JSON.stringify(payload),
+    });
+    renderBackupPreview(preview);
+    if (!preview.valid) {
+      setMessage("backup import blocked", "error");
+      return;
+    }
+    const accepted = window.confirm(
+      [
+        "Import backup bundle?",
+        "",
+        countLabel(preview.profile_count, "profile row"),
+        countLabel(preview.event_count, "retained event"),
+        `${countLabel(preview.skipped_profile_token_count, "profile token")} skipped`,
+      ].join("\n"),
+    );
+    if (!accepted) {
+      setBackupStatus("Backup import canceled");
+      setMessage("backup import canceled");
+      return;
+    }
+    setBackupStatus("Importing backup");
+    const imported = await api("/api/backup/import", {
+      method: "POST",
+      json: true,
+      body: JSON.stringify(payload),
+    });
+    state.selected = null;
+    await refreshProfiles();
+    const skipped = imported.skipped_profile_token_count;
+    clearBackupPreview();
+    setBackupStatus("Backup imported", "ok-text");
+    setMessage(
+      skipped > 0
+        ? `imported backup; skipped ${skipped} profile token${skipped === 1 ? "" : "s"}`
+        : "imported backup",
+      "ok-text",
+    );
+  } catch (error) {
+    setBackupStatus(error.message, "error");
+    throw error;
+  } finally {
+    input.value = "";
+    setBackupBusy(false);
   }
-  const accepted = window.confirm(
-    [
-      "Import backup bundle?",
-      "",
-      countLabel(preview.profile_count, "profile row"),
-      countLabel(preview.event_count, "retained event"),
-      `${countLabel(preview.skipped_profile_token_count, "profile token")} skipped`,
-    ].join("\n"),
-  );
-  if (!accepted) return;
-  const imported = await api("/api/backup/import", {
-    method: "POST",
-    json: true,
-    body: JSON.stringify(payload),
-  });
-  state.selected = null;
-  await refreshProfiles();
-  const skipped = imported.skipped_profile_token_count;
-  setMessage(
-    skipped > 0
-      ? `imported backup; skipped ${skipped} profile token${skipped === 1 ? "" : "s"}`
-      : "imported backup",
-    "ok-text",
-  );
 }
 
 async function saveConfig() {
