@@ -216,6 +216,7 @@ async fn openapi_document_is_public_and_describes_api_routes() {
             .is_some()
     );
     assert!(payload["paths"].get("/api/backup/export").is_some());
+    assert!(payload["paths"].get("/api/backup/import/preview").is_some());
     assert!(payload["paths"].get("/api/backup/import").is_some());
     assert_eq!(
         payload["paths"]["/api/generate"]["post"]["responses"]["200"]["content"]["application/json"]
@@ -229,6 +230,11 @@ async fn openapi_document_is_public_and_describes_api_routes() {
     assert!(
         payload["components"]["schemas"]
             .get("BackupImportResponse")
+            .is_some()
+    );
+    assert!(
+        payload["components"]["schemas"]
+            .get("BackupImportPreviewResponse")
             .is_some()
     );
     assert!(
@@ -284,6 +290,7 @@ fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
         "/api/lookup",
         "/api/events",
         "/api/backup/export",
+        "/api/backup/import/preview",
         "/api/backup/import",
         "/api/profiles",
         "/api/profiles/{slug}",
@@ -314,6 +321,7 @@ fn openapi_document_matches_api_routes_and_resolves_path_schema_refs() {
         ("/api/lookup", BTreeSet::from(["get"])),
         ("/api/events", BTreeSet::from(["get"])),
         ("/api/backup/export", BTreeSet::from(["get"])),
+        ("/api/backup/import/preview", BTreeSet::from(["post"])),
         ("/api/backup/import", BTreeSet::from(["post"])),
         ("/api/profiles", BTreeSet::from(["get", "post"])),
         ("/api/profiles/{slug}", BTreeSet::from(["delete", "get"])),
@@ -760,25 +768,48 @@ async fn backup_import_accepts_bodies_above_default_json_limit() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
     let store = ProfileStore::open(&database_url).expect("store");
-    let response = server::app_with_auth(
+    let app = server::app_with_auth(
         GenerateOptions::default(),
         Some(server::AtomicContext::new(
             store,
             ProfileSlug::default_profile(),
         )),
         auth_config(),
-    )
-    .oneshot(
-        http::Request::builder()
-            .method(http::Method::POST)
-            .uri("/api/backup/import")
-            .header(http::header::AUTHORIZATION, "Bearer admin-secret")
-            .header(http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body))
-            .expect("request"),
-    )
-    .await
-    .expect("response");
+    );
+    let preview = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/backup/import/preview")
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.clone()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(preview.status(), http::StatusCode::OK);
+    let preview = response_json(preview).await;
+    assert_eq!(preview["valid"], true);
+    assert_eq!(preview["profile_count"], 0);
+    assert_eq!(preview["event_count"], event_count);
+    assert_eq!(preview["skipped_profile_token_count"], 0);
+    assert_eq!(preview["blockers"].as_array().expect("blockers").len(), 0);
+
+    let response = app
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/backup/import")
+                .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
 
     assert_eq!(response.status(), http::StatusCode::OK);
     let response = response_json(response).await;
@@ -2507,18 +2538,58 @@ async fn admin_backup_endpoints_export_and_import_bundles() {
         auth_config(),
     );
 
+    let preview = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/backup/import/preview",
+            bundle.clone(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(preview.status(), http::StatusCode::OK);
+    let preview = response_json(preview).await;
+    assert_eq!(preview["valid"], true);
+    assert_eq!(preview["profile_count"], 1);
+    assert_eq!(preview["event_count"], 3);
+    assert_eq!(preview["skipped_profile_token_count"], 1);
+    assert_eq!(preview["blockers"].as_array().expect("blockers").len(), 0);
+
+    let invalid_bundle_payload = json!({
+        "format": "not-a-hoststamp-backup",
+        "exported_at_ms": 1_780_800_000_000_i64,
+        "profiles": [],
+        "profile_tokens": [],
+        "events": [],
+    });
+    let invalid_preview = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/backup/import/preview",
+            invalid_bundle_payload.clone(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(invalid_preview.status(), http::StatusCode::OK);
+    let invalid_preview = response_json(invalid_preview).await;
+    assert_eq!(invalid_preview["valid"], false);
+    assert_eq!(invalid_preview["profile_count"], 0);
+    assert_eq!(invalid_preview["event_count"], 0);
+    assert_eq!(invalid_preview["skipped_profile_token_count"], 0);
+    assert!(
+        invalid_preview["blockers"][0]
+            .as_str()
+            .expect("blocker")
+            .contains("backup import format")
+    );
+
     let invalid_bundle = target_app
         .clone()
         .oneshot(admin_json_request(
             http::Method::POST,
             "/api/backup/import",
-            json!({
-                "format": "not-a-hoststamp-backup",
-                "exported_at_ms": 1_780_800_000_000_i64,
-                "profiles": [],
-                "profile_tokens": [],
-                "events": [],
-            }),
+            invalid_bundle_payload,
         ))
         .await
         .expect("response");
@@ -2571,6 +2642,27 @@ async fn admin_backup_endpoints_export_and_import_bundles() {
     assert_eq!(
         target_import_events["events"][0]["metadata"]["skipped_profile_token_count"],
         1
+    );
+
+    let blocked_preview = target_app
+        .clone()
+        .oneshot(admin_json_request(
+            http::Method::POST,
+            "/api/backup/import/preview",
+            bundle.clone(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(blocked_preview.status(), http::StatusCode::OK);
+    let blocked_preview = response_json(blocked_preview).await;
+    assert_eq!(blocked_preview["valid"], false);
+    let blockers = blocked_preview["blockers"].as_array().expect("blockers");
+    assert_eq!(blockers.len(), 1);
+    assert!(
+        blockers[0]
+            .as_str()
+            .expect("blocker")
+            .contains("requires an empty database")
     );
 
     let repeated_import = target_app
@@ -3037,6 +3129,20 @@ async fn admin_backup_endpoints_require_admin_token_before_reading_body() {
         .expect("response");
     assert_eq!(missing_import.status(), http::StatusCode::UNAUTHORIZED);
 
+    let missing_preview = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/backup/import/preview")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(missing_preview.status(), http::StatusCode::UNAUTHORIZED);
+
     let profile_token_export = app
         .clone()
         .oneshot(
@@ -3057,6 +3163,7 @@ async fn admin_backup_endpoints_require_admin_token_before_reading_body() {
     );
 
     let profile_token_import = app
+        .clone()
         .oneshot(
             http::Request::builder()
                 .method(http::Method::POST)
@@ -3073,6 +3180,26 @@ async fn admin_backup_endpoints_require_admin_token_before_reading_body() {
         .expect("response");
     assert_eq!(
         profile_token_import.status(),
+        http::StatusCode::UNAUTHORIZED
+    );
+
+    let profile_token_preview = app
+        .oneshot(
+            http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/backup/import/preview")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(
+                    http::header::AUTHORIZATION,
+                    format!("Bearer {}", generated.token),
+                )
+                .body(Body::from("{"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        profile_token_preview.status(),
         http::StatusCode::UNAUTHORIZED
     );
 }

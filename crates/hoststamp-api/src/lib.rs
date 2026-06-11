@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
+#![recursion_limit = "256"]
+
 use anyhow::anyhow;
 use axum::{
     Json, Router,
@@ -20,8 +22,8 @@ use hoststamp_core::{
     },
     profile::{ProfileAccess, ProfileConfig, ProfileSlug},
     storage::{
-        BackupSnapshot, EventFilter, NewEvent, ProfileStore, StoredEvent, StoredProfile,
-        StoredProfileToken, config_hash, unix_epoch_millis,
+        BackupRestorePreview, BackupSnapshot, EventFilter, NewEvent, ProfileStore, StoredEvent,
+        StoredProfile, StoredProfileToken, config_hash, unix_epoch_millis,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -349,6 +351,44 @@ pub struct BackupImportResponse {
     pub skipped_profile_token_count: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub struct BackupImportPreviewResponse {
+    pub valid: bool,
+    pub profile_count: usize,
+    pub event_count: usize,
+    pub skipped_profile_token_count: usize,
+    pub blockers: Vec<String>,
+}
+
+impl From<BackupRestorePreview> for BackupImportPreviewResponse {
+    fn from(preview: BackupRestorePreview) -> Self {
+        Self {
+            valid: preview.blockers.is_empty(),
+            profile_count: preview.profile_count,
+            event_count: preview.event_count,
+            skipped_profile_token_count: preview.skipped_profile_token_count,
+            blockers: preview.blockers,
+        }
+    }
+}
+
+impl BackupImportPreviewResponse {
+    fn blocked(
+        profile_count: usize,
+        event_count: usize,
+        skipped_profile_token_count: usize,
+        blocker: String,
+    ) -> Self {
+        Self {
+            valid: false,
+            profile_count,
+            event_count,
+            skipped_profile_token_count,
+            blockers: vec![blocker],
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportProfileRequest {
@@ -655,6 +695,10 @@ pub fn app_with_mode(
             .route("/api/random", get(random_one))
             .route("/api/events", get(admin_list_events))
             .route("/api/backup/export", get(admin_export_backup))
+            .route(
+                "/api/backup/import/preview",
+                post(admin_preview_backup_import),
+            )
             .route("/api/backup/import", post(admin_import_backup))
             .route(
                 "/api/profiles",
@@ -952,6 +996,21 @@ fn build_openapi_document() -> Value {
                     "security": admin_security(),
                     "responses": {
                         "200": json_response("BackupBundle"),
+                        "401": text_response("Unauthorized"),
+                        "503": text_response("Admin API unavailable")
+                    }
+                }
+            },
+            "/api/backup/import/preview": {
+                "post": {
+                    "tags": ["admin"],
+                    "operationId": "previewBackupImport",
+                    "summary": "Preview whether a backup bundle can be imported",
+                    "security": admin_security(),
+                    "requestBody": json_request_body("BackupBundle"),
+                    "responses": {
+                        "200": json_response("BackupImportPreviewResponse"),
+                        "400": text_response("Bad request"),
                         "401": text_response("Unauthorized"),
                         "503": text_response("Admin API unavailable")
                     }
@@ -1614,6 +1673,16 @@ fn openapi_schemas() -> Value {
                 ("skipped_profile_token_count", json!({"type": "integer", "minimum": 0}))
             ],
         ),
+        "BackupImportPreviewResponse": object_schema(
+            ["valid", "profile_count", "event_count", "skipped_profile_token_count", "blockers"],
+            [
+                ("valid", json!({"type": "boolean"})),
+                ("profile_count", json!({"type": "integer", "minimum": 0})),
+                ("event_count", json!({"type": "integer", "minimum": 0})),
+                ("skipped_profile_token_count", json!({"type": "integer", "minimum": 0})),
+                ("blockers", json!({"type": "array", "items": {"type": "string"}}))
+            ],
+        ),
         "ProfileExport": object_schema(
             ["format", "id", "slug", "access", "last_atomic_value", "config_hash", "config"],
             [
@@ -2133,16 +2202,7 @@ async fn admin_import_backup(
 ) -> Result<Json<BackupImportResponse>, Response> {
     let (parts, body) = request.into_parts();
     authorize_admin_request(&parts.headers, &state.auth)?;
-    let body = to_bytes(body, MAX_BACKUP_REQUEST_BODY_BYTES)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "backup import body exceeds 8 MiB",
-            )
-                .into_response()
-        })?;
-    let bundle: BackupBundle = serde_json::from_slice(&body).map_err(admin_bad_request_response)?;
+    let bundle = read_backup_import_bundle(body).await?;
     let snapshot = backup_import_snapshot(bundle).map_err(admin_bad_request_response)?;
     let store = admin_store(&state)?;
     let mut store = store.lock().await;
@@ -2168,6 +2228,49 @@ async fn admin_import_backup(
         event_count: report.event_count,
         skipped_profile_token_count: report.skipped_profile_token_count,
     }))
+}
+
+async fn admin_preview_backup_import(
+    State(state): State<AppState>,
+    request: Request<Body>,
+) -> Result<Json<BackupImportPreviewResponse>, Response> {
+    let (parts, body) = request.into_parts();
+    authorize_admin_request(&parts.headers, &state.auth)?;
+    let bundle = read_backup_import_bundle(body).await?;
+    let profile_count = bundle.profiles.len();
+    let event_count = bundle.events.len();
+    let skipped_profile_token_count = bundle.profile_tokens.len();
+    let snapshot = match backup_import_snapshot(bundle) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return Ok(Json(BackupImportPreviewResponse::blocked(
+                profile_count,
+                event_count,
+                skipped_profile_token_count,
+                error,
+            )));
+        }
+    };
+    let store = admin_store(&state)?;
+    let store = store.lock().await;
+    let preview = store
+        .preview_restore_backup(&snapshot)
+        .map_err(admin_internal_response)?;
+
+    Ok(Json(preview.into()))
+}
+
+async fn read_backup_import_bundle(body: Body) -> Result<BackupBundle, Response> {
+    let body = to_bytes(body, MAX_BACKUP_REQUEST_BODY_BYTES)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "backup import body exceeds 8 MiB",
+            )
+                .into_response()
+        })?;
+    serde_json::from_slice(&body).map_err(admin_bad_request_response)
 }
 
 async fn admin_delete_profile(

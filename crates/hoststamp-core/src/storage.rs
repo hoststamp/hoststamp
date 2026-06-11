@@ -113,6 +113,14 @@ pub struct BackupRestoreReport {
     pub skipped_profile_token_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupRestorePreview {
+    pub profile_count: usize,
+    pub event_count: usize,
+    pub skipped_profile_token_count: usize,
+    pub blockers: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewEvent {
     pub source: &'static str,
@@ -827,6 +835,33 @@ impl ProfileStore {
             profiles,
             profile_tokens,
             events,
+        })
+    }
+
+    pub fn preview_restore_backup(
+        &self,
+        snapshot: &BackupSnapshot,
+    ) -> Result<BackupRestorePreview> {
+        let mut blockers = Vec::new();
+        match ensure_empty_database(&self.connection) {
+            Ok(()) => {}
+            Err(error) if error.to_string().starts_with("backup import requires ") => {
+                blockers.push(error.to_string());
+            }
+            Err(error) => return Err(error),
+        }
+        if let Err(error) = validate_backup_profiles(&snapshot.profiles) {
+            blockers.push(error.to_string());
+        }
+        if let Err(error) = validate_backup_events(&snapshot.events) {
+            blockers.push(error.to_string());
+        }
+
+        Ok(BackupRestorePreview {
+            profile_count: snapshot.profiles.len(),
+            event_count: snapshot.events.len(),
+            skipped_profile_token_count: snapshot.profile_tokens.len(),
+            blockers,
         })
     }
 
@@ -2117,6 +2152,18 @@ mod tests {
         let target_tempdir = tempfile::tempdir().expect("target tempdir");
         let target_url = StorageUrl::Sqlite(target_tempdir.path().join(DEFAULT_DATABASE_FILE));
         let mut target = ProfileStore::open(&target_url).expect("target store");
+        let preview = target
+            .preview_restore_backup(&snapshot)
+            .expect("preview restore");
+        assert_eq!(
+            preview,
+            BackupRestorePreview {
+                profile_count: 2,
+                event_count: 1,
+                skipped_profile_token_count: 1,
+                blockers: Vec::new(),
+            }
+        );
         let report = target.restore_backup(snapshot).expect("restore");
 
         assert_eq!(
@@ -2158,6 +2205,18 @@ mod tests {
             .restore_backup(empty_snapshot)
             .expect_err("non-empty target should fail");
         assert!(error.to_string().contains("requires an empty database"));
+        let preview = target
+            .preview_restore_backup(&BackupSnapshot {
+                profiles: Vec::new(),
+                profile_tokens: Vec::new(),
+                events: Vec::new(),
+            })
+            .expect("preview non-empty target");
+        assert_eq!(preview.profile_count, 0);
+        assert_eq!(preview.event_count, 0);
+        assert_eq!(preview.skipped_profile_token_count, 0);
+        assert_eq!(preview.blockers.len(), 1);
+        assert!(preview.blockers[0].contains("requires an empty database"));
     }
 
     #[test]

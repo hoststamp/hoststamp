@@ -117,6 +117,7 @@ Common local endpoints:
 - `GET /api/capacity?profile=_`
 - `GET /api/profiles`
 - `GET /api/backup/export`
+- `POST /api/backup/import/preview`
 - `POST /api/backup/import`
 - `GET /api/openapi.json`
 - `GET /api/openapi.yaml`

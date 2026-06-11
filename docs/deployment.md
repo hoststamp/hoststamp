@@ -21,8 +21,9 @@ rate limiting if an exposed deployment needs it.
 
 ## Request Limits And Headers
 
-Most API JSON request bodies are capped at 256 KiB. Backup import accepts up to
-8 MiB because backup bundles can include retained audit events.
+Most API JSON request bodies are capped at 256 KiB. Backup import preview and
+backup import accept up to 8 MiB because backup bundles can include retained
+audit events.
 
 The local UX response sets:
 
