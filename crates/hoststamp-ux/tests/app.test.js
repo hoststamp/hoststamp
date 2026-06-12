@@ -211,6 +211,7 @@ function loadApp(fetchHandler = defaultFetch) {
       createObjectURL: () => "blob:test",
       revokeObjectURL: () => {},
     },
+    URLSearchParams,
     clearInterval: () => {},
     console,
     document,
@@ -260,6 +261,390 @@ async function waitFor(condition) {
   }
   assert.equal(condition(), true);
 }
+
+function profileFixture(overrides = {}) {
+  const config = {
+    engine: "atomic-v1",
+    dictionary_version: "test-dictionary",
+    dictionary_version_hash: "d".repeat(64),
+    blocklist_version: "test-blocklist",
+    blocklist_version_hash: "b".repeat(64),
+    word1: {
+      enabled: true,
+      lengths: [5],
+      categories: ["common"],
+    },
+    word2: {
+      enabled: true,
+      lengths: [5],
+      categories: ["common"],
+    },
+    suffix: {
+      enabled: true,
+      min_length: 5,
+    },
+    ...(overrides.config || {}),
+  };
+  return {
+    id: "018ff2de-8cf0-71aa-9e9b-8554cc5f4fd7",
+    slug: "team-a",
+    access: "private",
+    last_atomic_value: 0,
+    config_hash: "c".repeat(64),
+    ...overrides,
+    config,
+  };
+}
+
+function capacityFixture(overrides = {}) {
+  return {
+    word1_count: 10,
+    word2_count: 10,
+    overlapping_words: 0,
+    unique_word_combinations: 100,
+    suffix_variants: 60_466_176,
+    suffix_bits: 25.85,
+    total_variants: "6046617600",
+    ...overrides,
+  };
+}
+
+function eventFixture(overrides = {}) {
+  return {
+    id: "0190f4d2-8f84-7abc-b922-81250d2e20ac",
+    created_at_ms: 1_780_800_000_000,
+    source: "api",
+    action: "generate",
+    profile_slug: "team-a",
+    profile_id: "018ff2de-8cf0-71aa-9e9b-8554cc5f4fd7",
+    token_id: null,
+    token_name: null,
+    atomic_start: 1,
+    atomic_end: 2,
+    metadata: { count: 2 },
+    ...overrides,
+  };
+}
+
+function managementFetch({ profiles, tokens = [], history = [], events = [] }) {
+  return async (requestPath) => {
+    if (requestPath === "/api/profiles") {
+      return jsonResponse({ profiles });
+    }
+    if (requestPath.startsWith("/api/capacity")) {
+      return jsonResponse(capacityFixture());
+    }
+    if (requestPath.endsWith("/history")) {
+      return jsonResponse({ profiles: history });
+    }
+    if (requestPath.endsWith("/tokens")) {
+      return jsonResponse({ tokens });
+    }
+    if (requestPath.startsWith("/api/events")) {
+      return jsonResponse({ events });
+    }
+    return defaultFetch(requestPath);
+  };
+}
+
+test("profile import confirms replacement and refreshes management state", async () => {
+  const existingProfile = profileFixture();
+  const importedProfile = profileFixture({ last_atomic_value: 7 });
+  let confirmText = "";
+  let importRequest;
+  let importFinished = false;
+  const { context, document } = loadApp(async (requestPath, options) => {
+    if (requestPath === "/api/profiles/import") {
+      importRequest = JSON.parse(options.body);
+      importFinished = true;
+      return jsonResponse({ profile: importedProfile }, 201);
+    }
+    return managementFetch({
+      profiles: importFinished ? [importedProfile] : [existingProfile],
+      history: [importedProfile],
+    })(requestPath, options);
+  });
+  context.window.confirm = (message) => {
+    confirmText = message;
+    return true;
+  };
+
+  await context.refreshProfiles();
+  const input = document.getElementById("import-profile-file");
+  input.files = [
+    {
+      text: async () =>
+        JSON.stringify({
+          format: "hoststamp-profile-v1",
+          id: importedProfile.id,
+          slug: importedProfile.slug,
+          access: importedProfile.access,
+          last_atomic_value: importedProfile.last_atomic_value,
+          config_hash: importedProfile.config_hash,
+          config: importedProfile.config,
+        }),
+    },
+  ];
+
+  await dispatch(input, "change");
+
+  assert.match(confirmText, /Import over existing profile team-a/);
+  assert.deepEqual(importRequest.confirmation, {
+    profile: "team-a",
+    action: "replace",
+  });
+  assert.equal(document.getElementById("profile-title").textContent, "team-a");
+  assert.match(
+    elementText(document.getElementById("profile-meta")),
+    /last_atomic_value = 7/,
+  );
+  assert.equal(document.getElementById("message").textContent, "imported team-a");
+  assert.match(document.getElementById("message").className, /\bok-text\b/);
+});
+
+test("profile import cancellation keeps existing profile unchanged", async () => {
+  const existingProfile = profileFixture({ last_atomic_value: 3 });
+  const importedProfile = profileFixture({ last_atomic_value: 7 });
+  let confirmText = "";
+  const { calls, context, document } = loadApp(async (requestPath, options) => {
+    if (requestPath === "/api/profiles/import") {
+      throw new Error("profile import should not run after cancellation");
+    }
+    return managementFetch({
+      profiles: [existingProfile],
+      history: [existingProfile],
+    })(requestPath, options);
+  });
+  context.window.confirm = (message) => {
+    confirmText = message;
+    return false;
+  };
+
+  await context.refreshProfiles();
+  const input = document.getElementById("import-profile-file");
+  input.files = [
+    {
+      text: async () =>
+        JSON.stringify({
+          format: "hoststamp-profile-v1",
+          id: importedProfile.id,
+          slug: importedProfile.slug,
+          access: importedProfile.access,
+          last_atomic_value: importedProfile.last_atomic_value,
+          config_hash: importedProfile.config_hash,
+          config: importedProfile.config,
+        }),
+    },
+  ];
+
+  await dispatch(input, "change");
+
+  assert.match(confirmText, /Import over existing profile team-a/);
+  assert.equal(
+    calls.some((call) => call.path === "/api/profiles/import"),
+    false,
+  );
+  assert.equal(document.getElementById("profile-title").textContent, "team-a");
+  assert.match(
+    elementText(document.getElementById("profile-meta")),
+    /last_atomic_value = 3/,
+  );
+  assert.notEqual(document.getElementById("message").textContent, "imported team-a");
+});
+
+test("profile config replacement posts parsed form values", async () => {
+  const profile = profileFixture();
+  let configRequest;
+  const { context, document } = loadApp(async (requestPath, options) => {
+    if (requestPath === "/api/profiles/team-a/config") {
+      configRequest = JSON.parse(options.body);
+      return jsonResponse({
+        profile: profileFixture({
+          config: {
+            ...profile.config,
+            word1: { ...profile.config.word1, lengths: [4, 5] },
+            word2: { ...profile.config.word2, enabled: false, lengths: null },
+            suffix: { enabled: false, min_length: 6 },
+          },
+        }),
+      });
+    }
+    return managementFetch({ profiles: [profile] })(requestPath, options);
+  });
+
+  await context.refreshProfiles();
+  document.getElementById("word1-enabled").value = "true";
+  document.getElementById("word1-lengths").value = "4,5";
+  document.getElementById("word1-categories").value = "common,diceware";
+  document.getElementById("word2-enabled").value = "false";
+  document.getElementById("word2-lengths").value = "any";
+  document.getElementById("word2-categories").value = "";
+  document.getElementById("suffix-enabled").value = "false";
+  document.getElementById("suffix-min-length").value = "6";
+
+  await dispatch(document.getElementById("save-config"), "click");
+
+  assert.deepEqual(configRequest, {
+    word1_enabled: true,
+    word1_lengths: "4,5",
+    word1_categories: ["common", "diceware"],
+    word2_enabled: false,
+    word2_lengths: "any",
+    word2_categories: [],
+    suffix_enabled: false,
+    suffix_min_length: 6,
+    confirmation: { profile: "team-a", action: "replace" },
+  });
+  assert.equal(document.getElementById("message").textContent, "config replaced");
+  assert.match(document.getElementById("message").className, /\bok-text\b/);
+});
+
+test("atomic reset confirms destructive counter changes", async () => {
+  const profile = profileFixture({ last_atomic_value: 12 });
+  let confirmText = "";
+  let resetRequest;
+  const { context, document } = loadApp(async (requestPath, options) => {
+    if (requestPath === "/api/profiles/team-a/reset-atomic-value") {
+      resetRequest = JSON.parse(options.body);
+      return jsonResponse({
+        profile: profileFixture({ last_atomic_value: resetRequest.atomic_value }),
+      });
+    }
+    return managementFetch({ profiles: [profile] })(requestPath, options);
+  });
+  context.window.confirm = (message) => {
+    confirmText = message;
+    return true;
+  };
+
+  await context.refreshProfiles();
+  document.getElementById("reset-value").value = "42";
+  await dispatch(document.getElementById("reset-atomic"), "click");
+
+  assert.match(confirmText, /Reset atomic counter for team-a/);
+  assert.match(confirmText, /atomic value 43/);
+  assert.deepEqual(resetRequest, {
+    atomic_value: 42,
+    confirmation: { profile: "team-a", action: "reset" },
+  });
+  assert.equal(document.getElementById("message").textContent, "atomic value reset");
+});
+
+test("token create and revoke refresh token and event panels", async () => {
+  const profile = profileFixture();
+  const events = [eventFixture({ action: "profile.token.create", token_name: "deploy" })];
+  let tokenCreated = false;
+  let tokenRevoked = false;
+  let createRequest;
+  let revokePath;
+  const { context, document } = loadApp(async (requestPath, options) => {
+    if (requestPath === "/api/profiles/team-a/tokens" && options.method === "POST") {
+      createRequest = JSON.parse(options.body);
+      tokenCreated = true;
+      return jsonResponse(
+        {
+          token: {
+            name: "deploy",
+            token_id: "tok_123",
+            expires_at_ms: createRequest.expires_at_ms,
+            revoked_at_ms: null,
+          },
+          profile_token: "hspt_test_secret",
+        },
+        201,
+      );
+    }
+    if (
+      requestPath === "/api/profiles/team-a/tokens/tok_123" &&
+      options.method === "DELETE"
+    ) {
+      revokePath = requestPath;
+      tokenRevoked = true;
+      return jsonResponse({
+        token: {
+          name: "deploy",
+          token_id: "tok_123",
+          expires_at_ms: createRequest.expires_at_ms,
+          revoked_at_ms: 1_780_800_000_000,
+        },
+      });
+    }
+    return managementFetch({
+      profiles: [profile],
+      tokens:
+        tokenCreated && !tokenRevoked
+          ? [
+              {
+                name: "deploy",
+                token_id: "tok_123",
+                expires_at_ms: createRequest.expires_at_ms,
+                revoked_at_ms: null,
+              },
+            ]
+          : [],
+      events,
+    })(requestPath, options);
+  });
+
+  await context.refreshProfiles();
+  document.getElementById("token-name").value = "deploy";
+  document.getElementById("token-expires-at-ms").value = "1893456000000";
+  await dispatch(document.getElementById("create-token"), "submit");
+
+  assert.deepEqual(createRequest, {
+    name: "deploy",
+    expires_at_ms: 1_893_456_000_000,
+  });
+  assert.equal(
+    document.getElementById("created-token").textContent,
+    "hspt_test_secret",
+  );
+  assert.match(elementText(document.getElementById("tokens-body")), /deploy/);
+  assert.match(
+    elementText(document.getElementById("event-detail")),
+    /profile.token.create/,
+  );
+
+  const revokeButton =
+    document.getElementById("tokens-body").children[0].children[3].children[0];
+  await dispatch(revokeButton, "click");
+
+  assert.equal(revokePath, "/api/profiles/team-a/tokens/tok_123");
+  assert.match(elementText(document.getElementById("tokens-body")), /No tokens/);
+});
+
+test("event filters include selected profile and reset to defaults", async () => {
+  const profile = profileFixture();
+  const eventPaths = [];
+  const { context, document } = loadApp(async (requestPath, options) => {
+    if (requestPath.startsWith("/api/events")) eventPaths.push(requestPath);
+    return managementFetch({
+      profiles: [profile],
+      events: [eventFixture()],
+    })(requestPath, options);
+  });
+
+  await context.refreshProfiles();
+  document.getElementById("event-action").value = "generate";
+  document.getElementById("event-source").value = "api";
+  document.getElementById("event-token-name").value = "deploy";
+  document.getElementById("event-since-ms").value = "100";
+  document.getElementById("event-until-ms").value = "200";
+  document.getElementById("event-limit").value = "10";
+  await dispatch(document.getElementById("apply-events"), "click");
+
+  assert.equal(
+    eventPaths.at(-1),
+    "/api/events?profile=team-a&action=generate&source=api&token_name=deploy&since_ms=100&until_ms=200&limit=10",
+  );
+  assert.match(elementText(document.getElementById("event-detail")), /generate/);
+
+  await dispatch(document.getElementById("reset-events"), "click");
+
+  assert.equal(eventPaths.at(-1), "/api/events?profile=team-a&limit=25");
+  assert.equal(document.getElementById("event-action").value, "");
+  assert.equal(document.getElementById("event-limit").value, "25");
+});
 
 test("backup import renders preview blockers without importing", async () => {
   const preview = deferred();
