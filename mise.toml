@@ -5,6 +5,7 @@ lockfile = true
 # `default` rustup profile is NOT used; mise installs minimal. rustfmt + clippy
 # are needed by CI's fmt/clippy steps, llvm-tools-preview by cargo-llvm-cov.
 rust = { version = "1.95.0", components = "rustfmt,clippy,llvm-tools-preview" }
+node = "22"
 "cargo:cargo-llvm-cov" = "0.8.7"
 "cargo:cargo-audit" = "0.22.1"
 "cargo:cargo-edit" = "0.13.11"
@@ -27,6 +28,10 @@ run = "cargo clippy --all-targets -- -D warnings"
 [tasks.test]
 description = "Run all Rust tests"
 run = "cargo test --all-targets"
+
+[tasks.ux-test]
+description = "Run local UX JavaScript tests"
+run = "node --test crates/hoststamp-ux/tests/*.test.js"
 
 [tasks.check]
 description = "Run fast Rust type checks"
@@ -107,6 +112,7 @@ depends = [
     "secret-scan",
     "security-scan",
     "test",
+    "ux-test",
     "coverage",
     "build",
 ]
