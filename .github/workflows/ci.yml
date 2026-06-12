@@ -64,6 +64,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: mise run security-scan
 
+      - name: UX JavaScript tests
+        run: mise run ux-test
+
       - name: Third-party notices drift
         run: cargo test -p hoststamp-core notices::tests::third_party_notices_are_current --lib
 

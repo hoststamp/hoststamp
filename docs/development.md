@@ -7,6 +7,7 @@ cargo check --all-targets
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
+node --test crates/hoststamp-ux/tests/*.test.js
 cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 90
 cargo build --release --locked
 docker build -t hoststamp:dev .
