@@ -819,6 +819,64 @@ async fn backup_import_accepts_bodies_above_default_json_limit() {
 }
 
 #[tokio::test]
+async fn backup_import_rejects_malformed_json_after_authorization() {
+    let app = server::app_with_auth(GenerateOptions::default(), None, auth_config());
+
+    for uri in ["/api/backup/import/preview", "/api/backup/import"] {
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri(uri)
+                    .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), http::StatusCode::BAD_REQUEST, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn backup_import_rejects_bodies_above_backup_limit() {
+    let body = format!(
+        "{{\"padding\":\"{}\"}}",
+        "x".repeat(server::MAX_BACKUP_REQUEST_BODY_BYTES)
+    );
+    assert!(body.len() > server::MAX_BACKUP_REQUEST_BODY_BYTES);
+
+    let app = server::app_with_auth(GenerateOptions::default(), None, auth_config());
+
+    for uri in ["/api/backup/import/preview", "/api/backup/import"] {
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri(uri)
+                    .header(http::header::AUTHORIZATION, "Bearer admin-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.clone()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(
+            response.status(),
+            http::StatusCode::PAYLOAD_TOO_LARGE,
+            "{uri}"
+        );
+        let message = response_text(response).await;
+        assert!(message.contains("backup import body exceeds 8 MiB"));
+    }
+}
+
+#[tokio::test]
 async fn generate_endpoint_rejects_get_requests() {
     let response = server::app(GenerateOptions::default())
         .oneshot(
@@ -3302,6 +3360,56 @@ async fn admin_delete_authorizes_before_checking_confirmation() {
     .expect("response");
 
     assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_profile_mutations_authorize_before_checking_confirmation() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_url = StorageUrl::Sqlite(tempdir.path().join("hoststamp.db"));
+    let slug = ProfileSlug::default_profile();
+    let mut store = ProfileStore::open(&database_url).expect("store");
+    store
+        .load_or_seed_profile(&slug, &ProfileConfig::default())
+        .expect("profile");
+
+    let app = server::app_with_auth(
+        GenerateOptions::default(),
+        Some(server::AtomicContext::new(store, slug)),
+        auth_config(),
+    );
+
+    let config = app
+        .clone()
+        .oneshot(json_request(
+            http::Method::PATCH,
+            "/api/profiles/_/config",
+            json!({
+                "word1_lengths": [4],
+                "confirmation": {
+                    "profile": "_",
+                    "action": "wrong"
+                }
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(config.status(), http::StatusCode::UNAUTHORIZED);
+
+    let reset = app
+        .oneshot(json_request(
+            http::Method::POST,
+            "/api/profiles/_/reset-atomic-value",
+            json!({
+                "atomic_value": 42,
+                "confirmation": {
+                    "profile": "_",
+                    "action": "wrong"
+                }
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(reset.status(), http::StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
