@@ -402,6 +402,56 @@ test("profile import confirms replacement and refreshes management state", async
   assert.match(document.getElementById("message").className, /\bok-text\b/);
 });
 
+test("profile import cancellation keeps existing profile unchanged", async () => {
+  const existingProfile = profileFixture({ last_atomic_value: 3 });
+  const importedProfile = profileFixture({ last_atomic_value: 7 });
+  let confirmText = "";
+  const { calls, context, document } = loadApp(async (requestPath, options) => {
+    if (requestPath === "/api/profiles/import") {
+      throw new Error("profile import should not run after cancellation");
+    }
+    return managementFetch({
+      profiles: [existingProfile],
+      history: [existingProfile],
+    })(requestPath, options);
+  });
+  context.window.confirm = (message) => {
+    confirmText = message;
+    return false;
+  };
+
+  await context.refreshProfiles();
+  const input = document.getElementById("import-profile-file");
+  input.files = [
+    {
+      text: async () =>
+        JSON.stringify({
+          format: "hoststamp-profile-v1",
+          id: importedProfile.id,
+          slug: importedProfile.slug,
+          access: importedProfile.access,
+          last_atomic_value: importedProfile.last_atomic_value,
+          config_hash: importedProfile.config_hash,
+          config: importedProfile.config,
+        }),
+    },
+  ];
+
+  await dispatch(input, "change");
+
+  assert.match(confirmText, /Import over existing profile team-a/);
+  assert.equal(
+    calls.some((call) => call.path === "/api/profiles/import"),
+    false,
+  );
+  assert.equal(document.getElementById("profile-title").textContent, "team-a");
+  assert.match(
+    elementText(document.getElementById("profile-meta")),
+    /last_atomic_value = 3/,
+  );
+  assert.notEqual(document.getElementById("message").textContent, "imported team-a");
+});
+
 test("profile config replacement posts parsed form values", async () => {
   const profile = profileFixture();
   let configRequest;
