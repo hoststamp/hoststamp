@@ -8,12 +8,16 @@ const state = {
   events: null,
   selectedEventId: null,
   selected: null,
+  activeSurface: "server",
+  activeTab: "overview",
   adminToken: localStorage.getItem("hoststamp.adminToken") || "",
   unlocked: false,
   backupBusy: false,
 };
 
 const el = (id) => document.getElementById(id);
+const surfaces = ["server", "profiles"];
+const tabs = ["overview", "generate", "config", "tokens", "events", "history"];
 const profileHealth = globalThis.HoststampProfileHealth;
 if (!profileHealth) {
   throw new Error("profile health helpers failed to load");
@@ -26,16 +30,43 @@ function headers(json = false) {
   return value;
 }
 
-function setMessage(text, kind = "muted") {
+function setMessage(text = "", kind = "muted") {
   const message = el("message");
-  message.className = kind;
+  message.className = `message-bar ${kind}`;
   message.textContent = text;
+  message.hidden = !text;
 }
 
-function setBackupStatus(text, kind = "muted") {
+function setBadge(id, text, kind = "") {
+  const badge = el(id);
+  badge.className = `badge${kind ? ` ${kind}` : ""}`;
+  badge.textContent = text;
+}
+
+function setBackupStatus(text, kind = "muted", showDetail = true) {
   const status = el("backup-status");
   status.className = `backup-status ${kind}`;
   status.textContent = text;
+  status.hidden = !showDetail;
+  setBadge("server-backup-badge", text.toLowerCase(), kind);
+}
+
+function setActiveSurface(surface) {
+  state.activeSurface = surfaces.includes(surface) ? surface : "server";
+  for (const id of surfaces) {
+    const active = id === state.activeSurface;
+    el(`surface-${id}`).classList.toggle("active", active);
+    el(`surface-${id}-panel`).hidden = !active;
+  }
+}
+
+function setActiveTab(tab) {
+  state.activeTab = tabs.includes(tab) ? tab : "overview";
+  for (const id of tabs) {
+    const active = id === state.activeTab;
+    el(`tab-${id}`).classList.toggle("active", active);
+    el(`panel-${id}`).hidden = !active;
+  }
 }
 
 function renderBackupControls() {
@@ -78,10 +109,20 @@ function setManagementEnabled(enabled) {
   document.body.classList.toggle("locked", !enabled);
   el("auth-gate").hidden = enabled;
   for (const control of document.querySelectorAll(
-    "main .layout button, main .layout input, main .layout select",
+    "main .surface-panel button, main .surface-panel input, main .surface-panel select",
   )) {
     control.disabled = !enabled;
   }
+  setBadge(
+    "server-auth-badge",
+    enabled ? "admin unlocked" : "admin locked",
+    enabled ? "ok-text" : "warn",
+  );
+  setBadge(
+    "admin-session-status",
+    enabled ? "Logged in" : "Logged out",
+    enabled ? "ok-text" : "warn",
+  );
   renderBackupControls();
 }
 
@@ -175,7 +216,7 @@ function clearBackupPreview() {
 function resetBackupPanel() {
   state.backupBusy = false;
   clearBackupPreview();
-  setBackupStatus("Ready");
+  setBackupStatus("Backup ready", "muted", false);
   renderBackupControls();
 }
 
@@ -231,6 +272,46 @@ function actionCell(event) {
 
 function selectedProfile() {
   return state.profiles.find((profile) => profile.slug === state.selected);
+}
+
+function tokenStatusClass(status) {
+  if (status === "revoked" || status === "expired") return "error";
+  if (status === "expiring") return "warn";
+  return "ok-text";
+}
+
+function renderSummaryBadges() {
+  const profile = selectedProfile();
+  if (!profile) {
+    setBadge("profile-access-badge", "no profile");
+    setBadge("profile-counter-badge", "counter n/a");
+    setBadge("profile-capacity-badge", "capacity n/a");
+    setBadge("profile-token-badge", "tokens n/a");
+    return;
+  }
+
+  setBadge(
+    "profile-access-badge",
+    profile.access,
+    profile.access === "public" ? "warn" : "ok-text",
+  );
+  setBadge("profile-counter-badge", `counter ${profile.last_atomic_value}`);
+  setBadge(
+    "profile-capacity-badge",
+    state.capacity?.total_variants
+      ? `capacity ${state.capacity.total_variants}`
+      : "capacity n/a",
+  );
+  const tokenState = Array.isArray(state.tokens)
+    ? profileHealth.tokenHealth(state.tokens)
+    : null;
+  setBadge(
+    "profile-token-badge",
+    tokenState === null
+      ? "tokens n/a"
+      : `${tokenState.active} active token${tokenState.active === 1 ? "" : "s"}`,
+    tokenState === null || tokenState.active > 0 ? "" : "warn",
+  );
 }
 
 function formatLengths(lengths) {
@@ -290,7 +371,9 @@ function renderProfile() {
   const profile = selectedProfile();
   el("profile-title").textContent = profile ? profile.slug : "Profile";
   el("profile-access").value = profile?.access || "private";
+  renderSummaryBadges();
   if (!profile) {
+    el("profile-meta").replaceChildren();
     el("profile-meta").textContent = "No profile selected";
     renderProfileHealth();
     return;
@@ -299,12 +382,20 @@ function renderProfile() {
   const id = document.createElement("div");
   id.className = "mono";
   id.textContent = `id = ${profile.id}`;
+  const engine = document.createElement("div");
+  engine.textContent = `engine = ${profile.config.engine}`;
   const atomic = document.createElement("div");
   atomic.textContent = `last_atomic_value = ${profile.last_atomic_value}`;
   const hash = document.createElement("div");
   hash.className = "mono";
   hash.textContent = `config_hash = ${profile.config_hash}`;
-  meta.replaceChildren(id, atomic, hash);
+  const dictionary = document.createElement("div");
+  dictionary.className = "mono";
+  dictionary.textContent = `dictionary = ${profile.config.dictionary_version}`;
+  const blocklist = document.createElement("div");
+  blocklist.className = "mono";
+  blocklist.textContent = `blocklist = ${profile.config.blocklist_version}`;
+  meta.replaceChildren(id, engine, atomic, hash, dictionary, blocklist);
   const config = profile.config;
   el("word1-enabled").value = String(config.word1.enabled);
   el("word1-lengths").value = formatLengths(config.word1.lengths);
@@ -352,14 +443,7 @@ function renderProfileHealth() {
   const tokenState = profileHealth.tokenHealth(state.tokens);
   const nextAtomic = profileHealth.integerBigInt(profile.last_atomic_value);
   const entries = [
-    ["profile_id", profile.id, "mono"],
     ["access", profile.access],
-    ["engine", profile.config.engine],
-    ["dictionary_version", profile.config.dictionary_version, "mono"],
-    ["dictionary_hash", profile.config.dictionary_version_hash, "mono"],
-    ["blocklist_version", profile.config.blocklist_version, "mono"],
-    ["blocklist_hash", profile.config.blocklist_version_hash, "mono"],
-    ["config_hash", profile.config_hash, "mono"],
     ["last_atomic_value", profile.last_atomic_value, "mono"],
     [
       "next_atomic_value",
@@ -452,6 +536,7 @@ function renderCapacity(report) {
   if (!report) {
     el("capacity-body").replaceChildren(emptyRow("No profile selected", 2));
     state.capacity = null;
+    renderSummaryBadges();
     renderProfileHealth();
     return;
   }
@@ -473,6 +558,7 @@ function renderCapacity(report) {
       return row;
     }),
   );
+  renderSummaryBadges();
   renderProfileHealth();
 }
 
@@ -506,6 +592,7 @@ function renderTokens(tokens) {
   state.tokens = tokens;
   const body = el("tokens-body");
   body.replaceChildren();
+  renderSummaryBadges();
   if (!tokens) {
     body.appendChild(emptyRow("No profile selected", 4));
     return;
@@ -516,6 +603,15 @@ function renderTokens(tokens) {
   }
   for (const token of tokens) {
     const row = document.createElement("tr");
+    const name = cell("");
+    const status = document.createElement("span");
+    const statusText = profileHealth.tokenStatus(token);
+    status.className = `badge ${tokenStatusClass(statusText)}`;
+    status.textContent = statusText;
+    const tokenName = document.createElement("span");
+    tokenName.textContent = token.name;
+    name.className = "token-name-cell";
+    name.append(tokenName, status);
     const action = document.createElement("td");
     const button = document.createElement("button");
     button.className = "danger";
@@ -524,7 +620,7 @@ function renderTokens(tokens) {
     button.addEventListener("click", () => revokeToken(token.token_id));
     action.appendChild(button);
     row.append(
-      cell(token.name),
+      name,
       cell(token.token_id, "mono"),
       cell(token.expires_at_ms ?? "n/a", "mono"),
       action,
@@ -648,9 +744,18 @@ async function refreshHealth() {
     const payload = await api("/api/health");
     dot.classList.add("ok");
     text.textContent = `${payload.service} online`;
+    setBadge("server-api-badge", "API online", "ok-text");
   } catch (error) {
     dot.classList.remove("ok");
     text.textContent = "API offline";
+    setBadge("server-api-badge", "API offline", "error");
+  }
+}
+
+async function refreshServer() {
+  await refreshHealth();
+  if (state.adminToken) {
+    await validateAdminToken();
   }
 }
 
@@ -697,7 +802,7 @@ async function refreshProfiles() {
 async function validateAdminToken() {
   try {
     await refreshProfiles();
-    setMessage("admin token accepted", "ok-text");
+    setMessage();
   } catch (error) {
     const [title, detail] = authErrorMessage(error);
     lockManagement(title, detail);
@@ -1119,6 +1224,10 @@ wire("save-token", "click", async () => {
   localStorage.setItem("hoststamp.adminToken", state.adminToken);
   await validateAdminToken();
 });
+wire("refresh-server", "click", refreshServer);
+for (const surface of surfaces) {
+  wire(`surface-${surface}`, "click", () => setActiveSurface(surface));
+}
 wire("refresh-profiles", "click", refreshProfiles);
 wire("refresh-profile-health", "click", refreshProfileHealth);
 wire("refresh-capacity", "click", refreshCapacity);
@@ -1141,9 +1250,14 @@ wire("save-config", "click", saveConfig);
 wire("reset-atomic", "click", resetAtomic);
 wire("refresh-tokens", "click", refreshTokens);
 wire("create-token", "submit", createToken);
+for (const tab of tabs) {
+  wire(`tab-${tab}`, "click", () => setActiveTab(tab));
+}
 
 refreshHealth();
 setInterval(refreshHealth, 5000);
+setActiveSurface(state.activeSurface);
+setActiveTab(state.activeTab);
 setManagementEnabled(false);
 clearProfileState();
 if (state.adminToken) {

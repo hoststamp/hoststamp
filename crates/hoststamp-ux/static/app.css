@@ -194,7 +194,7 @@ header {
 }
 
 main {
-  width: min(88rem, 100%);
+  width: min(96rem, 100%);
   margin: 0 auto;
   padding: 1rem;
 }
@@ -203,11 +203,123 @@ main {
   opacity: 0.48;
 }
 
+.surface-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel);
+}
+
+.surface-tabs button {
+  min-width: 7rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.surface-tabs button.active {
+  border-color: var(--line);
+  background: var(--code);
+  color: var(--ink);
+}
+
+.surface-panel {
+  margin-bottom: 1rem;
+}
+
+.surface-panel[hidden] {
+  display: none;
+}
+
 .layout {
   display: grid;
-  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  grid-template-columns: minmax(16rem, 20rem) minmax(0, 1fr);
   gap: 1rem;
   align-items: start;
+}
+
+.sidebar {
+  position: sticky;
+  top: 1rem;
+}
+
+.workspace {
+  min-width: 0;
+  display: grid;
+  gap: 1rem;
+}
+
+.workspace-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: start;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel);
+}
+
+.workspace-head h2 {
+  margin: 0;
+  font-size: 1.375rem;
+  line-height: 1.2;
+}
+
+.workspace-actions {
+  display: grid;
+  grid-template-columns: minmax(8rem, 10rem) auto auto auto;
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.server-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel);
+}
+
+.tabs button {
+  min-width: 6rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.tabs button.active {
+  border-color: var(--line);
+  background: var(--code);
+  color: var(--ink);
+}
+
+.tab-panel {
+  min-width: 0;
+}
+
+.tab-panel[hidden] {
+  display: none;
 }
 
 .panel {
@@ -249,7 +361,7 @@ main {
 
 .command-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem;
   align-items: end;
 }
@@ -264,6 +376,13 @@ main {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
   align-items: end;
+}
+
+.events-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(18rem, 0.7fr);
+  gap: 1rem;
+  align-items: start;
 }
 
 .events-table th:nth-child(1) {
@@ -291,17 +410,19 @@ main {
 
 .health-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
 }
 
 .health-row {
   display: grid;
-  grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr);
-  gap: 0.5rem;
-  min-height: 2rem;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
+  gap: 0.375rem;
+  min-height: 5rem;
+  align-content: start;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #fbfcfe;
   font-size: 0.875rem;
 }
 
@@ -336,8 +457,10 @@ main {
 .event-detail {
   display: grid;
   gap: 0.875rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--line);
+  padding: 0.875rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #fbfcfe;
 }
 
 .event-detail dl {
@@ -366,6 +489,27 @@ main {
   background: var(--code);
   font: 0.8125rem "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace,
     monospace;
+}
+
+.technical-details {
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #fbfcfe;
+}
+
+.technical-details summary {
+  cursor: pointer;
+  padding: 0.75rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 750;
+}
+
+.technical-list {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0 0.75rem 0.75rem;
+  font-size: 0.8125rem;
 }
 
 .backup-status {
@@ -418,6 +562,17 @@ main {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.danger-panel {
+  border-color: #f4b8b2;
+}
+
+.danger-zone {
+  display: grid;
+  grid-template-columns: minmax(10rem, 16rem) auto;
+  gap: 0.75rem;
+  align-items: end;
 }
 
 .muted {
@@ -482,6 +637,21 @@ main {
   font-weight: 700;
 }
 
+.badge.ok-text {
+  background: #eefbf2;
+  color: var(--ok);
+}
+
+.badge.warn {
+  background: #fff8eb;
+  color: var(--warn);
+}
+
+.badge.error {
+  background: #fff1f0;
+  color: var(--danger);
+}
+
 .result-list {
   display: grid;
   gap: 0.5rem;
@@ -504,8 +674,48 @@ main {
 
 .config-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
+}
+
+.config-group {
+  padding: 0.875rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #fbfcfe;
+}
+
+.token-create {
+  grid-template-columns: minmax(10rem, 1fr) minmax(10rem, 1fr) auto;
+}
+
+.token-name-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.secret-output {
+  min-height: 2.25rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 0.5rem;
+  background: #fbfcfe;
+}
+
+.secret-output:empty {
+  display: none;
+}
+
+.message-bar {
+  min-height: 2.5rem;
+  display: flex;
+  align-items: center;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel);
 }
 
 .section-title {
@@ -530,14 +740,24 @@ main {
     justify-content: flex-start;
   }
 
+  .sidebar {
+    position: static;
+  }
+
+  .server-actions,
+  .workspace-head,
+  .workspace-actions,
   .layout,
   .config-grid,
   .command-grid,
   .event-controls,
+  .events-layout,
   .event-detail dl,
   .form-grid,
   .health-list,
-  .health-row {
+  .health-row,
+  .danger-zone,
+  .token-create {
     grid-template-columns: 1fr;
   }
 }

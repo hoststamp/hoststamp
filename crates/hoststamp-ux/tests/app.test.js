@@ -144,13 +144,14 @@ class TestDocument {
     this.body = new TestElement("body", "body");
     this.elements = new Map([["body", this.body]]);
 
-    const idPattern = /<([a-z0-9-]+)\b[^>]*\bid="([^"]+)"/gi;
+    const idPattern = /<([a-z0-9-]+)\b[^>]*\bid="([^"]+)"[^>]*>/gi;
     for (const match of html.matchAll(idPattern)) {
       const element = new TestElement(match[1], match[2]);
       const classMatch = match[0].match(/\bclass="([^"]+)"/);
       const valueMatch = match[0].match(/\bvalue="([^"]*)"/);
       if (classMatch) element.className = classMatch[1];
       if (valueMatch) element.value = valueMatch[1];
+      element.hidden = /\bhidden\b/.test(match[0]);
       this.elements.set(element.id, element);
       this.body.appendChild(element);
     }
@@ -172,7 +173,8 @@ class TestDocument {
 
   querySelectorAll(selector) {
     if (
-      selector === "main .layout button, main .layout input, main .layout select"
+      selector ===
+      "main .surface-panel button, main .surface-panel input, main .surface-panel select"
     ) {
       return [...this.elements.values()].filter((element) =>
         ["BUTTON", "INPUT", "SELECT"].includes(element.tagName),
@@ -346,6 +348,58 @@ function managementFetch({ profiles, tokens = [], history = [], events = [] }) {
     return defaultFetch(requestPath);
   };
 }
+
+test("profile workspace tabs isolate admin surfaces", async () => {
+  const { document } = loadApp();
+
+  assert.equal(document.getElementById("surface-server-panel").hidden, false);
+  assert.equal(document.getElementById("surface-profiles-panel").hidden, true);
+  assert.match(document.getElementById("surface-server").className, /\bactive\b/);
+
+  await dispatch(document.getElementById("surface-profiles"), "click");
+
+  assert.equal(document.getElementById("surface-server-panel").hidden, true);
+  assert.equal(document.getElementById("surface-profiles-panel").hidden, false);
+  assert.match(document.getElementById("surface-profiles").className, /\bactive\b/);
+  assert.equal(document.getElementById("panel-overview").hidden, false);
+  assert.equal(document.getElementById("panel-config").hidden, true);
+  assert.match(document.getElementById("tab-overview").className, /\bactive\b/);
+
+  await dispatch(document.getElementById("tab-config"), "click");
+
+  assert.equal(document.getElementById("panel-overview").hidden, true);
+  assert.equal(document.getElementById("panel-config").hidden, false);
+  assert.match(document.getElementById("tab-config").className, /\bactive\b/);
+
+  await dispatch(document.getElementById("tab-events"), "click");
+
+  assert.equal(document.getElementById("panel-config").hidden, true);
+  assert.equal(document.getElementById("panel-events").hidden, false);
+  assert.match(document.getElementById("tab-events").className, /\bactive\b/);
+});
+
+test("server backup detail stays hidden until an operation runs", async () => {
+  const { context, document } = loadApp();
+
+  assert.equal(document.getElementById("backup-status").hidden, true);
+  assert.equal(
+    document.getElementById("server-backup-badge").textContent,
+    "backup ready",
+  );
+
+  context.setManagementEnabled(true);
+  const input = document.getElementById("import-backup-file");
+  input.value = "bad.json";
+  input.files = [{ text: async () => "{" }];
+
+  await dispatch(input, "change");
+
+  assert.equal(document.getElementById("backup-status").hidden, false);
+  assert.equal(
+    document.getElementById("backup-status").textContent,
+    "backup import file is not valid JSON",
+  );
+});
 
 test("profile import confirms replacement and refreshes management state", async () => {
   const existingProfile = profileFixture();

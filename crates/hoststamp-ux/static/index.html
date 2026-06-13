@@ -26,6 +26,7 @@
         <div class="status" aria-live="polite">
           <span class="dot" id="status-dot"></span>
           <span id="status-text">Checking API</span>
+          <span id="admin-session-status" class="badge warn">Logged out</span>
         </div>
       </header>
 
@@ -39,8 +40,45 @@
           </div>
         </section>
 
-        <div class="layout">
-          <aside class="stack">
+        <nav class="surface-tabs" aria-label="Admin scope">
+          <button id="surface-server" type="button">Server</button>
+          <button id="surface-profiles" type="button">Profiles</button>
+        </nav>
+
+        <section id="surface-server-panel" class="surface-panel stack">
+          <section class="workspace-head">
+            <div>
+              <h2>Server</h2>
+              <div class="summary-strip" aria-live="polite">
+                <span id="server-api-badge" class="badge">API checking</span>
+                <span id="server-auth-badge" class="badge">admin locked</span>
+                <span id="server-backup-badge" class="badge">backup ready</span>
+              </div>
+            </div>
+            <div class="server-actions">
+              <button id="refresh-server" type="button">Refresh</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h3>Server Backup</h3>
+              <div class="actions">
+                <button id="export-backup" type="button">Export Server Backup</button>
+                <button id="import-backup" type="button">Import Server Backup</button>
+                <input id="import-backup-file" type="file" accept="application/json" hidden />
+              </div>
+            </div>
+            <div class="panel-body stack">
+              <div id="backup-status" class="backup-status muted" aria-live="polite" hidden></div>
+              <div id="backup-preview" class="backup-preview" hidden></div>
+            </div>
+          </section>
+        </section>
+
+        <section id="surface-profiles-panel" class="surface-panel">
+          <div class="layout">
+            <aside class="sidebar stack">
             <section class="panel">
               <div class="panel-head">
                 <h2>Profiles</h2>
@@ -58,130 +96,127 @@
                 <div id="profiles" class="profiles-list"></div>
               </div>
             </section>
+            </aside>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Capacity</h3>
-                <button id="refresh-capacity" type="button">Refresh</button>
-              </div>
-              <div class="panel-body">
-                <table>
-                  <tbody id="capacity-body">
-                    <tr>
-                      <td class="empty" colspan="2">No profile selected</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Backup</h3>
-                <div class="actions">
-                  <button id="export-backup" type="button">Export</button>
-                  <button id="import-backup" type="button">Import</button>
-                  <input id="import-backup-file" type="file" accept="application/json" hidden />
-                </div>
-              </div>
-              <div class="panel-body stack">
-                <div id="backup-status" class="backup-status muted" aria-live="polite">Ready</div>
-                <div id="backup-preview" class="backup-preview" hidden></div>
-              </div>
-            </section>
-          </aside>
-
-          <section class="stack">
-            <section class="panel">
-              <div class="panel-head">
+            <section class="workspace">
+            <section class="workspace-head">
+              <div>
                 <h2 id="profile-title">Profile</h2>
-                <div class="actions">
-                  <select id="profile-access" aria-label="Profile access">
-                    <option value="private">private</option>
-                    <option value="public">public</option>
-                  </select>
-                  <button id="save-access" type="button">Set Access</button>
-                  <button id="export-profile" type="button">Export</button>
-                  <button id="import-profile" type="button">Import</button>
-                  <input id="import-profile-file" type="file" accept="application/json" hidden />
+                <div class="summary-strip" aria-live="polite">
+                  <span id="profile-access-badge" class="badge">private</span>
+                  <span id="profile-counter-badge" class="badge">counter n/a</span>
+                  <span id="profile-capacity-badge" class="badge">capacity n/a</span>
+                  <span id="profile-token-badge" class="badge">tokens n/a</span>
                 </div>
               </div>
-              <div class="panel-body">
-                <div id="profile-meta" class="muted">No profile selected</div>
-                <form id="clone-profile" class="token profile-clone">
-                  <input
-                    id="clone-profile-slug"
-                    autocomplete="off"
-                    placeholder="clone-target"
-                  />
-                  <button type="submit">Clone</button>
-                </form>
+              <div class="workspace-actions">
+                <select id="profile-access" aria-label="Profile access">
+                  <option value="private">private</option>
+                  <option value="public">public</option>
+                </select>
+                <button id="save-access" type="button">Set Access</button>
+                <button id="export-profile" type="button">Export Profile</button>
+                <button id="import-profile" type="button">Import Profile</button>
+                <input id="import-profile-file" type="file" accept="application/json" hidden />
               </div>
             </section>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Health</h3>
-                <button id="refresh-profile-health" type="button">Refresh</button>
-              </div>
-              <div class="panel-body stack">
-                <div id="profile-health" class="health-list">
-                  <div class="empty">No profile selected</div>
+            <nav class="tabs" aria-label="Profile workspace">
+              <button id="tab-overview" type="button">Overview</button>
+              <button id="tab-generate" type="button">Generate</button>
+              <button id="tab-config" type="button">Config</button>
+              <button id="tab-tokens" type="button">Tokens</button>
+              <button id="tab-events" type="button">Events</button>
+              <button id="tab-history" type="button">History</button>
+            </nav>
+
+            <section id="panel-overview" class="tab-panel stack">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Overview</h3>
+                  <button id="refresh-profile-health" type="button">Refresh</button>
                 </div>
-                <ul id="profile-warnings" class="health-warnings"></ul>
-              </div>
+                <div class="panel-body stack">
+                  <div id="profile-health" class="health-list">
+                    <div class="empty">No profile selected</div>
+                  </div>
+                  <ul id="profile-warnings" class="health-warnings"></ul>
+                  <details class="technical-details">
+                    <summary>Technical details</summary>
+                    <div id="profile-meta" class="technical-list muted">No profile selected</div>
+                  </details>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Capacity</h3>
+                  <button id="refresh-capacity" type="button">Refresh</button>
+                </div>
+                <div class="panel-body">
+                  <table>
+                    <tbody id="capacity-body">
+                      <tr>
+                        <td class="empty" colspan="2">No profile selected</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Clone</h3>
+                </div>
+                <div class="panel-body">
+                  <form id="clone-profile" class="token profile-clone">
+                    <input
+                      id="clone-profile-slug"
+                      autocomplete="off"
+                      placeholder="clone-target"
+                    />
+                    <button type="submit">Clone</button>
+                  </form>
+                </div>
+              </section>
             </section>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h3>History</h3>
-                <button id="refresh-history" type="button">Refresh</button>
-              </div>
-              <div class="panel-body">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>State</th>
-                      <th>Profile ID</th>
-                      <th>Last Atomic</th>
-                      <th>Replaced At</th>
-                      <th>Replaced By</th>
-                    </tr>
-                  </thead>
-                  <tbody id="history-body">
-                    <tr>
-                      <td class="empty" colspan="5">No profile selected</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </section>
+            <section id="panel-generate" class="tab-panel stack">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Generate</h3>
+                </div>
+                <div class="panel-body stack">
+                  <div class="command-grid">
+                    <div class="command-control">
+                      <label>
+                        Count
+                        <input id="generate-count" type="number" min="1" max="50" value="1" />
+                      </label>
+                      <button id="generate" class="primary" type="button">Generate</button>
+                    </div>
+                    <div class="command-control">
+                      <label>
+                        Atomic value
+                        <input id="regenerate-value" type="number" min="1" value="1" />
+                      </label>
+                      <label>
+                        Count
+                        <input id="regenerate-count" type="number" min="1" max="50" value="1" />
+                      </label>
+                      <button id="regenerate" type="button">Regenerate</button>
+                    </div>
+                  </div>
+                  <ul id="results" class="result-list"></ul>
+                </div>
+              </section>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Generate</h3>
-              </div>
-              <div class="panel-body stack">
-                <div class="command-grid">
-                  <div class="command-control">
-                    <label>
-                      Count
-                      <input id="generate-count" type="number" min="1" max="50" value="1" />
-                    </label>
-                    <button id="generate" class="primary" type="button">Generate</button>
-                  </div>
-                  <div class="command-control">
-                    <label>
-                      Atomic value
-                      <input id="regenerate-value" type="number" min="1" value="1" />
-                    </label>
-                    <label>
-                      Count
-                      <input id="regenerate-count" type="number" min="1" max="50" value="1" />
-                    </label>
-                    <button id="regenerate" type="button">Regenerate</button>
-                  </div>
-                  <div class="command-control">
+              <section class="panel danger-panel">
+                <div class="panel-head">
+                  <h3>Counter Reset</h3>
+                </div>
+                <div class="panel-body">
+                  <div class="danger-zone">
                     <label>
                       Reset counter
                       <input id="reset-value" type="number" min="0" value="0" />
@@ -189,184 +224,221 @@
                     <button id="reset-atomic" class="danger" type="button">Reset Atomic</button>
                   </div>
                 </div>
-                <ul id="results" class="result-list"></ul>
-              </div>
+              </section>
             </section>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Config</h3>
-                <button id="save-config" type="button">Save Config</button>
-              </div>
-              <div class="panel-body">
-                <div class="config-grid">
-                  <div>
-                    <p class="section-title">Word 1</p>
-                    <div class="stack">
-                      <label>
-                        Enabled
-                        <select id="word1-enabled">
-                          <option value="true">true</option>
-                          <option value="false">false</option>
-                        </select>
-                      </label>
-                      <label>
-                        Lengths
-                        <input id="word1-lengths" placeholder="5 or 6,7 or any" />
-                      </label>
-                      <label>
-                        Categories
-                        <input id="word1-categories" />
-                      </label>
+            <section id="panel-config" class="tab-panel">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Config</h3>
+                  <button id="save-config" type="button">Save Config</button>
+                </div>
+                <div class="panel-body">
+                  <div class="config-grid">
+                    <div class="config-group">
+                      <p class="section-title">Word 1</p>
+                      <div class="stack">
+                        <label>
+                          Enabled
+                          <select id="word1-enabled">
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        </label>
+                        <label>
+                          Lengths
+                          <input id="word1-lengths" placeholder="5 or 6,7 or any" />
+                        </label>
+                        <label>
+                          Categories
+                          <input id="word1-categories" />
+                        </label>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <p class="section-title">Word 2</p>
-                    <div class="stack">
-                      <label>
-                        Enabled
-                        <select id="word2-enabled">
-                          <option value="true">true</option>
-                          <option value="false">false</option>
-                        </select>
-                      </label>
-                      <label>
-                        Lengths
-                        <input id="word2-lengths" placeholder="5 or 6,7 or any" />
-                      </label>
-                      <label>
-                        Categories
-                        <input id="word2-categories" />
-                      </label>
+                    <div class="config-group">
+                      <p class="section-title">Word 2</p>
+                      <div class="stack">
+                        <label>
+                          Enabled
+                          <select id="word2-enabled">
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        </label>
+                        <label>
+                          Lengths
+                          <input id="word2-lengths" placeholder="5 or 6,7 or any" />
+                        </label>
+                        <label>
+                          Categories
+                          <input id="word2-categories" />
+                        </label>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <p class="section-title">Suffix</p>
-                    <div class="stack">
-                      <label>
-                        Enabled
-                        <select id="suffix-enabled">
-                          <option value="true">true</option>
-                          <option value="false">false</option>
-                        </select>
-                      </label>
-                      <label>
-                        Min length
-                        <input id="suffix-min-length" type="number" min="3" max="13" />
-                      </label>
+                    <div class="config-group">
+                      <p class="section-title">Suffix</p>
+                      <div class="stack">
+                        <label>
+                          Enabled
+                          <select id="suffix-enabled">
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        </label>
+                        <label>
+                          Min length
+                          <input id="suffix-min-length" type="number" min="3" max="13" />
+                        </label>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
+              </section>
             </section>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Tokens</h3>
-                <button id="refresh-tokens" type="button">Refresh</button>
-              </div>
-              <div class="panel-body stack">
-                <form id="create-token" class="token">
-                  <input
-                    id="token-name"
-                    autocomplete="off"
-                    placeholder="deploy"
-                    maxlength="64"
-                  />
-                  <input
-                    id="token-expires-at-ms"
-                    type="number"
-                    min="1"
-                    placeholder="expires_at_ms"
-                  />
-                  <button type="submit">Create</button>
-                </form>
-                <div id="created-token" class="mono ok-text"></div>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Token ID</th>
-                      <th>Expires</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody id="tokens-body">
-                    <tr>
-                      <td class="empty" colspan="4">No profile selected</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+            <section id="panel-tokens" class="tab-panel">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Tokens</h3>
+                  <button id="refresh-tokens" type="button">Refresh</button>
+                </div>
+                <div class="panel-body stack">
+                  <form id="create-token" class="token token-create">
+                    <input
+                      id="token-name"
+                      autocomplete="off"
+                      placeholder="deploy"
+                      maxlength="64"
+                    />
+                    <input
+                      id="token-expires-at-ms"
+                      type="number"
+                      min="1"
+                      placeholder="expires_at_ms"
+                    />
+                    <button type="submit">Create</button>
+                  </form>
+                  <div id="created-token" class="secret-output mono ok-text"></div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Token ID</th>
+                        <th>Expires</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="tokens-body">
+                      <tr>
+                        <td class="empty" colspan="4">No profile selected</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
             </section>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Events</h3>
-                <button id="refresh-events" type="button">Refresh</button>
-              </div>
-              <div class="panel-body stack">
-                <div class="event-controls">
-                  <label>
-                    Profile
-                    <select id="event-profile-scope">
-                      <option value="selected">selected</option>
-                      <option value="all">all</option>
-                    </select>
-                  </label>
-                  <label>
-                    Action
-                    <input id="event-action" placeholder="generate" />
-                  </label>
-                  <label>
-                    Source
-                    <input id="event-source" placeholder="api" />
-                  </label>
-                  <label>
-                    Token
-                    <input id="event-token-name" placeholder="deploy" />
-                  </label>
-                  <label>
-                    Since
-                    <input id="event-since-ms" type="number" min="0" />
-                  </label>
-                  <label>
-                    Until
-                    <input id="event-until-ms" type="number" min="0" />
-                  </label>
-                  <label>
-                    Limit
-                    <input id="event-limit" type="number" min="1" max="500" value="25" />
-                  </label>
-                  <div class="event-actions">
-                    <button id="apply-events" type="button" class="primary">Apply</button>
-                    <button id="reset-events" type="button">Reset</button>
+            <section id="panel-events" class="tab-panel">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Events</h3>
+                  <button id="refresh-events" type="button">Refresh</button>
+                </div>
+                <div class="panel-body stack">
+                  <div class="event-controls">
+                    <label>
+                      Profile
+                      <select id="event-profile-scope">
+                        <option value="selected">selected</option>
+                        <option value="all">all</option>
+                      </select>
+                    </label>
+                    <label>
+                      Action
+                      <input id="event-action" placeholder="generate" />
+                    </label>
+                    <label>
+                      Source
+                      <input id="event-source" placeholder="api" />
+                    </label>
+                    <label>
+                      Token
+                      <input id="event-token-name" placeholder="deploy" />
+                    </label>
+                    <label>
+                      Since
+                      <input id="event-since-ms" type="number" min="0" />
+                    </label>
+                    <label>
+                      Until
+                      <input id="event-until-ms" type="number" min="0" />
+                    </label>
+                    <label>
+                      Limit
+                      <input id="event-limit" type="number" min="1" max="500" value="25" />
+                    </label>
+                    <div class="event-actions">
+                      <button id="apply-events" type="button" class="primary">Apply</button>
+                      <button id="reset-events" type="button">Reset</button>
+                    </div>
+                  </div>
+                  <div class="events-layout">
+                    <table class="events-table">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Action</th>
+                          <th>Profile</th>
+                          <th>Source</th>
+                          <th>Token</th>
+                          <th>Range</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody id="events-body">
+                        <tr>
+                          <td class="empty" colspan="7">No events loaded</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div id="event-detail" class="event-detail"></div>
                   </div>
                 </div>
-                <table class="events-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Action</th>
-                      <th>Profile</th>
-                      <th>Source</th>
-                      <th>Token</th>
-                      <th>Range</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody id="events-body">
-                    <tr>
-                      <td class="empty" colspan="7">No events loaded</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div id="event-detail" class="event-detail"></div>
-                <div id="message" class="muted">Ready</div>
-              </div>
+              </section>
             </section>
-          </section>
-        </div>
+
+            <section id="panel-history" class="tab-panel">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>History</h3>
+                  <button id="refresh-history" type="button">Refresh</button>
+                </div>
+                <div class="panel-body">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>State</th>
+                        <th>Profile ID</th>
+                        <th>Last Atomic</th>
+                        <th>Replaced At</th>
+                        <th>Replaced By</th>
+                      </tr>
+                    </thead>
+                    <tbody id="history-body">
+                      <tr>
+                        <td class="empty" colspan="5">No profile selected</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </section>
+
+            </section>
+          </div>
+        </section>
+
+        <div id="message" class="message-bar muted" aria-live="polite" hidden></div>
       </main>
     </div>
 

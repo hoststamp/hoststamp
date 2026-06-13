@@ -70,6 +70,32 @@ test("tokenHealth buckets active, expired, expiring, and revoked tokens", () => 
   });
 });
 
+test("tokenStatus uses the same seven-day expiring threshold as tokenHealth", () => {
+  const now = 1_000_000;
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  assert.equal(
+    health.tokenStatus({ expires_at_ms: null, revoked_at_ms: null }, now),
+    "active",
+  );
+  assert.equal(
+    health.tokenStatus({ expires_at_ms: now + 8 * dayMs, revoked_at_ms: null }, now),
+    "active",
+  );
+  assert.equal(
+    health.tokenStatus({ expires_at_ms: now + 7 * dayMs, revoked_at_ms: null }, now),
+    "expiring",
+  );
+  assert.equal(
+    health.tokenStatus({ expires_at_ms: now - 1, revoked_at_ms: null }, now),
+    "expired",
+  );
+  assert.equal(
+    health.tokenStatus({ expires_at_ms: now + dayMs, revoked_at_ms: now }, now),
+    "revoked",
+  );
+});
+
 test("historyHealth summarizes active and replaced rows", () => {
   assert.equal(health.historyHealth(null), "not loaded");
   assert.equal(health.historyHealth([]), "none");
