@@ -124,7 +124,7 @@ esac
 command -v cargo >/dev/null 2>&1 || die "cargo is required"
 command -v gh >/dev/null 2>&1 || die "GitHub CLI is required"
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated; run 'gh auth login'"
-cargo set-version --version >/dev/null 2>&1 || die "cargo-edit is required; run mise install --locked"
+cargo set-version --version >/dev/null 2>&1 || die "cargo-edit is required; run mise install"
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"

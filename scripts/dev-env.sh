@@ -48,7 +48,7 @@ fi
 
 if ! command -v "$1" >/dev/null 2>&1; then
   if [ "$1" = "watchexec" ]; then
-    die "watchexec is not installed; run: mise install --locked"
+    die "watchexec is not installed; run: mise install"
   fi
   die "$1 is not installed"
 fi

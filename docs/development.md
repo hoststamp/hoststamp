@@ -17,7 +17,7 @@ mise run docker-smoke
 The same local checks are available through `mise`:
 
 ```sh
-mise install --locked
+mise install
 mise run check
 mise run ci
 ```
