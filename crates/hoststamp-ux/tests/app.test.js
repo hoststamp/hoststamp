@@ -144,13 +144,14 @@ class TestDocument {
     this.body = new TestElement("body", "body");
     this.elements = new Map([["body", this.body]]);
 
-    const idPattern = /<([a-z0-9-]+)\b[^>]*\bid="([^"]+)"/gi;
+    const idPattern = /<([a-z0-9-]+)\b[^>]*\bid="([^"]+)"[^>]*>/gi;
     for (const match of html.matchAll(idPattern)) {
       const element = new TestElement(match[1], match[2]);
       const classMatch = match[0].match(/\bclass="([^"]+)"/);
       const valueMatch = match[0].match(/\bvalue="([^"]*)"/);
       if (classMatch) element.className = classMatch[1];
       if (valueMatch) element.value = valueMatch[1];
+      element.hidden = /\bhidden\b/.test(match[0]);
       this.elements.set(element.id, element);
       this.body.appendChild(element);
     }
@@ -375,6 +376,29 @@ test("profile workspace tabs isolate admin surfaces", async () => {
   assert.equal(document.getElementById("panel-config").hidden, true);
   assert.equal(document.getElementById("panel-events").hidden, false);
   assert.match(document.getElementById("tab-events").className, /\bactive\b/);
+});
+
+test("server backup detail stays hidden until an operation runs", async () => {
+  const { context, document } = loadApp();
+
+  assert.equal(document.getElementById("backup-status").hidden, true);
+  assert.equal(
+    document.getElementById("server-backup-badge").textContent,
+    "backup ready",
+  );
+
+  context.setManagementEnabled(true);
+  const input = document.getElementById("import-backup-file");
+  input.value = "bad.json";
+  input.files = [{ text: async () => "{" }];
+
+  await dispatch(input, "change");
+
+  assert.equal(document.getElementById("backup-status").hidden, false);
+  assert.equal(
+    document.getElementById("backup-status").textContent,
+    "backup import file is not valid JSON",
+  );
 });
 
 test("profile import confirms replacement and refreshes management state", async () => {

@@ -43,10 +43,11 @@ function setBadge(id, text, kind = "") {
   badge.textContent = text;
 }
 
-function setBackupStatus(text, kind = "muted") {
+function setBackupStatus(text, kind = "muted", showDetail = true) {
   const status = el("backup-status");
   status.className = `backup-status ${kind}`;
   status.textContent = text;
+  status.hidden = !showDetail;
   setBadge("server-backup-badge", text.toLowerCase(), kind);
 }
 
@@ -215,7 +216,7 @@ function clearBackupPreview() {
 function resetBackupPanel() {
   state.backupBusy = false;
   clearBackupPreview();
-  setBackupStatus("Ready");
+  setBackupStatus("Backup ready", "muted", false);
   renderBackupControls();
 }
 
