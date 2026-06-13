@@ -35,6 +35,23 @@
     };
   }
 
+  function tokenStatus(token, now = Date.now()) {
+    if (token.revoked_at_ms !== null && token.revoked_at_ms !== undefined) {
+      return "revoked";
+    }
+    if (token.expires_at_ms !== null && token.expires_at_ms !== undefined) {
+      const expiresAt = Number(token.expires_at_ms);
+      if (Number.isFinite(expiresAt) && expiresAt <= now) {
+        return "expired";
+      }
+      const weekMs = 7 * 24 * 60 * 60 * 1000;
+      if (Number.isFinite(expiresAt) && expiresAt - now <= weekMs) {
+        return "expiring";
+      }
+    }
+    return "active";
+  }
+
   function tokenHealth(tokens, now = Date.now()) {
     if (!tokens) {
       return {
@@ -47,7 +64,6 @@
       };
     }
 
-    const weekMs = 7 * 24 * 60 * 60 * 1000;
     const summary = {
       active: 0,
       expired: 0,
@@ -56,16 +72,17 @@
       total: tokens.length,
     };
     for (const token of tokens) {
-      if (token.revoked_at_ms !== null) {
+      const status = tokenStatus(token, now);
+      if (status === "revoked") {
         summary.revoked += 1;
         continue;
       }
-      if (token.expires_at_ms !== null && token.expires_at_ms <= now) {
+      if (status === "expired") {
         summary.expired += 1;
         continue;
       }
       summary.active += 1;
-      if (token.expires_at_ms !== null && token.expires_at_ms - now <= weekMs) {
+      if (status === "expiring") {
         summary.expiring += 1;
       }
     }
@@ -131,6 +148,7 @@
     integerBigInt,
     profileHealthWarnings,
     tokenHealth,
+    tokenStatus,
   };
 
   if (typeof module !== "undefined" && module.exports) {

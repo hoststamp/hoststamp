@@ -172,7 +172,8 @@ class TestDocument {
 
   querySelectorAll(selector) {
     if (
-      selector === "main .layout button, main .layout input, main .layout select"
+      selector ===
+      "main .surface-panel button, main .surface-panel input, main .surface-panel select"
     ) {
       return [...this.elements.values()].filter((element) =>
         ["BUTTON", "INPUT", "SELECT"].includes(element.tagName),
@@ -346,6 +347,35 @@ function managementFetch({ profiles, tokens = [], history = [], events = [] }) {
     return defaultFetch(requestPath);
   };
 }
+
+test("profile workspace tabs isolate admin surfaces", async () => {
+  const { document } = loadApp();
+
+  assert.equal(document.getElementById("surface-server-panel").hidden, false);
+  assert.equal(document.getElementById("surface-profiles-panel").hidden, true);
+  assert.match(document.getElementById("surface-server").className, /\bactive\b/);
+
+  await dispatch(document.getElementById("surface-profiles"), "click");
+
+  assert.equal(document.getElementById("surface-server-panel").hidden, true);
+  assert.equal(document.getElementById("surface-profiles-panel").hidden, false);
+  assert.match(document.getElementById("surface-profiles").className, /\bactive\b/);
+  assert.equal(document.getElementById("panel-overview").hidden, false);
+  assert.equal(document.getElementById("panel-config").hidden, true);
+  assert.match(document.getElementById("tab-overview").className, /\bactive\b/);
+
+  await dispatch(document.getElementById("tab-config"), "click");
+
+  assert.equal(document.getElementById("panel-overview").hidden, true);
+  assert.equal(document.getElementById("panel-config").hidden, false);
+  assert.match(document.getElementById("tab-config").className, /\bactive\b/);
+
+  await dispatch(document.getElementById("tab-events"), "click");
+
+  assert.equal(document.getElementById("panel-config").hidden, true);
+  assert.equal(document.getElementById("panel-events").hidden, false);
+  assert.match(document.getElementById("tab-events").className, /\bactive\b/);
+});
 
 test("profile import confirms replacement and refreshes management state", async () => {
   const existingProfile = profileFixture();
