@@ -33,7 +33,8 @@ mise run lock-tools
 ```
 
 That task keeps `linux-x64`, `macos-arm64`, and `macos-x64` checksums in
-`mise.lock`, so locked installs work on Linux and Mac machines.
+`mise.lock` for tools that publish platform artifacts, so locked installs can
+verify those downloads on Linux and Mac machines.
 
 ## Local Dev Loop
 
