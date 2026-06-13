@@ -31,8 +31,8 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
         with:
-          version: 2026.5.16
-          sha256: fb2d7bf1a3751398a5c336a3565cd3c60af9b41952abe6fd62e2f2f0d5f06b60
+          version: 2026.6.6
+          sha256: b8c25ad5e1c178bb7ba1e0fca9066153f8ef1b28bf5a8456c20a8acd2522e556
           install: true
           install_args: --locked
           cache: true
