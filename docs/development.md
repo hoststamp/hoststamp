@@ -17,13 +17,24 @@ mise run docker-smoke
 The same local checks are available through `mise`:
 
 ```sh
-mise install --locked
+mise install
 mise run check
 mise run ci
 ```
 
 Run individual `mise` tasks when you only need one check. Tool versions are
 pinned in `mise.toml` and locked in `mise.lock`.
+
+When updating pinned tools, refresh the lockfile for every supported developer
+platform:
+
+```sh
+mise run lock-tools
+```
+
+That task keeps `linux-x64`, `macos-arm64`, and `macos-x64` checksums in
+`mise.lock` for tools that publish platform artifacts, so locked installs can
+verify those downloads on Linux and Mac machines.
 
 ## Local Dev Loop
 

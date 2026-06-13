@@ -12,7 +12,7 @@ Run the local API and UX:
 cargo run -p hoststamp -- serve
 ```
 
-During development, run the watched server instead after `mise install --locked`:
+During development, run the watched server instead after `mise install`:
 
 ```sh
 mise run dev
@@ -171,7 +171,7 @@ mise run docker-smoke
 The same local checks are available through `mise`:
 
 ```sh
-mise install --locked
+mise install
 mise run check
 mise run ci
 ```

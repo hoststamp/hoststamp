@@ -31,11 +31,13 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
         with:
-          version: 2026.5.16
-          sha256: fb2d7bf1a3751398a5c336a3565cd3c60af9b41952abe6fd62e2f2f0d5f06b60
-          install: true
-          install_args: --locked
+          version: 2026.6.6
+          sha256: b8c25ad5e1c178bb7ba1e0fca9066153f8ef1b28bf5a8456c20a8acd2522e556
+          install: false
           cache: true
+
+      - name: Install project tools
+        run: mise install
 
       - name: Install Rust components
         run: rustup component add rustfmt clippy llvm-tools-preview
@@ -79,6 +81,37 @@ jobs:
 
       - name: Build (release)
         run: mise run build
+
+  locked-tools-macos:
+    name: locked platform tools (${{ matrix.platform }})
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-latest
+            mise_sha256: 82abeb5b3cdb377efa31ca83650bd4156d266980b6f2bc7fa4d09610330cc549
+          - platform: macos-x64
+            runner: macos-15-intel
+            mise_sha256: 97fa76dc36b056c4c6e1f88f33e30187f9f1e387b98800eb985c1d0c7fa20084
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install locked platform tools
+        uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
+        with:
+          version: 2026.6.6
+          sha256: ${{ matrix.mise_sha256 }}
+          install: true
+          # Rust and cargo-installed tools are version-locked but do not emit
+          # platform URL entries in mise.lock. This job validates the tools that
+          # do carry per-platform URLs and checksums.
+          install_args: --locked node actionlint gitleaks trivy watchexec shellcheck
+          cache: true
 
   docker:
     name: docker build
