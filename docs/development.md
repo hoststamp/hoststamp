@@ -25,6 +25,16 @@ mise run ci
 Run individual `mise` tasks when you only need one check. Tool versions are
 pinned in `mise.toml` and locked in `mise.lock`.
 
+When updating pinned tools, refresh the lockfile for every supported developer
+platform:
+
+```sh
+mise run lock-tools
+```
+
+That task keeps `linux-x64`, `macos-arm64`, and `macos-x64` checksums in
+`mise.lock`, so locked installs work on Linux and Mac machines.
+
 ## Local Dev Loop
 
 Use the watched dev server when working on the API or local UX:

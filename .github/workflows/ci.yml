@@ -80,6 +80,34 @@ jobs:
       - name: Build (release)
         run: mise run build
 
+  locked-tools-macos:
+    name: locked tools (${{ matrix.platform }})
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-latest
+            mise_sha256: 82abeb5b3cdb377efa31ca83650bd4156d266980b6f2bc7fa4d09610330cc549
+          - platform: macos-x64
+            runner: macos-15-intel
+            mise_sha256: 97fa76dc36b056c4c6e1f88f33e30187f9f1e387b98800eb985c1d0c7fa20084
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install locked tools
+        uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
+        with:
+          version: 2026.6.6
+          sha256: ${{ matrix.mise_sha256 }}
+          install: true
+          install_args: --locked
+          cache: true
+
   docker:
     name: docker build
     # PR-only amd64 smoke build: proves the Dockerfile still builds, fast (native,

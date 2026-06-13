@@ -69,6 +69,10 @@ run = "cargo llvm-cov --all-targets --locked --summary-only --fail-under-lines 9
 description = "Lint GitHub Actions workflows"
 run = "actionlint"
 
+[tasks.lock-tools]
+description = "Refresh mise.lock for supported Linux and macOS platforms"
+run = "mise lock --platform linux-x64,macos-arm64,macos-x64"
+
 [tasks.audit]
 description = "Scan Rust dependencies for security advisories"
 run = "cargo audit"
