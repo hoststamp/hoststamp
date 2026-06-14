@@ -102,15 +102,17 @@ In short, `release-publish`:
 
 The `Release` workflow is manual-only. It verifies that it is running from
 `main`, checks that `vX.Y.Z` matches the workspace package version `X.Y.Z`,
-runs the standard CI gate, verifies that the workflow did not modify source
-files, verifies release Git credentials with a non-mutating dry-run tag push,
-builds and smoke-tests the arm64 image under QEMU, publishes the
-multi-architecture GHCR image, creates or reuses annotated Git tag `vX.Y.Z`,
-and creates or updates the GitHub Release.
+builds native CLI archives, runs the standard CI gate, verifies that the
+workflow did not modify source files, verifies release Git credentials with a
+non-mutating dry-run tag push, builds and smoke-tests the arm64 image under
+QEMU, publishes the multi-architecture GHCR image, creates or reuses annotated
+Git tag `vX.Y.Z`, creates or updates the GitHub Release, and uploads native
+release assets plus checksums.
 
-Dry runs run the release checks, the release Git credential preflight, the arm64
-smoke test, and the multi-architecture image build. They do not publish image
-tags, create Git tags, or create GitHub Releases.
+Dry runs build the native archives, generate checksums, run the release checks,
+run the release Git credential preflight, the arm64 smoke test, and the
+multi-architecture image build. They do not publish image tags, create Git
+tags, create GitHub Releases, or upload release assets.
 
 The workflow publishes Docker image tags:
 
@@ -131,9 +133,16 @@ and GitHub Release, plus `packages: write` to publish to GHCR. Create a
 reviewers to that environment if stable publishing should require manual
 approval before the job runs.
 
-The first supported stable release artifact is the multi-architecture GHCR
-image. Native binary packaging, SBOMs, provenance, and checksum artifacts are
-separate release-scope decisions.
+Stable releases publish:
+
+- multi-architecture GHCR images for `linux/amd64` and `linux/arm64`
+- native CLI archives for `linux-amd64`, `macos-arm64`, and `macos-x64`
+- `hoststamp-vX.Y.Z-checksums.txt` for the native archives
+
+Each native archive is named `hoststamp-vX.Y.Z-<platform>.tar.gz` and contains
+the `hoststamp` binary, `README.md`, `LICENSE`, and
+`THIRD-PARTY-NOTICES.md`. SBOMs and provenance are separate release-scope
+decisions.
 
 The release gate intentionally re-runs advisory and filesystem security scans
 against the current RustSec, gitleaks, and Trivy data. A byte-identical commit

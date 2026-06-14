@@ -82,6 +82,36 @@ jobs:
       - name: Build (release)
         run: mise run build
 
+      - name: Native package smoke
+        env:
+          TAG: v0.0.0
+          ASSET: linux-amd64
+        shell: bash
+        run: |
+          set -euo pipefail
+          out_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/hoststamp-native-package.XXXXXX")"
+          sh scripts/package-native-asset.sh "$TAG" "$ASSET" "$out_dir"
+
+          name="hoststamp-${TAG}-${ASSET}"
+          archive="$out_dir/$name.tar.gz"
+          manifest="$out_dir/archive-files.txt"
+          tar -tzf "$archive" | sort > "$manifest"
+          grep -Fx "$name/hoststamp" "$manifest" >/dev/null
+          grep -Fx "$name/README.md" "$manifest" >/dev/null
+          grep -Fx "$name/LICENSE" "$manifest" >/dev/null
+          grep -Fx "$name/THIRD-PARTY-NOTICES.md" "$manifest" >/dev/null
+
+          extract_dir="$out_dir/extract"
+          mkdir "$extract_dir"
+          tar -C "$extract_dir" -xzf "$archive"
+          "$extract_dir/$name/hoststamp" --version
+
+          (
+            cd "$out_dir"
+            shasum -a 256 -- ./*.tar.gz | sed 's#  \./#  #' > "hoststamp-${TAG}-checksums.txt"
+            shasum -a 256 -c "hoststamp-${TAG}-checksums.txt"
+          )
+
   locked-tools-macos:
     name: locked platform tools (${{ matrix.platform }})
     if: github.event_name == 'pull_request'

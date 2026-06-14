@@ -25,7 +25,7 @@ jobs:
         run: rustup toolchain install 1.96.0 --profile minimal
 
       - name: Install Hoststamp
-        run: cargo +1.96.0 install --git https://github.com/hoststamp/hoststamp --tag v0.1.0 --locked hoststamp
+        run: cargo +1.96.0 install --git https://github.com/hoststamp/hoststamp --tag v0.2.0 --locked hoststamp
 
       - name: Import trusted Hoststamp profile
         env:
