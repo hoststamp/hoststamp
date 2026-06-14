@@ -35,6 +35,18 @@ The local UX response sets:
 
 The CSP allows only self-hosted scripts and styles.
 
+## Native CLI Archives
+
+Stable GitHub Releases attach native CLI archives for:
+
+- `linux-amd64`
+- `macos-arm64`
+- `macos-x64`
+
+Each archive is named `hoststamp-vX.Y.Z-<platform>.tar.gz` and contains the
+`hoststamp` binary, `README.md`, `LICENSE`, and `THIRD-PARTY-NOTICES.md`.
+Verify archives with `hoststamp-vX.Y.Z-checksums.txt` from the same release.
+
 ## Docker
 
 The image runs as UID/GID `10001`, sets
@@ -42,15 +54,16 @@ The image runs as UID/GID `10001`, sets
 `/home/hoststamp/.config/hoststamp/hoststamp.db` when no config file is
 mounted.
 
-After `v0.1.0` is published, pull and run the stable image from GHCR:
+Stable images are published to GHCR. Replace `v0.2.0` with the release you
+want:
 
 ```sh
-docker pull ghcr.io/hoststamp/hoststamp:v0.1.0
+docker pull ghcr.io/hoststamp/hoststamp:v0.2.0
 docker run --rm -p 127.0.0.1:8080:8080 \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   -v hoststamp-data:/home/hoststamp/.config/hoststamp \
-  ghcr.io/hoststamp/hoststamp:v0.1.0
+  ghcr.io/hoststamp/hoststamp:v0.2.0
 ```
 
 Build and smoke test locally with:
@@ -79,7 +92,7 @@ docker run --rm -p 8080:8080 \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --env-file ./hoststamp.env \
   -v hoststamp-data:/home/hoststamp/.config/hoststamp \
-  ghcr.io/hoststamp/hoststamp:v0.1.0
+  ghcr.io/hoststamp/hoststamp:v0.2.0
 ```
 
 Minimum env-file values for exposed use:

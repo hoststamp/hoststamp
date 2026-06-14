@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Stable release version, for example 0.1.0 or v0.1.0
+        description: Stable release version, for example 0.2.0 or v0.2.0
         required: true
         type: string
       dry_run:
@@ -27,29 +27,22 @@ env:
   IMAGE: ${{ github.repository }}
 
 jobs:
-  release:
-    name: stable release
+  prepare:
+    name: prepare release
     runs-on: ubuntu-latest
-    environment: stable-release
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      major: ${{ steps.release.outputs.major }}
+      major_tag: ${{ steps.release.outputs.major_tag }}
+      minor_tag: ${{ steps.release.outputs.minor_tag }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Install mise
-        uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
-        with:
-          version: 2026.6.6
-          sha256: b8c25ad5e1c178bb7ba1e0fca9066153f8ef1b28bf5a8456c20a8acd2522e556
-          install: false
-          cache: true
-
-      - name: Install project tools
-        run: mise install
-
-      - name: Install Rust components
-        run: rustup component add rustfmt clippy llvm-tools-preview
 
       - name: Resolve release version
         id: release
@@ -86,7 +79,10 @@ jobs:
           fi
 
           tag="v$version"
-          tag_exists=false
+          major="${version%%.*}"
+          minor_patch="${version#*.}"
+          minor="${minor_patch%%.*}"
+
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/tmp/remote-tag 2>/dev/null; then
             peeled_sha="$(git ls-remote --tags origin "refs/tags/$tag^{}" | awk '{ print $1 }')"
             if [[ -z "$peeled_sha" ]]; then
@@ -96,12 +92,7 @@ jobs:
               echo "remote tag $tag already exists at $peeled_sha, not $head_sha" >&2
               exit 1
             fi
-            tag_exists=true
           fi
-
-          major="${version%%.*}"
-          minor_patch="${version#*.}"
-          minor="${minor_patch%%.*}"
 
           {
             echo "version=$version"
@@ -109,8 +100,138 @@ jobs:
             echo "major=$major"
             echo "major_tag=v$major"
             echo "minor_tag=v$major.$minor"
+          } >> "$GITHUB_OUTPUT"
+
+  native-assets:
+    name: native asset (${{ matrix.asset }})
+    needs: prepare
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset: linux-amd64
+            runner: ubuntu-latest
+            mise_sha256: b8c25ad5e1c178bb7ba1e0fca9066153f8ef1b28bf5a8456c20a8acd2522e556
+          - asset: macos-arm64
+            runner: macos-latest
+            mise_sha256: 82abeb5b3cdb377efa31ca83650bd4156d266980b6f2bc7fa4d09610330cc549
+          - asset: macos-x64
+            runner: macos-15-intel
+            mise_sha256: 97fa76dc36b056c4c6e1f88f33e30187f9f1e387b98800eb985c1d0c7fa20084
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install mise
+        uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
+        with:
+          version: 2026.6.6
+          sha256: ${{ matrix.mise_sha256 }}
+          install: false
+          cache: true
+
+      - name: Install Rust
+        run: mise install rust
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+
+      - name: Build release binary
+        run: cargo build --release --locked -p hoststamp
+
+      - name: Package native asset
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          ASSET: ${{ matrix.asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="hoststamp-${TAG}-${ASSET}"
+          mkdir -p "dist/$name"
+          cp target/release/hoststamp "dist/$name/hoststamp"
+          cp README.md LICENSE THIRD-PARTY-NOTICES.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      - name: Upload native asset
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: hoststamp-native-${{ matrix.asset }}
+          path: dist/hoststamp-${{ needs.prepare.outputs.tag }}-${{ matrix.asset }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: stable release
+    needs: [prepare, native-assets]
+    runs-on: ubuntu-latest
+    environment: stable-release
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve release metadata
+        id: release
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          MAJOR: ${{ needs.prepare.outputs.major }}
+          MAJOR_TAG: ${{ needs.prepare.outputs.major_tag }}
+          MINOR_TAG: ${{ needs.prepare.outputs.minor_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Re-check the time-sensitive publish guards after native asset
+          # builds finish. Version and SemVer validation are single-sourced in
+          # the prepare job above.
+          git fetch origin main --tags
+          head_sha="$(git rev-parse HEAD)"
+          remote_main="$(git rev-parse origin/main)"
+          if [[ "$head_sha" != "$remote_main" ]]; then
+            echo "release checkout must match origin/main before publishing" >&2
+            exit 1
+          fi
+
+          tag_exists=false
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/tmp/remote-tag 2>/dev/null; then
+            peeled_sha="$(git ls-remote --tags origin "refs/tags/$TAG^{}" | awk '{ print $1 }')"
+            if [[ -z "$peeled_sha" ]]; then
+              peeled_sha="$(awk '{ print $1 }' /tmp/remote-tag)"
+            fi
+            if [[ "$peeled_sha" != "$head_sha" ]]; then
+              echo "remote tag $TAG already exists at $peeled_sha, not $head_sha" >&2
+              exit 1
+            fi
+            tag_exists=true
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "major=$MAJOR"
+            echo "major_tag=$MAJOR_TAG"
+            echo "minor_tag=$MINOR_TAG"
             echo "tag_exists=$tag_exists"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Install mise
+        uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
+        with:
+          version: 2026.6.6
+          sha256: b8c25ad5e1c178bb7ba1e0fca9066153f8ef1b28bf5a8456c20a8acd2522e556
+          install: false
+          cache: true
+
+      - name: Install project tools
+        run: mise install
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy llvm-tools-preview
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
@@ -130,6 +251,26 @@ jobs:
         run: |
           set -euo pipefail
           git push --dry-run "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/tags/$TAG"
+
+      - name: Download native assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: hoststamp-native-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate native asset checksums
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checksum_file="release-assets/hoststamp-${TAG}-checksums.txt"
+          (
+            cd release-assets
+            shasum -a 256 -- ./*.tar.gz | sed 's#  \./#  #' > "hoststamp-${TAG}-checksums.txt"
+          )
+          cat "$checksum_file"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
@@ -217,6 +358,16 @@ jobs:
           else
             gh release create "$tag" --verify-tag --title "$tag" --notes "Release $tag"
           fi
+
+      - name: Upload native release assets
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release-assets/*.tar.gz "release-assets/hoststamp-${TAG}-checksums.txt" --clobber
 
       - name: Report dry run
         if: ${{ inputs.dry_run }}

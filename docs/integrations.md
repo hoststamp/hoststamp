@@ -54,9 +54,10 @@ and required-review branch protection; without that protection, the check is
 only advisory.
 
 The example pins the checkout action to a full commit SHA, pins the Rust
-toolchain version, and installs Hoststamp from the `v0.1.0` tag. Update those
+toolchain version, and installs Hoststamp from the `v0.2.0` tag. Update those
 refs deliberately when upgrading. Replace the install step with the team's
-pinned package, binary, or container installation when one is standardized.
+pinned release archive, package, or container installation when one is
+standardized.
 
 The validation step uses a throwaway SQLite database under `${{ runner.temp }}`.
 It imports the trusted profile export on each run, then calls:

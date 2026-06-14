@@ -78,15 +78,19 @@ cargo run -p hoststamp -- completions fish
 cargo run -p hoststamp -- man
 ```
 
-After `v0.1.0` is published, the first stable Docker image will be available
-from GHCR:
+Stable release archives are attached to GitHub Releases for Linux amd64, macOS
+arm64, and macOS x64. Verify downloads with the matching
+`hoststamp-vX.Y.Z-checksums.txt` file.
+
+Stable Docker images are published to GHCR. Replace `v0.2.0` with the release
+you want:
 
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   -v hoststamp-data:/home/hoststamp/.config/hoststamp \
-  ghcr.io/hoststamp/hoststamp:v0.1.0
+  ghcr.io/hoststamp/hoststamp:v0.2.0
 ```
 
 ## Core Model
