@@ -150,11 +150,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          name="hoststamp-${TAG}-${ASSET}"
-          mkdir -p "dist/$name"
-          cp target/release/hoststamp "dist/$name/hoststamp"
-          cp README.md LICENSE THIRD-PARTY-NOTICES.md "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          sh scripts/package-native-asset.sh "$TAG" "$ASSET" dist
 
       - name: Upload native asset
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
