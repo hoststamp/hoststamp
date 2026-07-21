@@ -11,7 +11,7 @@ RUN --mount=type=cache,target=/build/target \
     cargo build --release --locked -p hoststamp \
     && install -m 0555 target/release/hoststamp /usr/local/bin/hoststamp
 
-FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS runtime
 LABEL org.opencontainers.image.title="Hoststamp" \
       org.opencontainers.image.description="Deterministic hostname generator CLI, API server, and local UX" \
       org.opencontainers.image.source="https://github.com/hoststamp/hoststamp" \
