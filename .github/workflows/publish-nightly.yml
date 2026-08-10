@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
 
       - name: Install mise
-        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14  # v4.2.3
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654  # v4.2.4
         with:
           version: 2026.6.6
           sha256: b8c25ad5e1c178bb7ba1e0fca9066153f8ef1b28bf5a8456c20a8acd2522e556
@@ -66,7 +66,7 @@ jobs:
           platforms: arm64
 
       - name: Log in to GHCR
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7  # v4.5.1
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
