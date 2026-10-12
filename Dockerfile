@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
+FROM rust:1.99-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
